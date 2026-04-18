@@ -1,0 +1,11 @@
+/target
+/Cargo.lock
+# Proprietary Hikvision SDK headers — users install MVS SDK themselves.
+/Includes/
+# Local IDE state
+/.vscode/
+/.idea/
+*.swp
+
+Cargo.lock
+.claude/

@@ -1,0 +1,28 @@
+[package]
+name = "mvs_wrapper"
+version = "0.1.0"
+edition = "2024"
+description = "Safe Rust bindings for the Hikvision MVS machine-vision camera SDK (Windows only)."
+license = "MIT"
+readme = "README.md"
+keywords = ["mvs", "hikvision", "camera", "machine-vision", "ffi"]
+categories = ["api-bindings", "hardware-support"]
+
+[lib]
+name = "mvs_wrapper"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Regenerate src/bindings.rs from the headers in $MVCAM_COMMON_RUNENV/Includes.
+# Requires libclang. Only needed by maintainers after SDK upgrades.
+bindgen = ["dep:bindgen"]
+
+[dependencies]
+thiserror = "2"
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mvs_platform)"] }
