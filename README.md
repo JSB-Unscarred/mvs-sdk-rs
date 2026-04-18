@@ -1,8 +1,8 @@
-# mvs_wrapper
+# MVS-SDK-RS
 
-海康威视 **MVS** 机器视觉相机 SDK 的安全 Rust 封装。所有 `unsafe` 均封在 crate 内部。
+海康威视机器人 **MVS** 工业相机 SDK 的安全 Rust 封装。所有 `unsafe` 均封在 crate 内部。
 
-仅支持 **Windows x86_64 / x86**；其它平台上 crate 编译为空壳（无公开导出），`cargo check` 可正常通过。
+目前仅支持 **Windows x86_64 / x86**；其它平台上 crate 编译为空壳（无公开导出），`cargo check` 可正常通过。
 
 ## 使用
 
@@ -30,16 +30,16 @@ cam.register_image_callback(|f| println!("{}x{}", f.info().width(), f.info().hei
 cam.start_grabbing()?;
 ```
 
-## 维护者：重新生成 bindings
+## 维护：重新生成 bindings
 
-`src/bindings.rs` 已提交到仓库，普通使用者**不需要** libclang。SDK 升级后重新生成：
+`src/bindings.rs` 已提交到仓库，普通使用者**不需要** libclang。
+
+SDK 升级后重新生成：
 
 ```cmd
 cargo build --features bindgen
 ```
 
-需要 LLVM（`scoop install llvm` 或设 `LIBCLANG_PATH`）。
+运行上述命令需要安装 LLVM 并将其添加到环境变量中。
 
 ## License
-
-MIT OR Apache-2.0
