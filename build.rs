@@ -21,9 +21,9 @@ fn main() {
         );
         return;
     }
-    if target_arch != "x86_64" && target_arch != "x86" {
+    if target_arch != "x86_64" {
         println!(
-            "cargo:warning=mvs_wrapper only supports x86_64 / x86 on Windows; skipping MVS SDK link configuration."
+            "cargo:warning=mvs_wrapper only supports x86_64 on Windows; skipping MVS SDK link configuration."
         );
         return;
     }
@@ -48,12 +48,8 @@ fn main() {
     regenerate_bindings(&mvcam);
 }
 
-fn configure_link(mvcam: &Path, target_arch: &str) {
-    let lib_dir = match target_arch {
-        "x86_64" => mvcam.join("Libraries").join("win64"),
-        "x86" => mvcam.join("Libraries").join("win32"),
-        _ => unreachable!(),
-    };
+fn configure_link(mvcam: &Path, _target_arch: &str) {
+    let lib_dir = mvcam.join("Libraries").join("win64");
 
     if !lib_dir.exists() {
         panic!(
