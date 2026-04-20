@@ -1,7 +1,7 @@
 //! SDK lifetime — one-shot init, wrapped in an [`Arc`]-countable handle so
 //! every [`Camera`] can keep the SDK alive for its own lifetime.
 //!
-//! `MV_CC_Finalize` is intentionally **not** called from [`Library::drop`].
+//! `MV_CC_Finalize` is intentionally **not** called from [`Sdk::drop`].
 //! The SDK does not reliably support re-initialization within a single
 //! process, so we initialize once and let process exit handle cleanup.
 //!
@@ -15,14 +15,14 @@ use crate::MvsResult;
 
 static INIT_RESULT: OnceLock<Result<(), i32>> = OnceLock::new();
 
-/// Handle to the initialized MVS SDK. Obtain one with [`Library::init`] and
-/// share via [`Arc::clone`]. Calling [`Library::init`] multiple times is
+/// Handle to the initialized MVS SDK. Obtain one with [`Sdk::init`] and
+/// share via [`Arc::clone`]. Calling [`Sdk::init`] multiple times is
 /// cheap: the SDK is initialized exactly once per process.
-pub struct Library {
+pub struct Sdk {
     _private: (),
 }
 
-impl Library {
+impl Sdk {
     /// Initialize the MVS SDK (idempotent across the process).
     pub fn init() -> MvsResult<Arc<Self>> {
         let result = INIT_RESULT.get_or_init(|| {

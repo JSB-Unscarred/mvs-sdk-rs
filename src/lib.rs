@@ -37,7 +37,7 @@ pub use error::{MvsError, MvsResult};
 #[cfg(mvs_platform)]
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame, PixelType};
 #[cfg(mvs_platform)]
-pub use library::Library;
+pub use library::Sdk;
 
 #[cfg(not(mvs_platform))]
 mod stub;

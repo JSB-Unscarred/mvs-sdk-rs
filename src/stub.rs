@@ -40,13 +40,13 @@ impl MvsError {
     }
 }
 
-// ── Library ──────────────────────────────────────────────────────────
+// ── Sdk ──────────────────────────────────────────────────────────────
 
-pub struct Library {
+pub struct Sdk {
     _private: (),
 }
 
-impl Library {
+impl Sdk {
     pub fn init() -> MvsResult<Arc<Self>> {
         unimplemented!("MVS SDK is only available on Windows")
     }

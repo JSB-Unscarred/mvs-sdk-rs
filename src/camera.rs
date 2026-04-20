@@ -16,7 +16,7 @@ use crate::callback::{
 };
 use crate::error::check;
 use crate::frame::{Frame, FrameGuard};
-use crate::library::Library;
+use crate::library::Sdk;
 use crate::sys;
 use crate::MvsResult;
 
@@ -90,7 +90,7 @@ pub struct EnumNode {
 /// synchronization.
 pub struct Camera {
     handle: *mut c_void,
-    _library: Arc<Library>,
+    _library: Arc<Sdk>,
     grabbing: bool,
     image_cb: Option<Box<ImageCallback>>,
     exception_cb: Option<Box<ExceptionCallback>>,
@@ -103,7 +103,7 @@ unsafe impl Send for Camera {}
 
 impl Camera {
     pub(crate) fn open(
-        library: &Arc<Library>,
+        library: &Arc<Sdk>,
         dev_info: &sys::MV_CC_DEVICE_INFO,
         mode: AccessMode,
     ) -> MvsResult<Self> {

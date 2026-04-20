@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::camera::{AccessMode, Camera};
 use crate::error::check;
-use crate::library::Library;
+use crate::library::Sdk;
 use crate::sys;
 use crate::MvsResult;
 
@@ -81,14 +81,14 @@ impl fmt::Debug for TransportLayer {
 /// The underlying storage is `sys::MV_CC_DEVICE_INFO_LIST` (an array of
 /// pointers into SDK-owned memory). The SDK guarantees these pointers remain
 /// valid between `EnumDevices` calls, so `DeviceList` retains an [`Arc`] to
-/// the [`Library`] to ensure the SDK stays initialized.
+/// the [`Sdk`] to ensure the SDK stays initialized.
 pub struct DeviceList {
     raw: sys::MV_CC_DEVICE_INFO_LIST,
-    library: Arc<Library>,
+    library: Arc<Sdk>,
 }
 
 impl DeviceList {
-    pub(crate) fn enumerate(library: &Arc<Library>, layers: TransportLayer) -> MvsResult<Self> {
+    pub(crate) fn enumerate(library: &Arc<Sdk>, layers: TransportLayer) -> MvsResult<Self> {
         let mut raw = sys::MV_CC_DEVICE_INFO_LIST::default();
         // SAFETY: SDK fills the list in-place; `raw` stays on the stack until
         // moved into the returned value.
@@ -142,7 +142,7 @@ impl fmt::Debug for DeviceList {
 
 // DeviceList owns SDK-internal pointers but they are not Send-safe by default.
 // However the SDK documents that enumerated lists can be read from any thread.
-// SAFETY: Library initialization is ref-counted; pointers stay valid.
+// SAFETY: Sdk initialization is ref-counted; pointers stay valid.
 unsafe impl Send for DeviceList {}
 unsafe impl Sync for DeviceList {}
 
@@ -180,7 +180,7 @@ impl ExactSizeIterator for DeviceIter<'_> {}
 #[derive(Copy, Clone)]
 pub struct DeviceInfo<'a> {
     raw: &'a sys::MV_CC_DEVICE_INFO,
-    library: &'a Arc<Library>,
+    library: &'a Arc<Sdk>,
 }
 
 impl<'a> DeviceInfo<'a> {
