@@ -29,6 +29,8 @@ mod frame;
 mod library;
 
 #[cfg(mvs_platform)]
+pub use callback::EventInfo;
+#[cfg(mvs_platform)]
 pub use camera::{AccessMode, Camera};
 #[cfg(mvs_platform)]
 pub use device::{DeviceInfo, DeviceIter, DeviceList, TransportLayer};
