@@ -118,9 +118,24 @@ pub(crate) unsafe extern "C" fn event_trampoline(
     }
     // SAFETY: see image_trampoline.
     unsafe {
-        let cb = &mut *(user as *mut EventCallback);
-        let info_ref = &*info;
-        let event = EventInfo::new(info_ref);
-        (cb.0)(&event);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let cb = &mut *(user as *mut EventCallback);
+            let info_ref = &*info;
+            let event = EventInfo::new(info_ref);
+            (cb.0)(&event);
+        }));
+
+        if let Err(panic_info) = result {
+            eprintln!(
+                "[mvs_wrapper] Event callback panicked; panic was caught before crossing the FFI boundary."
+            );
+            if let Some(s) = panic_info.downcast_ref::<&str>() {
+                eprintln!("  Panic message: {}", s);
+            } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                eprintln!("  Panic message: {}", s);
+            } else {
+                eprintln!("  Panic message: <unavailable>");
+            }
+        }
     }
 }
