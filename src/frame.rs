@@ -7,9 +7,9 @@ use std::os::raw::c_void;
 use std::slice;
 use std::time::Duration;
 
+use crate::MvsResult;
 use crate::error::check;
 use crate::sys;
-use crate::MvsResult;
 
 // ---------------------------------------------------------------------------
 // PixelType

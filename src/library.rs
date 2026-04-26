@@ -9,9 +9,9 @@
 
 use std::sync::{Arc, OnceLock};
 
+use crate::MvsResult;
 use crate::device::{DeviceList, TransportLayer};
 use crate::sys;
-use crate::MvsResult;
 
 static INIT_RESULT: OnceLock<Result<(), i32>> = OnceLock::new();
 

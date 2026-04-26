@@ -5,11 +5,11 @@ use std::net::Ipv4Addr;
 use std::ops::{BitOr, BitOrAssign};
 use std::sync::Arc;
 
+use crate::MvsResult;
 use crate::camera::{AccessMode, Camera};
 use crate::error::check;
 use crate::library::Sdk;
 use crate::sys;
-use crate::MvsResult;
 
 // ---------------------------------------------------------------------------
 // TransportLayer (bitflag over u32)
@@ -196,8 +196,7 @@ impl<'a> DeviceInfo<'a> {
     }
 
     pub fn is_usb(&self) -> bool {
-        self.raw.nTLayerType == sys::MV_USB_DEVICE
-            || self.raw.nTLayerType == sys::MV_VIR_USB_DEVICE
+        self.raw.nTLayerType == sys::MV_USB_DEVICE || self.raw.nTLayerType == sys::MV_VIR_USB_DEVICE
     }
 
     /// Device manufacturer name, if available.
@@ -277,9 +276,8 @@ impl<'a> DeviceInfo<'a> {
     /// Check whether the device can be opened in the given mode right now.
     pub fn is_accessible(&self, mode: AccessMode) -> bool {
         // SAFETY: SDK accepts a pointer to the same struct it gave us.
-        let b = unsafe {
-            sys::MV_CC_IsDeviceAccessible(self.raw as *const _ as *mut _, mode.raw())
-        };
+        let b =
+            unsafe { sys::MV_CC_IsDeviceAccessible(self.raw as *const _ as *mut _, mode.raw()) };
         b != 0
     }
 

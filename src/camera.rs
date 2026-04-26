@@ -10,6 +10,7 @@ use std::fmt;
 use std::os::raw::{c_float, c_void};
 use std::sync::Arc;
 
+use crate::MvsResult;
 use crate::callback::{
     EventCallback, EventInfo, ExceptionCallback, ImageCallback, event_trampoline,
     exception_trampoline, image_trampoline,
@@ -18,7 +19,6 @@ use crate::error::check;
 use crate::frame::{Frame, FrameGuard};
 use crate::library::Sdk;
 use crate::sys;
-use crate::MvsResult;
 
 // ---------------------------------------------------------------------------
 // AccessMode
@@ -198,9 +198,8 @@ impl Camera {
     /// Unregister the image callback (passes `NULL` to the SDK).
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         // SAFETY: handle valid; passing None + null user to deregister.
-        let code = unsafe {
-            sys::MV_CC_RegisterImageCallBackEx(self.handle, None, std::ptr::null_mut())
-        };
+        let code =
+            unsafe { sys::MV_CC_RegisterImageCallBackEx(self.handle, None, std::ptr::null_mut()) };
         check(code)?;
         // Drop the box after the SDK has accepted the new registration.
         self.image_cb = None;
@@ -245,7 +244,8 @@ impl Camera {
         };
         check(code)?;
         // Remove any previous registration under the same name, then store.
-        self.event_cbs.retain(|(n, _)| n.as_c_str() != name.as_c_str());
+        self.event_cbs
+            .retain(|(n, _)| n.as_c_str() != name.as_c_str());
         self.event_cbs.push((name, cb));
         Ok(())
     }
@@ -335,9 +335,7 @@ impl Camera {
         let k = CString::new(key)?;
         let v = CString::new(value)?;
         // SAFETY: both strings live for the duration of the call.
-        let code = unsafe {
-            sys::MV_CC_SetEnumValueByString(self.handle, k.as_ptr(), v.as_ptr())
-        };
+        let code = unsafe { sys::MV_CC_SetEnumValueByString(self.handle, k.as_ptr(), v.as_ptr()) };
         check(code)
     }
 
@@ -369,8 +367,7 @@ impl Camera {
         let bytes = &value.chCurValue;
         let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
         // SAFETY: c_char is i8 on Windows; reinterpret bytes as u8 for UTF-8.
-        let slice =
-            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, end) };
+        let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, end) };
         Ok(String::from_utf8_lossy(slice).into_owned())
     }
 
@@ -429,18 +426,11 @@ impl Drop for Camera {
                 let _ = sys::MV_CC_StopGrabbing(self.handle);
             }
             if self.image_cb.is_some() {
-                let _ = sys::MV_CC_RegisterImageCallBackEx(
-                    self.handle,
-                    None,
-                    std::ptr::null_mut(),
-                );
+                let _ = sys::MV_CC_RegisterImageCallBackEx(self.handle, None, std::ptr::null_mut());
             }
             if self.exception_cb.is_some() {
-                let _ = sys::MV_CC_RegisterExceptionCallBack(
-                    self.handle,
-                    None,
-                    std::ptr::null_mut(),
-                );
+                let _ =
+                    sys::MV_CC_RegisterExceptionCallBack(self.handle, None, std::ptr::null_mut());
             }
             for (name, _) in self.event_cbs.drain(..) {
                 let _ = sys::MV_CC_RegisterEventCallBackEx(

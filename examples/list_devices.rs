@@ -10,8 +10,7 @@ fn main() -> MvsResult<()> {
     let version = lib.sdk_version();
     println!("MVS SDK version: 0x{:08X}", version);
 
-    let devices =
-        lib.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB)?;
+    let devices = lib.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB)?;
 
     if devices.is_empty() {
         println!("No cameras found. Check cables, power, and driver.");

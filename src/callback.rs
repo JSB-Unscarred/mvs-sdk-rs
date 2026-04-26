@@ -43,10 +43,7 @@ impl<'a> EventInfo<'a> {
 
     pub fn name(&self) -> std::borrow::Cow<'_, str> {
         let bytes = &self.0.EventName;
-        let end = bytes
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(bytes.len());
+        let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
         let slice =
             // SAFETY: c_char is signed or unsigned byte depending on platform;
             // on Windows it's i8. Reinterpret as u8 for UTF-8 decoding.
@@ -101,10 +98,7 @@ pub(crate) unsafe extern "C" fn image_trampoline(
     }
 }
 
-pub(crate) unsafe extern "C" fn exception_trampoline(
-    msg_type: c_uint,
-    user: *mut c_void,
-) {
+pub(crate) unsafe extern "C" fn exception_trampoline(msg_type: c_uint, user: *mut c_void) {
     if user.is_null() {
         return;
     }
