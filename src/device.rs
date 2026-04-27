@@ -78,12 +78,11 @@ impl fmt::Debug for TransportLayer {
 
 /// Owned list of enumerated devices. Iterate via [`DeviceList::iter`].
 ///
-/// The underlying storage is `sys::MV_CC_DEVICE_INFO_LIST` (an array of
-/// pointers into SDK-owned memory). The SDK guarantees these pointers remain
-/// valid between `EnumDevices` calls, so `DeviceList` retains an [`Arc`] to
-/// the [`Sdk`] to ensure the SDK stays initialized.
+/// The SDK returns pointers into its own enumeration buffer. `DeviceList`
+/// copies each `MV_CC_DEVICE_INFO` value into owned storage immediately, so a
+/// later enumeration call cannot invalidate an older list.
 pub struct DeviceList {
-    raw: sys::MV_CC_DEVICE_INFO_LIST,
+    devices: Vec<sys::MV_CC_DEVICE_INFO>,
     library: Arc<Sdk>,
 }
 
@@ -91,18 +90,31 @@ impl DeviceList {
     pub(crate) fn enumerate(library: &Arc<Sdk>, layers: TransportLayer) -> MvsResult<Self> {
         let mut raw = sys::MV_CC_DEVICE_INFO_LIST::default();
         // SAFETY: SDK fills the list in-place; `raw` stays on the stack until
-        // moved into the returned value.
+        // its device entries are copied into owned storage below.
         let code = unsafe { sys::MV_CC_EnumDevices(layers.raw(), &mut raw) };
         check(code)?;
+
+        let device_count = (raw.nDeviceNum as usize).min(raw.pDeviceInfo.len());
+        let mut devices = Vec::with_capacity(device_count);
+        for ptr in raw.pDeviceInfo.iter().take(device_count) {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: `MV_CC_EnumDevices` populated each non-null pointer with a
+            // valid device-info struct. Copy it now so `DeviceList` does not
+            // borrow the SDK's enumeration buffer.
+            devices.push(unsafe { **ptr });
+        }
+
         Ok(Self {
-            raw,
+            devices,
             library: Arc::clone(library),
         })
     }
 
     /// Number of devices found.
     pub fn len(&self) -> usize {
-        self.raw.nDeviceNum as usize
+        self.devices.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -117,16 +129,8 @@ impl DeviceList {
     }
 
     pub fn get(&self, index: usize) -> Option<DeviceInfo<'_>> {
-        if index >= self.len() {
-            return None;
-        }
-        let ptr = self.raw.pDeviceInfo[index];
-        if ptr.is_null() {
-            return None;
-        }
-        // SAFETY: SDK guarantees pointer validity for the list's lifetime.
-        Some(DeviceInfo {
-            raw: unsafe { &*ptr },
+        self.devices.get(index).map(|raw| DeviceInfo {
+            raw,
             library: &self.library,
         })
     }
@@ -140,9 +144,8 @@ impl fmt::Debug for DeviceList {
     }
 }
 
-// DeviceList owns SDK-internal pointers but they are not Send-safe by default.
-// However the SDK documents that enumerated lists can be read from any thread.
-// SAFETY: Sdk initialization is ref-counted; pointers stay valid.
+// DeviceList owns copied device-info values and keeps the SDK initialized.
+// SAFETY: the copied structs are immutable metadata read through shared refs.
 unsafe impl Send for DeviceList {}
 unsafe impl Sync for DeviceList {}
 
