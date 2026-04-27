@@ -8,6 +8,8 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::net::Ipv4Addr;
 use std::ops::{BitOr, BitOrAssign};
+use std::os::raw::c_void;
+use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -46,6 +48,10 @@ pub struct Sdk {
     _private: (),
 }
 
+#[allow(non_camel_case_types)]
+#[doc(hidden)]
+pub enum MV_CC_DEVICE_INFO {}
+
 impl Sdk {
     pub fn init() -> MvsResult<Arc<Self>> {
         unimplemented!("MVS SDK is only available on Windows")
@@ -76,8 +82,8 @@ impl TransportLayer {
     pub const GENTL_CAMERALINK: Self = Self(0x80);
     pub const GENTL_CXP: Self = Self(0x100);
     pub const GENTL_XOF: Self = Self(0x200);
-    pub const GENTL_VIR: Self = Self(0x400);
-    pub const ALL: Self = Self(0xFFFF);
+    pub const GENTL_VIR: Self = Self(0x800);
+    pub const ALL: Self = Self(0xFFFF_FFFF);
 
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
@@ -105,7 +111,7 @@ impl BitOrAssign for TransportLayer {
 
 impl fmt::Debug for TransportLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TransportLayer(0x{:04X})", self.0)
+        write!(f, "TransportLayer(0x{:08X})", self.0)
     }
 }
 
@@ -202,6 +208,9 @@ impl<'a> DeviceInfo<'a> {
     pub fn open_control(&self) -> MvsResult<Camera> {
         unimplemented!()
     }
+    pub fn as_raw(&self) -> *const MV_CC_DEVICE_INFO {
+        ptr::null()
+    }
 }
 
 impl fmt::Debug for DeviceInfo<'_> {
@@ -232,6 +241,9 @@ pub struct Camera {
 unsafe impl Send for Camera {}
 
 impl Camera {
+    pub fn as_raw_handle(&self) -> *mut c_void {
+        ptr::null_mut()
+    }
     pub fn is_connected(&self) -> bool {
         unimplemented!()
     }
@@ -376,12 +388,32 @@ impl fmt::Debug for EventInfo<'_> {
 pub struct PixelType(u32);
 
 impl PixelType {
-    pub const UNDEFINED: Self = Self(0);
-    pub const MONO8: Self = Self(0x01080001);
-    pub const RGB8_PACKED: Self = Self(0x02180014);
-    pub const BGR8_PACKED: Self = Self(0x02180015);
-    pub const RGBA8_PACKED: Self = Self(0x02200016);
-    pub const BGRA8_PACKED: Self = Self(0x02200017);
+    pub const UNDEFINED: Self = Self(0xFFFF_FFFF);
+
+    // Mono
+    pub const MONO8: Self = Self(0x0108_0001);
+    pub const MONO10: Self = Self(0x0110_0003);
+    pub const MONO10_PACKED: Self = Self(0x010C_0004);
+    pub const MONO12: Self = Self(0x0110_0005);
+    pub const MONO12_PACKED: Self = Self(0x010C_0006);
+    pub const MONO14: Self = Self(0x0110_0025);
+    pub const MONO16: Self = Self(0x0110_0007);
+
+    // Bayer 8-bit
+    pub const BAYER_GR8: Self = Self(0x0108_0008);
+    pub const BAYER_RG8: Self = Self(0x0108_0009);
+    pub const BAYER_GB8: Self = Self(0x0108_000A);
+    pub const BAYER_BG8: Self = Self(0x0108_000B);
+
+    // Packed RGB
+    pub const RGB8_PACKED: Self = Self(0x0218_0014);
+    pub const BGR8_PACKED: Self = Self(0x0218_0015);
+    pub const RGBA8_PACKED: Self = Self(0x0220_0016);
+    pub const BGRA8_PACKED: Self = Self(0x0220_0017);
+
+    // YUV
+    pub const YUV422_PACKED: Self = Self(0x0210_001F);
+    pub const YUV422_YUYV_PACKED: Self = Self(0x0210_0032);
 
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
