@@ -18,16 +18,18 @@ mvs_wrapper = { path = "libs/mvs_wrapper" }
 ```
 
 ```rust
-use mvs_wrapper::{Library, TransportLayer};
+use mvs_wrapper::{Sdk, TransportLayer};
 
-let lib = Library::init()?;
-let devs = lib.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB)?;
-let mut cam = devs.iter().next().unwrap().open_exclusive()?;
+let sdk = Sdk::init()?;
+let devs = sdk.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB)?;
 
-cam.set_enum("TriggerMode", "Off")?;
-cam.set_float("ExposureTime", 5000.0)?;
-cam.register_image_callback(|f| println!("{}x{}", f.info().width(), f.info().height()))?;
-cam.start_grabbing()?;
+if let Some(dev) = devs.iter().next() {
+    let mut cam = dev.open_exclusive()?;
+    cam.set_enum("TriggerMode", "Off")?;
+    cam.set_float("ExposureTime", 5000.0)?;
+    cam.register_image_callback(|f| println!("{}x{}", f.info().width(), f.info().height()))?;
+    cam.start_grabbing()?;
+}
 ```
 
 ## 维护：重新生成 bindings
