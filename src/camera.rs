@@ -432,13 +432,14 @@ impl Drop for Camera {
                 let _ =
                     sys::MV_CC_RegisterExceptionCallBack(self.handle, None, std::ptr::null_mut());
             }
-            for (name, _) in self.event_cbs.drain(..) {
+            for (name, callback) in self.event_cbs.drain(..) {
                 let _ = sys::MV_CC_RegisterEventCallBackEx(
                     self.handle,
                     name.as_ptr(),
                     None,
                     std::ptr::null_mut(),
                 );
+                drop(callback);
             }
             let _ = sys::MV_CC_CloseDevice(self.handle);
             let _ = sys::MV_CC_DestroyHandle(self.handle);
