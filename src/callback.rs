@@ -91,10 +91,16 @@ pub(crate) unsafe extern "C" fn image_trampoline(
     // pinned by `Camera` for as long as the callback remains registered. The
     // SDK guarantees `data`/`info` are valid for the duration of this call.
     unsafe {
-        let cb = &mut *(user as *mut ImageCallback);
-        let info_ref = &*info;
-        let frame = Frame::from_raw_parts(data, info_ref);
-        (cb.0)(&frame);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let cb = &mut *(user as *mut ImageCallback);
+            let info_ref = &*info;
+            let frame = Frame::from_raw_parts(data, info_ref);
+            (cb.0)(&frame);
+        }));
+
+        if let Err(panic_info) = result {
+            log_callback_panic("Image", panic_info);
+        }
     }
 }
 
@@ -104,8 +110,14 @@ pub(crate) unsafe extern "C" fn exception_trampoline(msg_type: c_uint, user: *mu
     }
     // SAFETY: see image_trampoline.
     unsafe {
-        let cb = &mut *(user as *mut ExceptionCallback);
-        (cb.0)(msg_type as u32);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let cb = &mut *(user as *mut ExceptionCallback);
+            (cb.0)(msg_type as u32);
+        }));
+
+        if let Err(panic_info) = result {
+            log_callback_panic("Exception", panic_info);
+        }
     }
 }
 
@@ -126,16 +138,21 @@ pub(crate) unsafe extern "C" fn event_trampoline(
         }));
 
         if let Err(panic_info) = result {
-            eprintln!(
-                "[mvs_wrapper] Event callback panicked; panic was caught before crossing the FFI boundary."
-            );
-            if let Some(s) = panic_info.downcast_ref::<&str>() {
-                eprintln!("  Panic message: {}", s);
-            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                eprintln!("  Panic message: {}", s);
-            } else {
-                eprintln!("  Panic message: <unavailable>");
-            }
+            log_callback_panic("Event", panic_info);
         }
+    }
+}
+
+fn log_callback_panic(callback_name: &str, panic_info: Box<dyn std::any::Any + Send>) {
+    eprintln!(
+        "[mvs_wrapper] {} callback panicked; panic was caught before crossing the FFI boundary.",
+        callback_name
+    );
+    if let Some(s) = panic_info.downcast_ref::<&str>() {
+        eprintln!("  Panic message: {}", s);
+    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+        eprintln!("  Panic message: {}", s);
+    } else {
+        eprintln!("  Panic message: <unavailable>");
     }
 }
