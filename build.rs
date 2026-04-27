@@ -1,7 +1,7 @@
 //! Build script for mvs_wrapper.
 //!
 //! Responsibilities:
-//!   1. Refuse non-Windows / non-x86-family targets at build time.
+//!   1. Refuse targets outside Windows x86_64 at build time.
 //!   2. Locate the MVS SDK via `MVCAM_COMMON_RUNENV` and emit link directives.
 //!   3. Optionally (with `--features bindgen`) regenerate `src/bindings.rs`.
 

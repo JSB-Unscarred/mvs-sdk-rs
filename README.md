@@ -2,7 +2,7 @@
 
 海康威视机器人 **MVS** 工业相机 SDK 的安全 Rust 封装。所有 `unsafe` 均封在 crate 内部。
 
-目前仅支持 **Windows x86_64 / x86**；其它平台上 crate 编译为空壳（无公开导出），`cargo check` 可正常通过。
+目前仅支持 **Windows x86_64**；其它目标使用 stub API，仅用于让 `cargo check` 正常通过。
 
 ## 使用
 

@@ -4,9 +4,8 @@
 //!
 //! # Platform support
 //!
-//! Windows x86_64 or Windows x86 (32-bit) only. On other targets the crate
-//! compiles as an empty shell (no public items) so that `cargo check` works
-//! in cross-platform workspaces.
+//! Windows x86_64 only. On other targets the crate exposes stub APIs so that
+//! `cargo check` works in cross-platform workspaces.
 //!
 //! See the crate README for a usage example.
 
