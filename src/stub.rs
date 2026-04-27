@@ -1,8 +1,8 @@
 //! Stub types for non-Windows platforms.
 //!
 //! These types mirror the public API surface so that `cargo check` succeeds on
-//! any host. Every method body is `unimplemented!()` — the stubs are never
-//! executed, they only satisfy the type checker.
+//! any host. The stubs are not backed by the MVS SDK and only satisfy the type
+//! checker.
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -54,7 +54,9 @@ pub enum MV_CC_DEVICE_INFO {}
 
 impl Sdk {
     pub fn init() -> MvsResult<Arc<Self>> {
-        unimplemented!("MVS SDK is only available on Windows")
+        Err(MvsError::Stub(
+            "MVS SDK is only available on Windows x86_64".to_string(),
+        ))
     }
 
     pub fn sdk_version(&self) -> u32 {
