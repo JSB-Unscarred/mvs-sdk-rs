@@ -380,6 +380,8 @@ impl PixelType {
     pub const MONO8: Self = Self(0x01080001);
     pub const RGB8_PACKED: Self = Self(0x02180014);
     pub const BGR8_PACKED: Self = Self(0x02180015);
+    pub const RGBA8_PACKED: Self = Self(0x02200016);
+    pub const BGRA8_PACKED: Self = Self(0x02200017);
 
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
