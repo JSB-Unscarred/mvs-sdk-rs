@@ -279,6 +279,12 @@ impl Camera {
     {
         unimplemented!()
     }
+    pub fn event_notification_on(&self, _event_name: &str) -> MvsResult<()> {
+        unimplemented!()
+    }
+    pub fn event_notification_off(&self, _event_name: &str) -> MvsResult<()> {
+        unimplemented!()
+    }
     pub fn set_int(&self, _key: &str, _value: i64) -> MvsResult<()> {
         unimplemented!()
     }

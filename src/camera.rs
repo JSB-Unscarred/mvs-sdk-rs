@@ -250,6 +250,22 @@ impl Camera {
         Ok(())
     }
 
+    /// Enable SDK event notification for the named GenICam event.
+    pub fn event_notification_on(&self, event_name: &str) -> MvsResult<()> {
+        let name = CString::new(event_name)?;
+        // SAFETY: handle is valid and name lives for the duration of the call.
+        let code = unsafe { sys::MV_CC_EventNotificationOn(self.handle, name.as_ptr()) };
+        check(code)
+    }
+
+    /// Disable SDK event notification for the named GenICam event.
+    pub fn event_notification_off(&self, event_name: &str) -> MvsResult<()> {
+        let name = CString::new(event_name)?;
+        // SAFETY: handle is valid and name lives for the duration of the call.
+        let code = unsafe { sys::MV_CC_EventNotificationOff(self.handle, name.as_ptr()) };
+        check(code)
+    }
+
     // ---- Parameter access (SDK string-key style) ----
 
     /// Set an integer node (`MV_CC_SetIntValueEx`). Typical keys: `"Width"`,
