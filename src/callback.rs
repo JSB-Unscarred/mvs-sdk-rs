@@ -145,7 +145,7 @@ pub(crate) unsafe extern "C" fn event_trampoline(
 
 fn log_callback_panic(callback_name: &str, panic_info: Box<dyn std::any::Any + Send>) {
     eprintln!(
-        "[mvs_wrapper] {} callback panicked; panic was caught before crossing the FFI boundary.",
+        "[mvs_sdk_rs] {} callback panicked; panic was caught before crossing the FFI boundary.",
         callback_name
     );
     if let Some(s) = panic_info.downcast_ref::<&str>() {

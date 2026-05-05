@@ -1,4 +1,4 @@
-//! Build script for mvs_wrapper.
+//! Build script for mvs_sdk_rs.
 //!
 //! Responsibilities:
 //!   1. Refuse targets outside Windows x86_64 at build time.
@@ -17,13 +17,13 @@ fn main() {
 
     if target_os != "windows" {
         println!(
-            "cargo:warning=mvs_wrapper only supports Windows; skipping MVS SDK link configuration."
+            "cargo:warning=mvs_sdk_rs only supports Windows; skipping MVS SDK link configuration."
         );
         return;
     }
     if target_arch != "x86_64" {
         println!(
-            "cargo:warning=mvs_wrapper only supports x86_64 on Windows; skipping MVS SDK link configuration."
+            "cargo:warning=mvs_sdk_rs only supports x86_64 on Windows; skipping MVS SDK link configuration."
         );
         return;
     }
