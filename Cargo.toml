@@ -1,5 +1,5 @@
 [package]
-name = "mvs_sdk_rs"
+name = "mvs-sdk-rs"
 version = "0.1.0"
 edition = "2024"
 description = "Safe Rust bindings for the Hikvision MVS machine-vision camera SDK (Windows only)."
