@@ -1,0 +1,26 @@
+[package]
+name = "mvs-sdk-sys"
+version = "0.1.0"
+edition = "2024"
+description = "Raw FFI bindings for the Hikvision MVS machine-vision camera SDK."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
+homepage = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
+links = "MvCameraControl"
+
+keywords = ["mvs", "hikvision", "camera", "ffi", "bindings"]
+categories = ["api-bindings", "hardware-support"]
+
+[lib]
+name = "mvs_sdk_sys"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Regenerate src/bindings.rs from the headers in $MVCAM_COMMON_RUNENV/Includes.
+# Requires libclang. Only needed by maintainers after SDK upgrades.
+bindgen = ["dep:bindgen"]
+
+[build-dependencies]
+bindgen = { version = "0.72", optional = true }

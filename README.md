@@ -1,6 +1,6 @@
 # mvs_sdk_rs
 
-海康威视机器人 **MVS** 工业相机 SDK 的安全 Rust 封装。`mvs_sdk_rs` 将 MVS C SDK 的 FFI、错误码转换、buffer 生命周期和回调桥接封装在内部，对外提供设备枚举、相机控制、参数读写和图像采集 API。
+海康威视机器人 **MVS** 工业相机 SDK 的安全 Rust 封装。workspace 由面向应用的 `mvs-sdk-rs` safe crate 和承载原始 FFI 的 `mvs-sdk-sys` crate 组成；普通业务代码只需依赖前者，即可使用设备枚举、相机控制、参数读写和图像采集 API。
 
 当前仅支持 **Windows x86_64**。其它平台会暴露 stub API，便于跨平台工作区执行 `cargo check`，但不能实际连接相机。运行时需要 MVS SDK、`MVCAM_COMMON_RUNENV` 和 MVS DLL `PATH` 已正确配置。
 
@@ -68,7 +68,7 @@ guard.release()?;
 
 ## API 参考
 
-以下覆盖 Windows SDK 构建下 crate 对外暴露的安全 API。`src/bindings.rs` 中的原始 MVS FFI 由 crate 内部使用，普通业务代码通常不需要直接接触。
+以下覆盖 Windows SDK 构建下 crate 对外暴露的安全 API。原始 MVS FFI 已隔离到 workspace 中的 `mvs-sdk-sys` crate，普通业务代码通常不需要直接依赖它。
 
 ### 导出路径
 
@@ -371,10 +371,10 @@ stub 下的 `MvsError` 变体为：`Handle`、`NotSupported`、`NoData`、`Param
 
 ## 维护：重新生成 bindings
 
-`src/bindings.rs` 已提交到仓库，普通使用不需要安装 libclang。升级 MVS SDK 后，可通过 `bindgen` feature 重新生成：
+`mvs-sdk-sys/src/bindings.rs` 已提交到仓库，普通使用不需要安装 libclang。升级 MVS SDK 后，可在 sys crate 上启用 `bindgen` feature 重新生成：
 
 ```cmd
-cargo build --features bindgen
+cargo build -p mvs-sdk-sys --features bindgen
 ```
 
 执行前请安装 LLVM/libclang，并确保 `MVCAM_COMMON_RUNENV` 指向包含 `Includes/MvCameraControl.h` 的 MVS SDK 开发目录。

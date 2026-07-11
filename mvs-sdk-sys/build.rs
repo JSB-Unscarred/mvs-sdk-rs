@@ -1,9 +1,10 @@
-//! Build script for mvs_sdk_rs.
+//! Build script for mvs_sdk_sys.
 //!
 //! Responsibilities:
 //!   1. Skip MVS SDK link configuration outside Windows x86_64.
 //!   2. Locate the MVS SDK via `MVCAM_COMMON_RUNENV` and emit link directives.
-//!   3. Optionally (with `--features bindgen`) regenerate `src/bindings.rs`.
+//!   3. Optionally (with `--features bindgen`) regenerate this crate's
+//!      `src/bindings.rs`.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -20,12 +21,10 @@ fn main() {
     }
     if target_arch != "x86_64" {
         println!(
-            "cargo:warning=mvs_sdk_rs only supports x86_64 on Windows; skipping MVS SDK link configuration."
+            "cargo:warning=mvs_sdk_sys only supports x86_64 on Windows; skipping MVS SDK link configuration."
         );
         return;
     }
-
-    println!("cargo:rustc-cfg=mvs_platform");
 
     let mvcam = match env::var("MVCAM_COMMON_RUNENV") {
         Ok(p) => PathBuf::from(p),

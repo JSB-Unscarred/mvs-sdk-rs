@@ -1,6 +1,7 @@
 //! Safe Rust wrapper for the Hikvision **MVS** machine-vision camera SDK.
 //!
-//! All `unsafe` FFI is contained within this crate; consumer code is 100% safe Rust.
+//! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate; this
+//! crate exposes a safe Rust API.
 //!
 //! # Platform support
 //!
@@ -11,36 +12,36 @@
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-#[cfg(mvs_platform)]
-pub(crate) mod sys;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub(crate) use mvs_sdk_sys as sys;
 
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod callback;
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod camera;
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod device;
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub mod error;
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod frame;
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod library;
 
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub use callback::EventInfo;
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub use camera::{AccessMode, Camera, EnumNode, FloatNode, IntNode};
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub use device::{DeviceInfo, DeviceIter, DeviceList, TransportLayer};
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub use error::{MvsError, MvsResult};
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame, PixelType};
-#[cfg(mvs_platform)]
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub use library::Sdk;
 
-#[cfg(not(mvs_platform))]
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 mod stub;
-#[cfg(not(mvs_platform))]
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 pub use stub::*;

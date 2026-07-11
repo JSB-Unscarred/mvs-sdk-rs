@@ -1,3 +1,7 @@
+[workspace]
+members = ["mvs-sdk-sys"]
+resolver = "3"
+
 [package]
 name = "mvs-sdk-rs"
 version = "0.1.0"
@@ -17,15 +21,13 @@ path = "src/lib.rs"
 
 [features]
 default = []
-# Regenerate src/bindings.rs from the headers in $MVCAM_COMMON_RUNENV/Includes.
+# Regenerate mvs-sdk-sys/src/bindings.rs from the headers in
+# $MVCAM_COMMON_RUNENV/Includes.
 # Requires libclang. Only needed by maintainers after SDK upgrades.
-bindgen = ["dep:bindgen"]
+bindgen = ["mvs-sdk-sys/bindgen"]
 
 [dependencies]
 thiserror = "2"
 
-[build-dependencies]
-bindgen = { version = "0.72", optional = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(mvs_platform)"] }
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
+mvs-sdk-sys = { path = "mvs-sdk-sys", version = "0.1.0", default-features = false }
