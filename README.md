@@ -74,7 +74,7 @@ guard.release()?;
 
 | 路径 | 导出 |
 | --- | --- |
-| `mvs_sdk_rs::*` | `Sdk`、`TransportLayer`、`DeviceList`、`DeviceIter`、`DeviceInfo`、`AccessMode`、`Camera`、`EventInfo`、`Frame`、`FrameGuard`、`FrameInfo`、`OwnedFrame`、`PixelType`、`MvsResult`、`MvsError` |
+| `mvs_sdk_rs::*` | `Sdk`、`TransportLayer`、`DeviceList`、`DeviceIter`、`DeviceInfo`、`AccessMode`、`Camera`、`IntNode`、`FloatNode`、`EnumNode`、`EventInfo`、`Frame`、`FrameGuard`、`FrameInfo`、`OwnedFrame`、`PixelType`、`MvsResult`、`MvsError` |
 | `mvs_sdk_rs::error::*` | `MvsResult`、`MvsError` |
 | `Camera` 方法返回值 | `IntNode`、`FloatNode`、`EnumNode`，分别由 `get_int_range`、`get_float_range`、`get_enum_info` 返回 |
 

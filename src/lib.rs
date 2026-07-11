@@ -30,7 +30,7 @@ mod library;
 #[cfg(mvs_platform)]
 pub use callback::EventInfo;
 #[cfg(mvs_platform)]
-pub use camera::{AccessMode, Camera};
+pub use camera::{AccessMode, Camera, EnumNode, FloatNode, IntNode};
 #[cfg(mvs_platform)]
 pub use device::{DeviceInfo, DeviceIter, DeviceList, TransportLayer};
 #[cfg(mvs_platform)]
