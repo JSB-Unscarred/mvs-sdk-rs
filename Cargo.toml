@@ -6,7 +6,7 @@ resolver = "3"
 name = "mvs-sdk-rs"
 version = "0.1.0"
 edition = "2024"
-description = "Safe Rust bindings for the Hikvision MVS machine-vision camera SDK (Windows only)."
+description = "Safe Rust bindings for Hikvision MVS with a native Windows backend."
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
@@ -27,7 +27,5 @@ default = []
 bindgen = ["mvs-sdk-sys/bindgen"]
 
 [dependencies]
-thiserror = "2"
-
-[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
 mvs-sdk-sys = { path = "mvs-sdk-sys", version = "0.1.0", default-features = false }
+thiserror = "2"

@@ -1,47 +1,48 @@
 //! Safe Rust wrapper for the Hikvision **MVS** machine-vision camera SDK.
 //!
-//! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate; this
-//! crate exposes a safe Rust API.
-//!
-//! # Platform support
-//!
-//! Windows x86_64 only. On other targets the crate exposes stub APIs so that
-//! `cargo check` works in cross-platform workspaces.
-//!
-//! See the crate README for a usage example.
+//! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate. This
+//! crate exposes one platform-independent safe API backed by the native SDK on
+//! Windows x86_64 and an unsupported-platform backend elsewhere.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub(crate) use mvs_sdk_sys as sys;
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+mod backend;
 mod callback;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod camera;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod device;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub mod error;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod frame;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod library;
+mod types;
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub use callback::EventInfo;
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-pub use camera::{AccessMode, Camera, EnumNode, FloatNode, IntNode};
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-pub use device::{DeviceInfo, DeviceIter, DeviceList, TransportLayer};
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub use camera::Camera;
+pub use device::{DeviceInfo, DeviceIter, DeviceList};
 pub use error::{MvsError, MvsResult};
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame, PixelType};
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
+pub use types::{AccessMode, EnumNode, FloatNode, IntNode, PixelType, TransportLayer};
 
-#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-mod stub;
-#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-pub use stub::*;
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    fn assert_send<T: Send>() {}
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn public_threading_contracts_hold_for_the_selected_backend() {
+        assert_send::<Camera>();
+        assert_send_sync::<Sdk>();
+        assert_send_sync::<DeviceList>();
+        assert_send_sync::<DeviceInfo<'static>>();
+        assert_send_sync::<DeviceIter<'static>>();
+        assert_send_sync::<EventInfo<'static>>();
+        assert_send_sync::<Frame<'static>>();
+        assert_send_sync::<FrameInfo<'static>>();
+        assert_send_sync::<OwnedFrame>();
+        assert_send_sync::<MvsError>();
+    }
+}

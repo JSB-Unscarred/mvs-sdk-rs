@@ -2,7 +2,7 @@
 
 海康威视机器人 **MVS** 工业相机 SDK 的安全 Rust 封装。workspace 由面向应用的 `mvs-sdk-rs` safe crate 和承载原始 FFI 的 `mvs-sdk-sys` crate 组成；普通业务代码只需依赖前者，即可使用设备枚举、相机控制、参数读写和图像采集 API。
 
-当前仅支持 **Windows x86_64**。其它平台会暴露 stub API，便于跨平台工作区执行 `cargo check`，但不能实际连接相机。运行时需要 MVS SDK、`MVCAM_COMMON_RUNENV` 和 MVS DLL `PATH` 已正确配置。
+真实相机访问当前仅支持 **Windows x86_64**。所有目标共享同一套安全 API；其它平台使用私有 unsupported backend，`Sdk::init` 会返回 `MvsError::UnsupportedPlatform`。Windows 运行时需要 MVS SDK、`MVCAM_COMMON_RUNENV` 和 MVS DLL `PATH` 已正确配置。
 
 ## 快速开始
 
@@ -68,7 +68,7 @@ guard.release()?;
 
 ## API 参考
 
-以下覆盖 Windows SDK 构建下 crate 对外暴露的安全 API。原始 MVS FFI 已隔离到 workspace 中的 `mvs-sdk-sys` crate，普通业务代码通常不需要直接依赖它。
+以下安全 API 在所有目标上具有相同的类型和导出路径。原始 MVS FFI 已隔离到 workspace 中的 `mvs-sdk-sys` crate，普通业务代码通常不需要直接依赖它。
 
 ### 导出路径
 
@@ -134,7 +134,7 @@ guard.release()?;
 | `open` | `fn open(&self, mode: AccessMode) -> MvsResult<Camera>` | 按指定访问模式打开相机。 |
 | `open_exclusive` | `fn open_exclusive(&self) -> MvsResult<Camera>` | 以 `AccessMode::Exclusive` 打开。 |
 | `open_control` | `fn open_control(&self) -> MvsResult<Camera>` | 以 `AccessMode::Control` 打开。 |
-| `as_raw` | `fn as_raw(&self) -> *const MV_CC_DEVICE_INFO` | 返回底层 SDK 设备信息指针，适合高级用法。 |
+| `as_raw` | `fn as_raw(&self) -> *const c_void` | 返回不透明的 backend 设备信息指针；指针在父 `DeviceList` 存活期间有效。 |
 
 ### `AccessMode`
 
@@ -325,6 +325,8 @@ guard.release()?;
 | `Busy` | GigE 设备忙或网络断开。 |
 | `Packet` | GigE 网络包错误。 |
 | `Net` | GigE 网络错误。 |
+| `ModifyDeviceIpNotSupported` | GigE 设备不支持修改 IP。 |
+| `KeyVerificationFailed` | GigE key 校验失败。 |
 | `IpConflict` | GigE 设备 IP 冲突。 |
 | `UsbRead` | USB 读错误。 |
 | `UsbWrite` | USB 写错误。 |
@@ -341,6 +343,7 @@ guard.release()?;
 | `Unknown(u32)` | 未识别的 SDK 错误码，保留原始值。 |
 | `Nul(NulError)` | Rust 字符串包含内部 NUL 字节。 |
 | `Utf8(Utf8Error)` | SDK 返回的数据不是合法 UTF-8。 |
+| `UnsupportedPlatform` | 当前目标不支持实际访问 MVS SDK。 |
 
 ### Trait 和行为
 
@@ -355,19 +358,17 @@ guard.release()?;
 | `IntNode` | `Copy`、`Clone`、`Debug` |
 | `FloatNode` | `Copy`、`Clone`、`Debug` |
 | `EnumNode` | `Clone`、`Debug` |
-| `EventInfo` | `Copy`、`Clone`、`Debug` |
+| `EventInfo` | `Copy`、`Clone`、`Debug`、`Send`、`Sync` |
 | `PixelType` | `Copy`、`Clone`、`PartialEq`、`Eq`、`Hash`、`Debug` |
-| `FrameInfo` | `Copy`、`Clone`、`Debug` |
-| `Frame` | `Debug` |
-| `OwnedFrame` | `Clone`、`Debug` |
+| `FrameInfo` | `Copy`、`Clone`、`Debug`、`Send`、`Sync` |
+| `Frame` | `Debug`、`Send`、`Sync` |
+| `OwnedFrame` | `Clone`、`Debug`、`Send`、`Sync` |
 | `FrameGuard` | `Drop` 时自动释放 SDK buffer |
 | `MvsError` | `Debug`、`Display`、`std::error::Error` |
 
-### 非 Windows stub
+### 非 Windows backend
 
-非 Windows 平台只用于 `cargo check`。stub 保留同名类型和方法表面，但不链接真实 MVS SDK：`Sdk::init` 返回 `MvsError::Stub(String)`，其它运行时方法大多是 `unimplemented!()`。
-
-stub 下的 `MvsError` 变体为：`Handle`、`NotSupported`、`NoData`、`Parameter`、`Resource`、`Unknown(u32)`、`Stub(String)`。
+非 Windows 平台与 Windows 使用完全相同的公开类型、方法签名、错误枚举和导出路径。私有 unsupported backend 不链接真实 MVS SDK，`Sdk::init` 稳定返回 `MvsError::UnsupportedPlatform`，因此无法构造相机或帧资源。
 
 ## 维护：重新生成 bindings
 

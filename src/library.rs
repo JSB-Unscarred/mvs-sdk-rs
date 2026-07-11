@@ -1,53 +1,29 @@
-//! SDK lifetime — one-shot init, wrapped in an [`Arc`]-countable handle so
-//! every [`Camera`] can keep the SDK alive for its own lifetime.
-//!
-//! `MV_CC_Finalize` is intentionally **not** called from [`Sdk::drop`].
-//! The SDK does not reliably support re-initialization within a single
-//! process, so we initialize once and let process exit handle cleanup.
-//!
-//! [`Camera`]: crate::Camera
+//! SDK lifetime and initialization.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use crate::MvsResult;
-use crate::device::{DeviceList, TransportLayer};
-use crate::sys;
+use crate::backend;
+use crate::device::DeviceList;
+use crate::{MvsResult, TransportLayer};
 
-static INIT_RESULT: OnceLock<Result<(), i32>> = OnceLock::new();
-
-/// Handle to the initialized MVS SDK. Obtain one with [`Sdk::init`] and
-/// share via [`Arc::clone`]. Calling [`Sdk::init`] multiple times is
-/// cheap: the SDK is initialized exactly once per process.
+/// Handle to the initialized MVS SDK. Calling [`Sdk::init`] multiple times is
+/// cheap: the native SDK is initialized exactly once per process.
 pub struct Sdk {
-    _private: (),
+    pub(crate) inner: backend::Sdk,
 }
 
 impl Sdk {
-    /// Initialize the MVS SDK (idempotent across the process).
+    /// Initialize the MVS SDK.
     pub fn init() -> MvsResult<Arc<Self>> {
-        let result = INIT_RESULT.get_or_init(|| {
-            // SAFETY: SDK entry point, no arguments.
-            let code = unsafe { sys::MV_CC_Initialize() };
-            if code as u32 == sys::MV_OK {
-                Ok(())
-            } else {
-                Err(code)
-            }
-        });
-        match result {
-            Ok(()) => Ok(Arc::new(Self { _private: () })),
-            Err(code) => Err((*code).into()),
-        }
+        backend::Sdk::init().map(|inner| Arc::new(Self { inner }))
     }
 
     /// SDK version as a packed `u32`; interpret per MVS SDK documentation.
     pub fn sdk_version(&self) -> u32 {
-        // SAFETY: SDK entry point, no arguments.
-        unsafe { sys::MV_CC_GetSDKVersion() as u32 }
+        self.inner.sdk_version()
     }
 
-    /// Enumerate connected devices of the given transport types. Pass
-    /// `TransportLayer::GIGE | TransportLayer::USB` for the common case.
+    /// Enumerate connected devices of the requested transport types.
     pub fn enumerate_devices(self: &Arc<Self>, layers: TransportLayer) -> MvsResult<DeviceList> {
         DeviceList::enumerate(self, layers)
     }

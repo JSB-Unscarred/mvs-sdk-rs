@@ -110,6 +110,10 @@ pub enum MvsError {
     Packet,
     #[error("GigE: network error")]
     Net,
+    #[error("GigE: modifying the device IP is not supported")]
+    ModifyDeviceIpNotSupported,
+    #[error("GigE: key verification failed")]
+    KeyVerificationFailed,
     #[error("GigE: device IP conflict")]
     IpConflict,
 
@@ -150,6 +154,9 @@ pub enum MvsError {
     Nul(#[from] NulError),
     #[error("SDK returned non-UTF-8 data: {0}")]
     Utf8(#[from] Utf8Error),
+
+    #[error("MVS SDK is only available on Windows x86_64")]
+    UnsupportedPlatform,
 }
 
 impl MvsError {
@@ -200,6 +207,8 @@ impl MvsError {
             Self::Busy => sys::MV_E_BUSY,
             Self::Packet => sys::MV_E_PACKET,
             Self::Net => sys::MV_E_NETER,
+            Self::ModifyDeviceIpNotSupported => sys::MV_E_SUPPORT_MODIFY_DEVICE_IP,
+            Self::KeyVerificationFailed => sys::MV_E_KEY_VERIFICATION,
             Self::IpConflict => sys::MV_E_IP_CONFLICT,
             Self::UsbRead => sys::MV_E_USB_READ,
             Self::UsbWrite => sys::MV_E_USB_WRITE,
@@ -214,7 +223,7 @@ impl MvsError {
             Self::UpgInnerErr => sys::MV_E_UPG_INNER_ERR,
             Self::UpgUnknown => sys::MV_E_UPG_UNKNOW,
             Self::Unknown(c) => *c,
-            Self::Nul(_) | Self::Utf8(_) => return None,
+            Self::Nul(_) | Self::Utf8(_) | Self::UnsupportedPlatform => return None,
         };
         Some(code)
     }
@@ -270,6 +279,8 @@ impl From<c_int> for MvsError {
             sys::MV_E_BUSY => Self::Busy,
             sys::MV_E_PACKET => Self::Packet,
             sys::MV_E_NETER => Self::Net,
+            sys::MV_E_SUPPORT_MODIFY_DEVICE_IP => Self::ModifyDeviceIpNotSupported,
+            sys::MV_E_KEY_VERIFICATION => Self::KeyVerificationFailed,
             sys::MV_E_IP_CONFLICT => Self::IpConflict,
             sys::MV_E_USB_READ => Self::UsbRead,
             sys::MV_E_USB_WRITE => Self::UsbWrite,
@@ -295,10 +306,98 @@ impl From<u32> for MvsError {
 }
 
 /// Convert an SDK return code to a `MvsResult<()>`.
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub(crate) fn check(code: c_int) -> MvsResult<()> {
     if code as u32 == sys::MV_OK {
         Ok(())
     } else {
         Err(MvsError::from(code))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MvsError;
+    use crate::sys;
+
+    #[test]
+    fn every_known_sdk_error_round_trips() {
+        let codes = [
+            sys::MV_E_HANDLE,
+            sys::MV_E_SUPPORT,
+            sys::MV_E_BUFOVER,
+            sys::MV_E_CALLORDER,
+            sys::MV_E_PARAMETER,
+            sys::MV_E_RESOURCE,
+            sys::MV_E_NODATA,
+            sys::MV_E_PRECONDITION,
+            sys::MV_E_VERSION,
+            sys::MV_E_NOENOUGH_BUF,
+            sys::MV_E_ABNORMAL_IMAGE,
+            sys::MV_E_LOAD_LIBRARY,
+            sys::MV_E_NOOUTBUF,
+            sys::MV_E_ENCRYPT,
+            sys::MV_E_OPENFILE,
+            sys::MV_E_BUF_IN_USE,
+            sys::MV_E_BUF_INVALID,
+            sys::MV_E_NOALIGN_BUF,
+            sys::MV_E_NOENOUGH_BUF_NUM,
+            sys::MV_E_PORT_IN_USE,
+            sys::MV_E_IMAGE_DECODEC,
+            sys::MV_E_UINT32_LIMIT,
+            sys::MV_E_IMAGE_HEIGHT,
+            sys::MV_E_NOENOUGH_DDR,
+            sys::MV_E_NOENOUGH_STREAM,
+            sys::MV_E_NORESPONSE,
+            sys::MV_E_UNKNOW,
+            sys::MV_E_GC_GENERIC,
+            sys::MV_E_GC_ARGUMENT,
+            sys::MV_E_GC_RANGE,
+            sys::MV_E_GC_PROPERTY,
+            sys::MV_E_GC_RUNTIME,
+            sys::MV_E_GC_LOGICAL,
+            sys::MV_E_GC_ACCESS,
+            sys::MV_E_GC_TIMEOUT,
+            sys::MV_E_GC_DYNAMICCAST,
+            sys::MV_E_GC_UNKNOW,
+            sys::MV_E_NOT_IMPLEMENTED,
+            sys::MV_E_INVALID_ADDRESS,
+            sys::MV_E_WRITE_PROTECT,
+            sys::MV_E_ACCESS_DENIED,
+            sys::MV_E_BUSY,
+            sys::MV_E_PACKET,
+            sys::MV_E_NETER,
+            sys::MV_E_SUPPORT_MODIFY_DEVICE_IP,
+            sys::MV_E_KEY_VERIFICATION,
+            sys::MV_E_IP_CONFLICT,
+            sys::MV_E_USB_READ,
+            sys::MV_E_USB_WRITE,
+            sys::MV_E_USB_DEVICE,
+            sys::MV_E_USB_GENICAM,
+            sys::MV_E_USB_BANDWIDTH,
+            sys::MV_E_USB_DRIVER,
+            sys::MV_E_USB_UNKNOW,
+            sys::MV_E_UPG_FILE_MISMATCH,
+            sys::MV_E_UPG_LANGUSGE_MISMATCH,
+            sys::MV_E_UPG_CONFLICT,
+            sys::MV_E_UPG_INNER_ERR,
+            sys::MV_E_UPG_UNKNOW,
+        ];
+
+        for code in codes {
+            let error = MvsError::from(code);
+            assert!(
+                !matches!(&error, MvsError::Unknown(_)),
+                "known SDK code was not decoded: 0x{code:08X}"
+            );
+            assert_eq!(error.raw_code(), Some(code));
+        }
+    }
+
+    #[test]
+    fn unknown_and_platform_errors_preserve_their_origin() {
+        let code = 0xDEAD_BEEF;
+        assert_eq!(MvsError::from(code).raw_code(), Some(code));
+        assert_eq!(MvsError::UnsupportedPlatform.raw_code(), None);
     }
 }
