@@ -41,15 +41,17 @@ impl<'cam> FrameGuard<'cam> {
     }
 
     pub(crate) fn release(&mut self) -> MvsResult<()> {
-        if self.handle.is_null() {
+        // Mark the buffer as already handled before entering the SDK. A
+        // non-zero return code does not prove that the native side retained
+        // ownership, so Drop must not retry the same release after an error.
+        let handle = std::mem::replace(&mut self.handle, std::ptr::null_mut());
+        if handle.is_null() {
             return Ok(());
         }
 
         // SAFETY: handle and frame record originate from GetImageBuffer.
-        let code = unsafe { sys::MV_CC_FreeImageBuffer(self.handle, &mut self.raw) };
-        check(code)?;
-        self.handle = std::ptr::null_mut();
-        Ok(())
+        let code = unsafe { sys::MV_CC_FreeImageBuffer(handle, &mut self.raw) };
+        check(code)
     }
 }
 
