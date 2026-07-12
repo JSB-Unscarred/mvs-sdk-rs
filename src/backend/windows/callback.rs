@@ -159,7 +159,7 @@ fn log_callback_panic(callback_name: &str, panic_info: Box<dyn std::any::Any + S
     // Diagnostics must not be able to unwind across the extern callback
     // boundary either. Ignore stderr failures and catch any unexpected
     // formatting panic as a final guard.
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    catch_and_forget_panic(|| {
         use std::io::Write as _;
 
         let mut stderr = std::io::stderr().lock();
@@ -174,7 +174,20 @@ fn log_callback_panic(callback_name: &str, panic_info: Box<dyn std::any::Any + S
         } else {
             let _ = writeln!(stderr, "  Panic message: <unavailable>");
         }
-    }));
+    });
+
+    // A panic payload is user-controlled and may itself panic in Drop. Run its
+    // destructor inside a second containment boundary so a normal payload is
+    // reclaimed while a panicking destructor cannot unwind into the SDK.
+    catch_and_forget_panic(|| drop(panic_info));
+}
+
+fn catch_and_forget_panic(f: impl FnOnce()) {
+    if let Err(panic_info) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        // Dropping a caught payload can execute another user-defined Drop and
+        // panic again. Forgetting this final payload closes that recursion.
+        std::mem::forget(panic_info);
+    }
 }
 
 #[cfg(test)]
@@ -182,13 +195,21 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use super::{CallbackRegistration, clone_callback};
+    use super::{CallbackRegistration, clone_callback, log_callback_panic};
 
     struct DropProbe(Arc<AtomicUsize>);
 
     impl Drop for DropProbe {
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct PanicOnDrop;
+
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            panic!("panic while dropping a callback panic payload");
         }
     }
 
@@ -205,5 +226,28 @@ mod tests {
 
         drop(callback);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn callback_panic_payload_is_dropped_when_safe() {
+        let drops = Arc::new(AtomicUsize::new(0));
+
+        // A normal custom panic payload should still be reclaimed; containment
+        // must not turn every callback panic into a permanent leak.
+        log_callback_panic("Test", Box::new(DropProbe(Arc::clone(&drops))));
+
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn panicking_callback_payload_drop_is_contained() {
+        // The outer catch represents the extern callback boundary. Even when
+        // the user-controlled payload panics in Drop, log_callback_panic must
+        // return normally instead of letting that second unwind escape.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            log_callback_panic("Test", Box::new(PanicOnDrop));
+        }));
+
+        assert!(result.is_ok());
     }
 }
