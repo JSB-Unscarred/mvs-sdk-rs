@@ -15,12 +15,3 @@ categories = ["api-bindings", "hardware-support"]
 [lib]
 name = "mvs_sdk_sys"
 path = "src/lib.rs"
-
-[features]
-default = []
-# Regenerate src/bindings.rs from the headers in $MVCAM_COMMON_RUNENV/Includes.
-# Requires libclang. Only needed by maintainers after SDK upgrades.
-bindgen = ["dep:bindgen"]
-
-[build-dependencies]
-bindgen = { version = "0.72", optional = true }

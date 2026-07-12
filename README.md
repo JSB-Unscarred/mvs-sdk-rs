@@ -387,13 +387,14 @@ cargo test --workspace
 
 ## 维护：重新生成 bindings
 
-`mvs-sdk-sys/src/bindings.rs` 已提交到仓库，普通使用不需要安装 libclang。升级 MVS SDK 后，可在 sys crate 上启用 `bindgen` feature 重新生成：
+`mvs-sdk-sys/src/bindings.rs` 已提交到仓库，普通使用不需要安装 libclang。升级 Windows x64 MVS SDK 后，维护者可在本仓库 checkout 的根目录安装最新的 `bindgen-cli`，并运行显式生成脚本：
 
-```cmd
-cargo build -p mvs-sdk-sys --features bindgen
+```powershell
+cargo install bindgen-cli --locked
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\generate-bindings-windows-x64.ps1
 ```
 
-执行前请安装 LLVM/libclang，并确保 `MVCAM_COMMON_RUNENV` 指向包含 `Includes/MvCameraControl.h` 的 MVS SDK 开发目录。
+`Bypass` 仅作用于该次 PowerShell 子进程，不会修改系统或用户级执行策略。脚本要求 Windows x64、LLVM/libclang 和 MVS SDK。默认从 `MVCAM_COMMON_RUNENV` 读取 SDK 开发目录，也可通过 `-SdkRoot` 显式传入包含 `Includes/MvCameraControl.h` 的目录。bindings 生成与普通 Cargo 构建完全分离，`build.rs` 不会修改 crate 源码。
 
 ## License
 
