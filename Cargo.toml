@@ -29,3 +29,7 @@ bindgen = ["mvs-sdk-sys/bindgen"]
 [dependencies]
 mvs-sdk-sys = { path = "mvs-sdk-sys", version = "0.1.0", default-features = false }
 thiserror = "2"
+
+[dev-dependencies]
+# Compile-time positive and negative auto-trait assertions in public_api.rs.
+static_assertions = "1.1"

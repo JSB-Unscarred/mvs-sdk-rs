@@ -5,6 +5,11 @@
 //! Windows x86_64 and an unsupported-platform backend elsewhere.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+// Public functions must not expose types that downstream crates cannot name.
+#![deny(unnameable_types)]
+// Platform backends are private; accidentally writing `pub` inside one should
+// fail compilation instead of silently creating an unreachable public item.
+#![deny(unreachable_pub)]
 
 pub(crate) use mvs_sdk_sys as sys;
 
@@ -24,25 +29,3 @@ pub use error::{MvsError, MvsResult};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
 pub use types::{AccessMode, EnumNode, FloatNode, IntNode, PixelType, TransportLayer};
-
-#[cfg(test)]
-mod contract_tests {
-    use super::*;
-
-    fn assert_send<T: Send>() {}
-    fn assert_send_sync<T: Send + Sync>() {}
-
-    #[test]
-    fn public_threading_contracts_hold_for_the_selected_backend() {
-        assert_send::<Camera>();
-        assert_send_sync::<Sdk>();
-        assert_send_sync::<DeviceList>();
-        assert_send_sync::<DeviceInfo<'static>>();
-        assert_send_sync::<DeviceIter<'static>>();
-        assert_send_sync::<EventInfo<'static>>();
-        assert_send_sync::<Frame<'static>>();
-        assert_send_sync::<FrameInfo<'static>>();
-        assert_send_sync::<OwnedFrame>();
-        assert_send_sync::<MvsError>();
-    }
-}

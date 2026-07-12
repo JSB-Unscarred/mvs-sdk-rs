@@ -349,10 +349,11 @@ guard.release()?;
 
 | 类型 | Trait / 行为 |
 | --- | --- |
+| `Sdk` | `Send`、`Sync` |
 | `TransportLayer` | `Copy`、`Clone`、`PartialEq`、`Eq`、`Default`、`Debug`、`BitOr`、`BitOrAssign` |
 | `DeviceList` | `Debug`、`Send`、`Sync` |
-| `DeviceIter` | `Iterator<Item = DeviceInfo<'_>>`、`ExactSizeIterator` |
-| `DeviceInfo` | `Copy`、`Clone`、`Debug` |
+| `DeviceIter` | `Iterator<Item = DeviceInfo<'_>>`、`ExactSizeIterator`、`Send`、`Sync` |
+| `DeviceInfo` | `Copy`、`Clone`、`Debug`、`Send`、`Sync` |
 | `AccessMode` | `Copy`、`Clone`、`PartialEq`、`Eq`、`Debug` |
 | `Camera` | `Debug`、`Drop`、`Send`；不实现 `Sync` |
 | `IntNode` | `Copy`、`Clone`、`Debug` |
@@ -363,12 +364,26 @@ guard.release()?;
 | `FrameInfo` | `Copy`、`Clone`、`Debug`、`Send`、`Sync` |
 | `Frame` | `Debug`、`Send`、`Sync` |
 | `OwnedFrame` | `Clone`、`Debug`、`Send`、`Sync` |
-| `FrameGuard` | `Drop` 时自动释放 SDK buffer |
-| `MvsError` | `Debug`、`Display`、`std::error::Error` |
+| `FrameGuard` | `Drop` 时自动释放 SDK buffer；不实现 `Send`、`Sync` |
+| `MvsError` | `Debug`、`Display`、`std::error::Error`、`Send`、`Sync` |
 
 ### 非 Windows backend
 
 非 Windows 平台与 Windows 使用完全相同的公开类型、方法签名、错误枚举和导出路径。私有 unsupported backend 不链接真实 MVS SDK，`Sdk::init` 稳定返回 `MvsError::UnsupportedPlatform`，因此无法构造相机或帧资源。
+
+## 维护：API 契约测试
+
+`tests/public_api.rs` 是纯编译期 integration test。它以外部依赖者的视角检查全部公开路径和方法签名，并使用 `static_assertions` 锁定 `Camera: Send + !Sync`、`FrameGuard: !Send + !Sync` 等线程契约。该文件刻意不包含运行时 `#[test]`，避免 Windows 在未配置 MVS SDK 时链接原生符号。
+
+`tests/unsupported_platform.rs` 只在 Windows x86_64 以外的目标运行，检查 `Sdk::init()` 返回 `MvsError::UnsupportedPlatform`，且该安全层错误没有厂商原始错误码。
+
+```cmd
+cargo check --workspace --all-targets
+cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu
+cargo test --workspace
+```
+
+真实 SDK 链接、设备枚举和图像采集不属于这组契约测试，需要在安装 MVS SDK 的 Windows 环境中单独执行集成测试。
 
 ## 维护：重新生成 bindings
 
