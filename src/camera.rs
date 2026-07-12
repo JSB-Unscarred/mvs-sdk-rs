@@ -61,6 +61,22 @@ impl Camera {
         self.inner.get_image_buffer(timeout_ms).map(FrameGuard::new)
     }
 
+    /// Register an image callback that may be invoked by the SDK's streaming
+    /// thread.
+    ///
+    /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
+    ///
+    /// ```compile_fail
+    /// use std::rc::Rc;
+    /// use mvs_sdk_rs::Camera;
+    ///
+    /// fn register_non_send(camera: &mut Camera) {
+    ///     let state = Rc::new(());
+    ///     let _ = camera.register_image_callback(move |_| {
+    ///         drop(Rc::clone(&state));
+    ///     });
+    /// }
+    /// ```
     pub fn register_image_callback<F>(&mut self, f: F) -> MvsResult<()>
     where
         F: FnMut(&Frame<'_>) + Send + 'static,
@@ -72,6 +88,21 @@ impl Camera {
         self.inner.unregister_image_callback()
     }
 
+    /// Register a device-exception callback.
+    ///
+    /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
+    ///
+    /// ```compile_fail
+    /// use std::rc::Rc;
+    /// use mvs_sdk_rs::Camera;
+    ///
+    /// fn register_non_send(camera: &mut Camera) {
+    ///     let state = Rc::new(());
+    ///     let _ = camera.register_exception_callback(move |_| {
+    ///         drop(Rc::clone(&state));
+    ///     });
+    /// }
+    /// ```
     pub fn register_exception_callback<F>(&mut self, f: F) -> MvsResult<()>
     where
         F: FnMut(u32) + Send + 'static,
@@ -79,6 +110,21 @@ impl Camera {
         self.inner.register_exception_callback(Box::new(f))
     }
 
+    /// Register a callback for a named GenICam event.
+    ///
+    /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
+    ///
+    /// ```compile_fail
+    /// use std::rc::Rc;
+    /// use mvs_sdk_rs::Camera;
+    ///
+    /// fn register_non_send(camera: &mut Camera) {
+    ///     let state = Rc::new(());
+    ///     let _ = camera.register_event_callback("ExposureEnd", move |_| {
+    ///         drop(Rc::clone(&state));
+    ///     });
+    /// }
+    /// ```
     pub fn register_event_callback<F>(&mut self, event_name: &str, f: F) -> MvsResult<()>
     where
         F: FnMut(&EventInfo<'_>) + Send + 'static,

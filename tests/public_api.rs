@@ -156,23 +156,38 @@ fn camera_api_contract(camera: &mut Camera) {
     }
 
     let _: MvsResult<()> = camera.unregister_image_callback();
-    let _: MvsResult<()> = camera.register_exception_callback(|message_type: u32| {
-        let _: u32 = message_type;
+
+    // Each closure deliberately combines two kinds of captured state:
+    // - directly mutating a counter makes it FnMut-only rather than Fn;
+    // - moving a Cell into it keeps the closure Send but makes it !Sync.
+    // This catches accidental tightening of any callback to Fn or Sync.
+    let mut exception_calls = 0_u32;
+    let exception_state = Cell::new(0_u32);
+    let _: MvsResult<()> = camera.register_exception_callback(move |message_type: u32| {
+        exception_calls += 1;
+        exception_state.set(message_type);
+        let _: u32 = exception_calls;
     });
+
+    let mut event_calls = 0_u32;
+    let event_state = Cell::new(0_u16);
     let _: MvsResult<()> =
-        camera.register_event_callback("ExposureEnd", |event: &EventInfo<'_>| {
-            let _: u16 = event.event_id();
+        camera.register_event_callback("ExposureEnd", move |event: &EventInfo<'_>| {
+            event_calls += 1;
+            event_state.set(event.event_id());
+            let _: u32 = event_calls;
         });
+
+    let mut image_calls = 0_u32;
+    let image_state = Cell::new(0_usize);
+    let _: MvsResult<()> = camera.register_image_callback(move |frame: &Frame<'_>| {
+        image_calls += 1;
+        image_state.set(frame.data().len());
+        let _: u32 = image_calls;
+    });
+
     let _: MvsResult<()> = camera.event_notification_on("ExposureEnd");
     let _: MvsResult<()> = camera.event_notification_off("ExposureEnd");
-
-    // Cell is Send but not Sync. Capturing it verifies that callbacks remain
-    // Send-only and are not accidentally over-constrained with Sync.
-    let counter = Cell::new(0_u32);
-    let _: MvsResult<()> = camera.register_image_callback(move |frame: &Frame<'_>| {
-        counter.set(counter.get() + 1);
-        let _: &[u8] = frame.data();
-    });
 
     let _: MvsResult<()> = camera.set_int("Width", 1920);
     let _: MvsResult<i64> = camera.get_int("Width");
