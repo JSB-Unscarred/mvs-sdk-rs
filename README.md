@@ -185,9 +185,9 @@ guard.release()?;
 
 正常路径应显式调用 `Camera::close`，以观察清理错误。清理会先停止并等待 Rust callback 退出，再依次尝试停止采集、注销所有回调、关闭设备和销毁 handle；某一步失败不会阻止后续步骤，`CleanupError` 按调用顺序保留所有失败。因此，`close` 返回 `Err` 时 handle 也可能已经成功销毁。drop 仅复用同一清理路径作为兜底，并忽略错误。若在该相机自己的图像 callback 内调用 `close`，因当前 frame 仍被借用而不能安全释放；事件 callback 在 SDK 没有明确保证前也按相同策略处理。这两种上下文不会调用原生 teardown，handle 与回调 backing 会被定向保留，并返回 `DrainCallbacks / CallOrder`。MVS 官方重连流程明确支持在断连 exception callback 内关闭并销毁旧 handle，因此该上下文只执行 `CloseDevice → DestroyHandle`，跳过没有同等保证的停止采集和回调注销；当前 exception slot 由 trampoline 保持到 callback 返回后再释放。
 
-采集控制或回调注册、注销失败且结果可能已部分生效时，`Camera` 会进入故障状态。此后普通操作返回 `MvsError::CallOrder`，只保留 `as_raw_handle`、`is_connected`、`Debug` 等诊断能力和消费式 `close`。`event_notification_off` 只关闭设备端事件通知；需要移除 Rust callback 时还必须调用 `unregister_event_callback`。
+采集控制或回调注册、注销失败且结果可能已部分生效时，不确定性只保留在对应状态轴：采集状态可通过再次调用 `stop_grabbing` 消歧；某个 callback 的注册状态可通过再次调用对应的 `unregister_*` 消歧。失败不会封锁参数访问或无关 callback；只要 handle 仍存活，这些操作仍会正常调用 SDK。`event_notification_off` 只关闭设备端事件通知；需要移除 Rust callback 时还必须调用 `unregister_event_callback`。
 
-`start_grabbing` 会按当时是否存在有效图像回调选择采集模式，并将该模式固定到 `stop_grabbing` 成功为止；停止失败时相机会进入故障状态。回调模式拒绝 `get_image_buffer`；采集期间也不能注册、替换或注销图像回调。切换模式时应先停止采集，再修改图像回调，最后重新开始。异常回调和事件回调不参与采集模式选择。
+`start_grabbing` 会按当时是否存在已确认注册的图像回调选择采集模式，并将该模式固定到 `stop_grabbing` 成功为止。start 或 stop 失败后采集状态记为 Unknown，并允许重试 `stop_grabbing`；图像 callback 注册状态为 Unknown 时，应先成功注销，再重新选择采集模式。回调模式拒绝 `get_image_buffer`；采集期间也不能注册、替换或注销图像回调。切换模式时应先停止采集，再修改图像回调，最后重新开始。异常回调和事件回调不参与采集模式选择。
 
 `Camera` 实现 `Send`，但不实现 `Sync`，同一相机实例的并发访问需要外部同步。
 

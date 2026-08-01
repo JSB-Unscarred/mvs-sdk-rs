@@ -2,61 +2,33 @@
 
 #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AcquisitionMode {
+enum AcquisitionState {
+    Stopped,
     Callback,
     Polling,
+    Unknown,
 }
 
 #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
-impl AcquisitionMode {
+impl AcquisitionState {
+    fn requires_stop(self) -> bool {
+        !matches!(self, Self::Stopped)
+    }
+
+    fn mode_name(self) -> Option<&'static str> {
+        match self {
+            Self::Callback => Some("Callback"),
+            Self::Polling => Some("Polling"),
+            Self::Stopped | Self::Unknown => None,
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
+            Self::Stopped => "Stopped",
             Self::Callback => "Callback",
             Self::Polling => "Polling",
-        }
-    }
-}
-
-#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CameraState {
-    Open,
-    Grabbing(AcquisitionMode),
-    Faulted,
-    Closed,
-}
-
-#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
-impl CameraState {
-    fn after_result<E>(result: &Result<(), E>, success: Self) -> Self {
-        if result.is_ok() {
-            success
-        } else {
-            Self::Faulted
-        }
-    }
-
-    fn allows_normal_operations(self) -> bool {
-        matches!(self, Self::Open | Self::Grabbing(_))
-    }
-
-    fn is_grabbing(self) -> bool {
-        matches!(self, Self::Grabbing(_))
-    }
-
-    fn acquisition_mode(self) -> Option<&'static str> {
-        match self {
-            Self::Grabbing(mode) => Some(mode.name()),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Open => "Open",
-            Self::Grabbing(_) => "Grabbing",
-            Self::Faulted => "Faulted",
-            Self::Closed => "Closed",
+            Self::Unknown => "Unknown",
         }
     }
 }
@@ -73,38 +45,35 @@ pub(crate) use windows::*;
 
 #[cfg(test)]
 mod tests {
-    use super::{AcquisitionMode, CameraState};
+    use super::AcquisitionState;
 
     #[test]
-    fn camera_state_tracks_both_grabbing_modes_and_successful_stop() {
-        let ok: Result<(), ()> = Ok(());
-
-        for (mode, expected_name) in [
-            (AcquisitionMode::Callback, "Callback"),
-            (AcquisitionMode::Polling, "Polling"),
+    fn known_grabbing_states_expose_their_modes_and_require_stop() {
+        for (state, expected_name) in [
+            (AcquisitionState::Callback, "Callback"),
+            (AcquisitionState::Polling, "Polling"),
         ] {
-            let state = CameraState::Grabbing(mode);
-            assert!(state.allows_normal_operations());
-            assert!(state.is_grabbing());
-            assert_eq!(state.acquisition_mode(), Some(expected_name));
-            assert_eq!(state.name(), "Grabbing");
+            assert!(state.requires_stop());
+            assert_eq!(state.mode_name(), Some(expected_name));
+            assert_eq!(state.name(), expected_name);
         }
-
-        let state = CameraState::after_result(&ok, CameraState::Open);
-        assert_eq!(state, CameraState::Open);
-        assert!(state.allows_normal_operations());
-        assert!(!state.is_grabbing());
-        assert_eq!(state.acquisition_mode(), None);
     }
 
     #[test]
-    fn uncertain_failure_faults_and_blocks_normal_operations() {
-        let error: Result<(), ()> = Err(());
-        let state = CameraState::after_result(&error, CameraState::Open);
+    fn stopped_requires_no_cleanup_stop_and_has_no_mode() {
+        let state = AcquisitionState::Stopped;
 
-        assert_eq!(state, CameraState::Faulted);
-        assert!(!state.allows_normal_operations());
-        assert!(!CameraState::Closed.allows_normal_operations());
-        assert_eq!(CameraState::Closed.name(), "Closed");
+        assert!(!state.requires_stop());
+        assert_eq!(state.mode_name(), None);
+        assert_eq!(state.name(), "Stopped");
+    }
+
+    #[test]
+    fn unknown_is_not_confirmed_grabbing_but_requires_a_recovery_stop() {
+        let state = AcquisitionState::Unknown;
+
+        assert!(state.requires_stop());
+        assert_eq!(state.mode_name(), None);
+        assert_eq!(state.name(), "Unknown");
     }
 }

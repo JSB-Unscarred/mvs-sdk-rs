@@ -18,17 +18,17 @@ pub(crate) type EventCallback = Box<dyn FnMut(&EventInfo<'_>) + Send + 'static>;
 
 /// An opened MVS camera.
 ///
-/// A native operation whose result may be partially applied can fault the
-/// camera. Once faulted, normal operations return [`MvsError::CallOrder`];
-/// [`Camera::as_raw_handle`], [`Camera::is_connected`], [`Debug`](fmt::Debug),
-/// and [`Camera::close`] remain available for diagnostics and cleanup.
+/// Native-operation uncertainty is tracked locally. A failed acquisition
+/// transition can be reconciled by retrying [`Camera::stop_grabbing`], while a
+/// failed callback registration transition can be reconciled by retrying that
+/// callback's unregister operation. Unrelated operations remain available as
+/// long as the native handle is live.
 ///
 /// `Camera` is `Send` but not `Sync`; concurrent access to one camera requires
 /// external synchronization. Dropping it performs best-effort cleanup and
 /// discards cleanup failures, so prefer [`Camera::close`] when those failures
 /// must be observed.
 ///
-/// [`MvsError::CallOrder`]: crate::MvsError::CallOrder
 pub struct Camera {
     inner: backend::Camera,
     _library: Arc<Sdk>,
@@ -64,7 +64,8 @@ impl Camera {
     ///
     /// An active image callback selects callback mode; otherwise polling mode
     /// is selected. The mode remains fixed until [`Camera::stop_grabbing`]
-    /// succeeds; a failed stop faults the camera.
+    /// succeeds. If start or stop fails, retry stop to reconcile the uncertain
+    /// acquisition state.
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }
@@ -114,9 +115,9 @@ impl Camera {
     ///
     /// Acquisition must be stopped before unregistering the callback.
     ///
-    /// This waits for an in-flight closure and silences later native calls.
-    /// A native failure still faults the camera because the stable slot may
-    /// remain registered; cleanup will conservatively unregister it again.
+    /// This waits for an in-flight closure and silences later native calls. A
+    /// native failure leaves only this registration uncertain; unregister may
+    /// be retried, and cleanup will conservatively retry it as well.
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_image_callback()
     }
@@ -145,9 +146,9 @@ impl Camera {
 
     /// Unregister the current device-exception callback.
     ///
-    /// This waits for an in-flight closure and silences later native calls.
-    /// A native failure still faults the camera because the stable slot may
-    /// remain registered; cleanup will conservatively unregister it again.
+    /// This waits for an in-flight closure and silences later native calls. A
+    /// native failure leaves only this registration uncertain; unregister may
+    /// be retried, and cleanup will conservatively retry it as well.
     pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_exception_callback()
     }
@@ -179,7 +180,8 @@ impl Camera {
     /// This is distinct from [`Camera::event_notification_off`], which stops
     /// device-side event notification without removing the callback.
     /// Returning from this method means the Rust closure is no longer running
-    /// and later native calls through the retained slot are ignored.
+    /// and later native calls through the retained slot are ignored. A native
+    /// failure leaves only this named registration uncertain and may be retried.
     pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
         self.inner.unregister_event_callback(event_name)
     }
