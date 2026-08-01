@@ -110,6 +110,10 @@ impl Camera {
         self.inner.register_exception_callback(Box::new(f))
     }
 
+    pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
+        self.inner.unregister_exception_callback()
+    }
+
     /// Register a callback for a named GenICam event.
     ///
     /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
@@ -130,6 +134,10 @@ impl Camera {
         F: FnMut(&EventInfo<'_>) + Send + 'static,
     {
         self.inner.register_event_callback(event_name, Box::new(f))
+    }
+
+    pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
+        self.inner.unregister_event_callback(event_name)
     }
 
     pub fn event_notification_on(&self, event_name: &str) -> MvsResult<()> {
@@ -203,9 +211,10 @@ impl Camera {
 
 impl fmt::Debug for Camera {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (grabbing, image_cb, exception_cb, event_cbs) = self.inner.debug_details();
+        let (state, grabbing, image_cb, exception_cb, event_cbs) = self.inner.debug_details();
         f.debug_struct("Camera")
             .field("handle", &self.as_raw_handle())
+            .field("state", &state)
             .field("grabbing", &grabbing)
             .field("image_cb", &image_cb)
             .field("exception_cb", &exception_cb)

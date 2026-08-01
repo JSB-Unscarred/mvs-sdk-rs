@@ -132,11 +132,19 @@ impl Camera {
         unsupported()
     }
 
+    pub(crate) fn unregister_exception_callback(&mut self) -> MvsResult<()> {
+        unsupported()
+    }
+
     pub(crate) fn register_event_callback(
         &mut self,
         _event_name: &str,
         _callback: EventCallback,
     ) -> MvsResult<()> {
+        unsupported()
+    }
+
+    pub(crate) fn unregister_event_callback(&mut self, _event_name: &str) -> MvsResult<()> {
         unsupported()
     }
 
@@ -208,8 +216,8 @@ impl Camera {
         unsupported()
     }
 
-    pub(crate) fn debug_details(&self) -> (bool, bool, bool, usize) {
-        (false, false, false, 0)
+    pub(crate) fn debug_details(&self) -> (&'static str, bool, bool, bool, usize) {
+        ("Closed", false, false, false, 0)
     }
 
     pub(crate) fn close(&mut self) {}

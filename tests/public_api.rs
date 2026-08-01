@@ -168,6 +168,7 @@ fn camera_api_contract(camera: &mut Camera) {
         exception_state.set(message_type);
         let _: u32 = exception_calls;
     });
+    let _: MvsResult<()> = camera.unregister_exception_callback();
 
     let mut event_calls = 0_u32;
     let event_state = Cell::new(0_u16);
@@ -177,6 +178,7 @@ fn camera_api_contract(camera: &mut Camera) {
             event_state.set(event.event_id());
             let _: u32 = event_calls;
         });
+    let _: MvsResult<()> = camera.unregister_event_callback("ExposureEnd");
 
     let mut image_calls = 0_u32;
     let image_state = Cell::new(0_usize);
