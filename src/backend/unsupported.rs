@@ -5,7 +5,9 @@ use std::rc::Rc;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
 use crate::frame::{Frame, FrameInfo, FrameMetadata};
-use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult, TransportLayer};
+use crate::{
+    AccessMode, CleanupError, EnumNode, FloatNode, IntNode, MvsError, MvsResult, TransportLayer,
+};
 
 fn unsupported<T>() -> MvsResult<T> {
     Err(MvsError::UnsupportedPlatform)
@@ -220,7 +222,9 @@ impl Camera {
         ("Closed", false, false, false, 0)
     }
 
-    pub(crate) fn close(&mut self) {}
+    pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
+        Ok(())
+    }
 }
 
 pub(crate) struct FrameGuard<'cam> {

@@ -10,7 +10,7 @@ use crate::backend;
 use crate::callback::EventInfo;
 use crate::frame::{Frame, FrameGuard};
 use crate::library::Sdk;
-use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsResult};
+use crate::{AccessMode, CleanupError, EnumNode, FloatNode, IntNode, MvsResult};
 
 pub(crate) type ImageCallback = Box<dyn FnMut(&Frame<'_>) + Send + 'static>;
 pub(crate) type ExceptionCallback = Box<dyn FnMut(u32) + Send + 'static>;
@@ -207,6 +207,11 @@ impl Camera {
     pub fn set_enum_value(&self, key: &str, value: u32) -> MvsResult<()> {
         self.inner.set_enum_value(key, value)
     }
+
+    /// Close the camera and report every native cleanup failure.
+    pub fn close(mut self) -> Result<(), CleanupError> {
+        self.inner.cleanup()
+    }
 }
 
 impl fmt::Debug for Camera {
@@ -225,6 +230,6 @@ impl fmt::Debug for Camera {
 
 impl Drop for Camera {
     fn drop(&mut self) {
-        self.inner.close();
+        let _ = self.inner.cleanup();
     }
 }

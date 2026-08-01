@@ -5,6 +5,7 @@
 //! preserved via [`MvsError::Unknown`] so nothing is lost.
 
 use std::ffi::NulError;
+use std::fmt;
 use std::os::raw::c_int;
 use std::str::Utf8Error;
 
@@ -12,6 +13,94 @@ use crate::sys;
 
 /// Crate-wide result alias.
 pub type MvsResult<T> = Result<T, MvsError>;
+
+/// A native operation attempted while closing a camera.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CleanupStep {
+    StopGrabbing,
+    UnregisterImageCallback,
+    UnregisterExceptionCallback,
+    UnregisterEventCallback,
+    CloseDevice,
+    DestroyHandle,
+}
+
+impl fmt::Display for CleanupStep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::StopGrabbing => "stop grabbing",
+            Self::UnregisterImageCallback => "unregister image callback",
+            Self::UnregisterExceptionCallback => "unregister exception callback",
+            Self::UnregisterEventCallback => "unregister event callback",
+            Self::CloseDevice => "close device",
+            Self::DestroyHandle => "destroy handle",
+        })
+    }
+}
+
+/// One failed native operation from a camera cleanup attempt.
+#[non_exhaustive]
+#[derive(Debug)]
+pub struct CleanupFailure {
+    pub step: CleanupStep,
+    pub error: MvsError,
+}
+
+impl fmt::Display for CleanupFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.step, self.error)
+    }
+}
+
+impl std::error::Error for CleanupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// All failures observed while closing one camera.
+///
+/// Cleanup continues after each failure so that handle destruction is always
+/// attempted. Failures are retained in call order.
+#[derive(Debug)]
+pub struct CleanupError {
+    failures: Vec<CleanupFailure>,
+}
+
+impl CleanupError {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub(crate) fn new(failures: Vec<CleanupFailure>) -> Self {
+        debug_assert!(!failures.is_empty());
+        Self { failures }
+    }
+
+    /// Return cleanup failures in the order the native calls were attempted.
+    pub fn failures(&self) -> &[CleanupFailure] {
+        &self.failures
+    }
+
+    /// Consume this error and return its ordered failures.
+    pub fn into_failures(self) -> Vec<CleanupFailure> {
+        self.failures
+    }
+}
+
+impl fmt::Display for CleanupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "camera cleanup failed in {} step(s)",
+            self.failures.len()
+        )?;
+        for failure in &self.failures {
+            write!(f, "; {failure}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CleanupError {}
 
 /// Error returned by any MVS SDK call, plus Rust-side failures that arise
 /// while marshalling arguments.
