@@ -16,8 +16,19 @@ pub(crate) type ImageCallback = Box<dyn FnMut(&Frame<'_>) + Send + 'static>;
 pub(crate) type ExceptionCallback = Box<dyn FnMut(u32) + Send + 'static>;
 pub(crate) type EventCallback = Box<dyn FnMut(&EventInfo<'_>) + Send + 'static>;
 
-/// An opened MVS camera. `Send` but not `Sync`; concurrent access to one
-/// camera requires external synchronization.
+/// An opened MVS camera.
+///
+/// A native operation whose result may be partially applied can fault the
+/// camera. Once faulted, normal operations return [`MvsError::CallOrder`];
+/// [`Camera::as_raw_handle`], [`Camera::is_connected`], [`Debug`](fmt::Debug),
+/// and [`Camera::close`] remain available for diagnostics and cleanup.
+///
+/// `Camera` is `Send` but not `Sync`; concurrent access to one camera requires
+/// external synchronization. Dropping it performs best-effort cleanup and
+/// discards cleanup failures, so prefer [`Camera::close`] when those failures
+/// must be observed.
+///
+/// [`MvsError::CallOrder`]: crate::MvsError::CallOrder
 pub struct Camera {
     inner: backend::Camera,
     _library: Arc<Sdk>,
@@ -84,6 +95,10 @@ impl Camera {
         self.inner.register_image_callback(Box::new(f))
     }
 
+    /// Unregister the current image callback.
+    ///
+    /// A native failure faults the camera because the callback may still be
+    /// registered. Cleanup will conservatively try to unregister it again.
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_image_callback()
     }
@@ -110,6 +125,10 @@ impl Camera {
         self.inner.register_exception_callback(Box::new(f))
     }
 
+    /// Unregister the current device-exception callback.
+    ///
+    /// A native failure faults the camera because the callback may still be
+    /// registered. Cleanup will conservatively try to unregister it again.
     pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_exception_callback()
     }
@@ -136,6 +155,10 @@ impl Camera {
         self.inner.register_event_callback(event_name, Box::new(f))
     }
 
+    /// Unregister the callback for one named GenICam event.
+    ///
+    /// This is distinct from [`Camera::event_notification_off`], which stops
+    /// device-side event notification without removing the callback.
     pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
         self.inner.unregister_event_callback(event_name)
     }
@@ -144,6 +167,10 @@ impl Camera {
         self.inner.event_notification_on(event_name)
     }
 
+    /// Disable device-side notification for one named GenICam event.
+    ///
+    /// The event callback remains registered. Use
+    /// [`Camera::unregister_event_callback`] to remove it.
     pub fn event_notification_off(&self, event_name: &str) -> MvsResult<()> {
         self.inner.event_notification_off(event_name)
     }
@@ -208,7 +235,16 @@ impl Camera {
         self.inner.set_enum_value(key, value)
     }
 
-    /// Close the camera and report every native cleanup failure.
+    /// Consume the camera and report every native cleanup failure.
+    ///
+    /// Cleanup attempts to stop acquisition, unregister every callback, close
+    /// the device, and destroy the handle. A failed step does not short-circuit
+    /// later steps, and [`CleanupError`] retains failures in call order.
+    /// Consequently, an error does not imply that the handle is still alive:
+    /// destruction may already have succeeded after an earlier failure.
+    ///
+    /// This is preferred over relying on [`Drop`], which uses the same cleanup
+    /// path but cannot report its result.
     pub fn close(mut self) -> Result<(), CleanupError> {
         self.inner.cleanup()
     }

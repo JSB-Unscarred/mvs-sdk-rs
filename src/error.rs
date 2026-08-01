@@ -18,11 +18,17 @@ pub type MvsResult<T> = Result<T, MvsError>;
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CleanupStep {
+    /// Stop image acquisition when it may still be active.
     StopGrabbing,
+    /// Unregister the image callback.
     UnregisterImageCallback,
+    /// Unregister the device-exception callback.
     UnregisterExceptionCallback,
+    /// Unregister one named event callback.
     UnregisterEventCallback,
+    /// Close the device.
     CloseDevice,
+    /// Destroy the native handle.
     DestroyHandle,
 }
 
@@ -43,7 +49,9 @@ impl fmt::Display for CleanupStep {
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct CleanupFailure {
+    /// The cleanup operation that failed.
     pub step: CleanupStep,
+    /// The error returned by that operation.
     pub error: MvsError,
 }
 
@@ -62,7 +70,9 @@ impl std::error::Error for CleanupFailure {
 /// All failures observed while closing one camera.
 ///
 /// Cleanup continues after each failure so that handle destruction is always
-/// attempted. Failures are retained in call order.
+/// attempted, and failures are retained in call order. An error therefore
+/// does not imply that the handle is still alive: destruction may have
+/// succeeded after an earlier step failed.
 #[derive(Debug)]
 pub struct CleanupError {
     failures: Vec<CleanupFailure>,

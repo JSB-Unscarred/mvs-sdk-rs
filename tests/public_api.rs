@@ -14,11 +14,14 @@ use std::os::raw::c_void;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mvs_sdk_rs::error::{MvsError as ModuleError, MvsResult as ModuleResult};
+use mvs_sdk_rs::error::{
+    CleanupError as ModuleCleanupError, CleanupFailure as ModuleCleanupFailure,
+    CleanupStep as ModuleCleanupStep, MvsError as ModuleError, MvsResult as ModuleResult,
+};
 use mvs_sdk_rs::{
-    AccessMode, Camera, DeviceInfo, DeviceIter, DeviceList, EnumNode, EventInfo, FloatNode, Frame,
-    FrameGuard, FrameInfo, IntNode, MvsError, MvsResult, OwnedFrame, PixelType, Sdk,
-    TransportLayer,
+    AccessMode, Camera, CleanupError, CleanupFailure, CleanupStep, DeviceInfo, DeviceIter,
+    DeviceList, EnumNode, EventInfo, FloatNode, Frame, FrameGuard, FrameInfo, IntNode, MvsError,
+    MvsResult, OwnedFrame, PixelType, Sdk, TransportLayer,
 };
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 
@@ -57,6 +60,9 @@ assert_impl_all!(EnumNode: Clone, std::fmt::Debug, Send, Sync);
 assert_impl_all!(TransportLayer: Copy, Clone, std::fmt::Debug, Default, PartialEq, Eq, Send, Sync);
 assert_impl_all!(PixelType: Copy, Clone, std::fmt::Debug, PartialEq, Eq, std::hash::Hash, Send, Sync);
 assert_impl_all!(MvsError: std::error::Error, Send, Sync);
+assert_impl_all!(CleanupStep: Copy, Clone, std::fmt::Debug, std::fmt::Display, PartialEq, Eq, Send, Sync);
+assert_impl_all!(CleanupFailure: std::fmt::Debug, std::fmt::Display, std::error::Error, Send, Sync);
+assert_impl_all!(CleanupError: std::fmt::Debug, std::fmt::Display, std::error::Error, Send, Sync);
 
 // -------------------------------------------------------------------------
 // Export paths and aliases
@@ -69,6 +75,9 @@ fn all_public_types_are_nameable_from_the_crate_root() {
     // disappears from the crate root or becomes private.
     assert_sized::<AccessMode>();
     assert_sized::<Camera>();
+    assert_sized::<CleanupError>();
+    assert_sized::<CleanupFailure>();
+    assert_sized::<CleanupStep>();
     assert_sized::<DeviceInfo<'static>>();
     assert_sized::<DeviceIter<'static>>();
     assert_sized::<DeviceList>();
@@ -86,11 +95,44 @@ fn all_public_types_are_nameable_from_the_crate_root() {
     assert_sized::<TransportLayer>();
 }
 
-fn error_export_contract(root_error: MvsError, root_result: MvsResult<()>) {
+fn error_export_contract(
+    root_cleanup_error: CleanupError,
+    root_cleanup_failure: CleanupFailure,
+    root_cleanup_step: CleanupStep,
+    root_error: MvsError,
+    root_result: MvsResult<()>,
+) {
     // The root exports and `mvs_sdk_rs::error` exports must remain aliases of
     // exactly the same types.
+    let _: ModuleCleanupError = root_cleanup_error;
+    let _: ModuleCleanupFailure = root_cleanup_failure;
+    let _: ModuleCleanupStep = root_cleanup_step;
     let _: ModuleError = root_error;
     let _: ModuleResult<()> = root_result;
+}
+
+fn cleanup_error_api_contract(error: &CleanupError) {
+    let _: &[CleanupFailure] = error.failures();
+}
+
+fn cleanup_error_consuming_api_contract(error: CleanupError) {
+    let _: Vec<CleanupFailure> = error.into_failures();
+}
+
+fn cleanup_failure_api_contract(failure: &CleanupFailure) {
+    let _: CleanupStep = failure.step;
+    let _: &MvsError = &failure.error;
+}
+
+fn cleanup_step_api_contract() {
+    let _: [CleanupStep; 6] = [
+        CleanupStep::StopGrabbing,
+        CleanupStep::UnregisterImageCallback,
+        CleanupStep::UnregisterExceptionCallback,
+        CleanupStep::UnregisterEventCallback,
+        CleanupStep::CloseDevice,
+        CleanupStep::DestroyHandle,
+    ];
 }
 
 // -------------------------------------------------------------------------
@@ -141,6 +183,10 @@ fn device_info_api_contract(info: &DeviceInfo<'_>) {
 // -------------------------------------------------------------------------
 // Camera API
 // -------------------------------------------------------------------------
+
+fn camera_close_api_contract() {
+    let _: fn(Camera) -> Result<(), CleanupError> = Camera::close;
+}
 
 fn camera_api_contract(camera: &mut Camera) {
     let _: *mut c_void = camera.as_raw_handle();

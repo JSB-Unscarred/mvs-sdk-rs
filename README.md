@@ -9,9 +9,9 @@
 回调取流是最常用路径：初始化 SDK，枚举相机，打开设备，设置参数，注册图像回调，然后开始采集。
 
 ```rust
-use mvs_sdk_rs::{MvsResult, Sdk, TransportLayer};
+use mvs_sdk_rs::{Sdk, TransportLayer};
 
-fn main() -> MvsResult<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = Sdk::init()?;
     println!("MVS SDK version: 0x{:08X}", sdk.sdk_version());
 
@@ -46,6 +46,7 @@ fn main() -> MvsResult<()> {
     cam.start_grabbing()?;
     std::thread::sleep(std::time::Duration::from_secs(3));
     cam.stop_grabbing()?;
+    cam.close()?;
 
     Ok(())
 }
@@ -74,8 +75,8 @@ guard.release()?;
 
 | 路径 | 导出 |
 | --- | --- |
-| `mvs_sdk_rs::*` | `Sdk`、`TransportLayer`、`DeviceList`、`DeviceIter`、`DeviceInfo`、`AccessMode`、`Camera`、`IntNode`、`FloatNode`、`EnumNode`、`EventInfo`、`Frame`、`FrameGuard`、`FrameInfo`、`OwnedFrame`、`PixelType`、`MvsResult`、`MvsError` |
-| `mvs_sdk_rs::error::*` | `MvsResult`、`MvsError` |
+| `mvs_sdk_rs::*` | `Sdk`、`TransportLayer`、`DeviceList`、`DeviceIter`、`DeviceInfo`、`AccessMode`、`Camera`、`IntNode`、`FloatNode`、`EnumNode`、`EventInfo`、`Frame`、`FrameGuard`、`FrameInfo`、`OwnedFrame`、`PixelType`、`MvsResult`、`MvsError`、`CleanupStep`、`CleanupFailure`、`CleanupError` |
+| `mvs_sdk_rs::error::*` | `MvsResult`、`MvsError`、`CleanupStep`、`CleanupFailure`、`CleanupError` |
 | `Camera` 方法返回值 | `IntNode`、`FloatNode`、`EnumNode`，分别由 `get_int_range`、`get_float_range`、`get_enum_info` 返回 |
 
 ### `Sdk`
@@ -160,9 +161,11 @@ guard.release()?;
 | `register_image_callback` | `fn register_image_callback<F>(&mut self, f: F) -> MvsResult<()> where F: FnMut(&Frame<'_>) + Send + 'static` | 注册图像回调。回调在 SDK 采集线程中执行，建议尽量短。 |
 | `unregister_image_callback` | `fn unregister_image_callback(&mut self) -> MvsResult<()>` | 注销图像回调。 |
 | `register_exception_callback` | `fn register_exception_callback<F>(&mut self, f: F) -> MvsResult<()> where F: FnMut(u32) + Send + 'static` | 注册异常回调，参数为 SDK 原始消息类型。 |
+| `unregister_exception_callback` | `fn unregister_exception_callback(&mut self) -> MvsResult<()>` | 注销异常回调。 |
 | `register_event_callback` | `fn register_event_callback<F>(&mut self, event_name: &str, f: F) -> MvsResult<()> where F: FnMut(&EventInfo<'_>) + Send + 'static` | 注册指定 GenICam 事件回调。 |
+| `unregister_event_callback` | `fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()>` | 注销指定 GenICam 事件回调。 |
 | `event_notification_on` | `fn event_notification_on(&self, event_name: &str) -> MvsResult<()>` | 开启指定事件通知。 |
-| `event_notification_off` | `fn event_notification_off(&self, event_name: &str) -> MvsResult<()>` | 关闭指定事件通知。 |
+| `event_notification_off` | `fn event_notification_off(&self, event_name: &str) -> MvsResult<()>` | 关闭指定事件通知；不会注销同名 event callback。 |
 | `set_int` | `fn set_int(&self, key: &str, value: i64) -> MvsResult<()>` | 设置整数节点，例如 `Width`、`Height`、`OffsetX`。 |
 | `get_int` | `fn get_int(&self, key: &str) -> MvsResult<i64>` | 读取整数节点当前值。 |
 | `get_int_range` | `fn get_int_range(&self, key: &str) -> MvsResult<IntNode>` | 读取整数节点当前值和范围。 |
@@ -178,8 +181,13 @@ guard.release()?;
 | `set_string` | `fn set_string(&self, key: &str, value: &str) -> MvsResult<()>` | 设置字符串节点，例如 `DeviceUserID`。 |
 | `get_string` | `fn get_string(&self, key: &str) -> MvsResult<String>` | 读取字符串节点。 |
 | `exec_command` | `fn exec_command(&self, key: &str) -> MvsResult<()>` | 执行命令节点，例如 `TriggerSoftware`。 |
+| `close` | `fn close(self) -> Result<(), CleanupError>` | 消费 `Camera`，执行完整清理并返回所有清理失败。 |
 
-`Camera` 在 drop 时会依次停止采集、注销回调、关闭设备并销毁 handle。`Camera` 实现 `Send`，但不实现 `Sync`，同一相机实例的并发访问需要外部同步。
+正常路径应显式调用 `Camera::close`，以观察清理错误。清理会依次尝试停止采集、注销所有回调、关闭设备和销毁 handle；某一步失败不会阻止后续步骤，`CleanupError` 按调用顺序保留所有失败。因此，`close` 返回 `Err` 时 handle 也可能已经成功销毁。drop 仅复用同一清理路径作为兜底，并忽略错误。
+
+采集控制或回调注册、注销失败且结果可能已部分生效时，`Camera` 会进入故障状态。此后普通操作返回 `MvsError::CallOrder`，只保留 `as_raw_handle`、`is_connected`、`Debug` 等诊断能力和消费式 `close`。`event_notification_off` 只关闭设备端事件通知；需要移除 Rust callback 时还必须调用 `unregister_event_callback`。
+
+`Camera` 实现 `Send`，但不实现 `Sync`，同一相机实例的并发访问需要外部同步。
 
 ### 参数节点信息
 
@@ -345,6 +353,15 @@ guard.release()?;
 | `Utf8(Utf8Error)` | SDK 返回的数据不是合法 UTF-8。 |
 | `UnsupportedPlatform` | 当前目标不支持实际访问 MVS SDK。 |
 
+### 清理错误
+
+| API | 签名 / 取值 | 说明 |
+| --- | --- | --- |
+| `CleanupStep` | `StopGrabbing`、`UnregisterImageCallback`、`UnregisterExceptionCallback`、`UnregisterEventCallback`、`CloseDevice`、`DestroyHandle` | 标识失败的原生清理步骤。 |
+| `CleanupFailure` | `step: CleanupStep`、`error: MvsError` | 一次清理步骤及其 SDK 错误。 |
+| `CleanupError::failures` | `fn failures(&self) -> &[CleanupFailure]` | 按原生调用顺序借用全部失败。 |
+| `CleanupError::into_failures` | `fn into_failures(self) -> Vec<CleanupFailure>` | 消费错误并返回有序失败列表。 |
+
 ### Trait 和行为
 
 | 类型 | Trait / 行为 |
@@ -366,6 +383,9 @@ guard.release()?;
 | `OwnedFrame` | `Clone`、`Debug`、`Send`、`Sync` |
 | `FrameGuard` | `Drop` 时自动释放 SDK buffer；不实现 `Send`、`Sync` |
 | `MvsError` | `Debug`、`Display`、`std::error::Error`、`Send`、`Sync` |
+| `CleanupStep` | `Copy`、`Clone`、`Debug`、`Display`、`Eq` |
+| `CleanupFailure` | `Debug`、`Display`、`std::error::Error`、`Send`、`Sync` |
+| `CleanupError` | `Debug`、`Display`、`std::error::Error`、`Send`、`Sync` |
 
 ### 非 Windows backend
 
