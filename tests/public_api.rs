@@ -125,7 +125,8 @@ fn cleanup_failure_api_contract(failure: &CleanupFailure) {
 }
 
 fn cleanup_step_api_contract() {
-    let _: [CleanupStep; 6] = [
+    let _: [CleanupStep; 7] = [
+        CleanupStep::DrainCallbacks,
         CleanupStep::StopGrabbing,
         CleanupStep::UnregisterImageCallback,
         CleanupStep::UnregisterExceptionCallback,

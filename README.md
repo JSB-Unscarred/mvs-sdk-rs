@@ -183,11 +183,13 @@ guard.release()?;
 | `exec_command` | `fn exec_command(&self, key: &str) -> MvsResult<()>` | 执行命令节点，例如 `TriggerSoftware`。 |
 | `close` | `fn close(self) -> Result<(), CleanupError>` | 消费 `Camera`，执行完整清理并返回所有清理失败。 |
 
-正常路径应显式调用 `Camera::close`，以观察清理错误。清理会依次尝试停止采集、注销所有回调、关闭设备和销毁 handle；某一步失败不会阻止后续步骤，`CleanupError` 按调用顺序保留所有失败。因此，`close` 返回 `Err` 时 handle 也可能已经成功销毁。drop 仅复用同一清理路径作为兜底，并忽略错误。
+正常路径应显式调用 `Camera::close`，以观察清理错误。清理会先停止并等待 Rust callback 退出，再依次尝试停止采集、注销所有回调、关闭设备和销毁 handle；某一步失败不会阻止后续步骤，`CleanupError` 按调用顺序保留所有失败。因此，`close` 返回 `Err` 时 handle 也可能已经成功销毁。drop 仅复用同一清理路径作为兜底，并忽略错误。若在该相机自己的 callback 内调用 `close`，清理不能等待当前 callback；此时不会调用任何原生 teardown，handle 与回调 backing 会被定向保留，并返回 `DrainCallbacks / CallOrder`。
 
 采集控制或回调注册、注销失败且结果可能已部分生效时，`Camera` 会进入故障状态。此后普通操作返回 `MvsError::CallOrder`，只保留 `as_raw_handle`、`is_connected`、`Debug` 等诊断能力和消费式 `close`。`event_notification_off` 只关闭设备端事件通知；需要移除 Rust callback 时还必须调用 `unregister_event_callback`。
 
 `Camera` 实现 `Send`，但不实现 `Sync`，同一相机实例的并发访问需要外部同步。
+
+重复注册同类或同名 callback 会在该相机的稳定槽位中替换 Rust closure，不会重复注册原生 `pUser`。注销会等待正在执行的 closure；方法返回后，迟到的原生调用只会看到已关闭的槽位。注销后重新注册会启用同一槽位，因此不区分原生注册代次，随后到达的调用均使用当前 closure。槽位及事件名 backing 会一直保留到原生 handle 成功销毁。
 
 ### 参数节点信息
 
@@ -357,9 +359,9 @@ guard.release()?;
 
 | API | 签名 / 取值 | 说明 |
 | --- | --- | --- |
-| `CleanupStep` | `StopGrabbing`、`UnregisterImageCallback`、`UnregisterExceptionCallback`、`UnregisterEventCallback`、`CloseDevice`、`DestroyHandle` | 标识失败的原生清理步骤。 |
-| `CleanupFailure` | `step: CleanupStep`、`error: MvsError` | 一次清理步骤及其 SDK 错误。 |
-| `CleanupError::failures` | `fn failures(&self) -> &[CleanupFailure]` | 按原生调用顺序借用全部失败。 |
+| `CleanupStep` | `DrainCallbacks`、`StopGrabbing`、`UnregisterImageCallback`、`UnregisterExceptionCallback`、`UnregisterEventCallback`、`CloseDevice`、`DestroyHandle` | 标识失败的清理步骤。 |
+| `CleanupFailure` | `step: CleanupStep`、`error: MvsError` | 一次清理步骤及其错误。 |
+| `CleanupError::failures` | `fn failures(&self) -> &[CleanupFailure]` | 按清理尝试顺序借用全部失败。 |
 | `CleanupError::into_failures` | `fn into_failures(self) -> Vec<CleanupFailure>` | 消费错误并返回有序失败列表。 |
 
 ### Trait 和行为

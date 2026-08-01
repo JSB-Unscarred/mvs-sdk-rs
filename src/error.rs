@@ -14,10 +14,12 @@ use crate::sys;
 /// Crate-wide result alias.
 pub type MvsResult<T> = Result<T, MvsError>;
 
-/// A native operation attempted while closing a camera.
+/// One operation attempted while closing a camera.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CleanupStep {
+    /// Drain Rust callbacks before native teardown.
+    DrainCallbacks,
     /// Stop image acquisition when it may still be active.
     StopGrabbing,
     /// Unregister the image callback.
@@ -35,6 +37,7 @@ pub enum CleanupStep {
 impl fmt::Display for CleanupStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            Self::DrainCallbacks => "drain callbacks",
             Self::StopGrabbing => "stop grabbing",
             Self::UnregisterImageCallback => "unregister image callback",
             Self::UnregisterExceptionCallback => "unregister exception callback",
@@ -45,7 +48,7 @@ impl fmt::Display for CleanupStep {
     }
 }
 
-/// One failed native operation from a camera cleanup attempt.
+/// One failed operation from a camera cleanup attempt.
 #[non_exhaustive]
 #[derive(Debug)]
 pub struct CleanupFailure {
@@ -69,10 +72,13 @@ impl std::error::Error for CleanupFailure {
 
 /// All failures observed while closing one camera.
 ///
-/// Cleanup continues after each failure so that handle destruction is always
-/// attempted, and failures are retained in call order. An error therefore
+/// Cleanup normally continues after each failure so that handle destruction
+/// is attempted, and failures are retained in call order. An error therefore
 /// does not imply that the handle is still alive: destruction may have
-/// succeeded after an earlier step failed.
+/// succeeded after an earlier step failed. Cleanup requested from within one
+/// of the same camera's callbacks is the exception: it reports
+/// [`CleanupStep::DrainCallbacks`] and deliberately skips native teardown to
+/// avoid waiting on the callback that is currently executing.
 #[derive(Debug)]
 pub struct CleanupError {
     failures: Vec<CleanupFailure>,
@@ -85,7 +91,7 @@ impl CleanupError {
         Self { failures }
     }
 
-    /// Return cleanup failures in the order the native calls were attempted.
+    /// Return cleanup failures in the order the operations were attempted.
     pub fn failures(&self) -> &[CleanupFailure] {
         &self.failures
     }

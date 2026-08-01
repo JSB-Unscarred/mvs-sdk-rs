@@ -97,8 +97,9 @@ impl Camera {
 
     /// Unregister the current image callback.
     ///
-    /// A native failure faults the camera because the callback may still be
-    /// registered. Cleanup will conservatively try to unregister it again.
+    /// This waits for an in-flight closure and silences later native calls.
+    /// A native failure still faults the camera because the stable slot may
+    /// remain registered; cleanup will conservatively unregister it again.
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_image_callback()
     }
@@ -127,8 +128,9 @@ impl Camera {
 
     /// Unregister the current device-exception callback.
     ///
-    /// A native failure faults the camera because the callback may still be
-    /// registered. Cleanup will conservatively try to unregister it again.
+    /// This waits for an in-flight closure and silences later native calls.
+    /// A native failure still faults the camera because the stable slot may
+    /// remain registered; cleanup will conservatively unregister it again.
     pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_exception_callback()
     }
@@ -159,6 +161,8 @@ impl Camera {
     ///
     /// This is distinct from [`Camera::event_notification_off`], which stops
     /// device-side event notification without removing the callback.
+    /// Returning from this method means the Rust closure is no longer running
+    /// and later native calls through the retained slot are ignored.
     pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
         self.inner.unregister_event_callback(event_name)
     }
@@ -235,13 +239,17 @@ impl Camera {
         self.inner.set_enum_value(key, value)
     }
 
-    /// Consume the camera and report every native cleanup failure.
+    /// Consume the camera and report every cleanup failure.
     ///
-    /// Cleanup attempts to stop acquisition, unregister every callback, close
-    /// the device, and destroy the handle. A failed step does not short-circuit
-    /// later steps, and [`CleanupError`] retains failures in call order.
+    /// Cleanup first silences and drains Rust callbacks, then attempts to stop
+    /// acquisition, unregister every native callback, close the device, and
+    /// destroy the handle. A failed step does not short-circuit later steps,
+    /// and [`CleanupError`] retains failures in call order.
     /// Consequently, an error does not imply that the handle is still alive:
     /// destruction may already have succeeded after an earlier failure.
+    /// Calling `close` from one of this camera's callbacks cannot safely wait
+    /// for that callback, so native teardown is skipped and reported as
+    /// `CleanupStep::DrainCallbacks` with `MvsError::CallOrder`.
     ///
     /// This is preferred over relying on [`Drop`], which uses the same cleanup
     /// path but cannot report its result.
