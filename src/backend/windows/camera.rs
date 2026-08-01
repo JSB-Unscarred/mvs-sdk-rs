@@ -8,7 +8,7 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_float, c_int, c_void};
 
-use crate::backend::CameraState;
+use crate::backend::{AcquisitionMode, CameraState};
 use crate::camera::{
     EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
     ImageCallback as ImageCallbackFn,
@@ -270,6 +270,33 @@ impl Camera {
         self.handle.ok_or(MvsError::CallOrder)
     }
 
+    fn grabbing_handle(&self) -> MvsResult<*mut c_void> {
+        if !self.state.is_grabbing() {
+            return Err(MvsError::CallOrder);
+        }
+        self.handle.ok_or(MvsError::CallOrder)
+    }
+
+    fn polling_handle(&self) -> MvsResult<*mut c_void> {
+        self.handle_in_state(CameraState::Grabbing(AcquisitionMode::Polling))
+    }
+
+    fn begin_grabbing(&mut self) -> MvsResult<*mut c_void> {
+        self.reject_callback_context()?;
+        let handle = self.handle_in_state(CameraState::Open)?;
+        let mode = if self
+            .image_cb
+            .as_ref()
+            .is_some_and(CallbackRecord::is_active)
+        {
+            AcquisitionMode::Callback
+        } else {
+            AcquisitionMode::Polling
+        };
+        self.state = CameraState::Grabbing(mode);
+        Ok(handle)
+    }
+
     fn fault_on_error(&mut self, result: MvsResult<()>) -> MvsResult<()> {
         if result.is_err() {
             self.state = CameraState::Faulted;
@@ -293,17 +320,15 @@ impl Camera {
     // ---- Grabbing control ----
 
     pub(crate) fn start_grabbing(&mut self) -> MvsResult<()> {
-        self.reject_callback_context()?;
-        let handle = self.handle_in_state(CameraState::Open)?;
+        let handle = self.begin_grabbing()?;
         // SAFETY: handle valid.
         let result = check(unsafe { sys::MV_CC_StartGrabbing(handle) });
-        self.state = CameraState::after_result(&result, CameraState::Grabbing);
-        result
+        self.fault_on_error(result)
     }
 
     pub(crate) fn stop_grabbing(&mut self) -> MvsResult<()> {
         self.reject_callback_context()?;
-        let handle = self.handle_in_state(CameraState::Grabbing)?;
+        let handle = self.grabbing_handle()?;
         // SAFETY: handle valid.
         let result = check(unsafe { sys::MV_CC_StopGrabbing(handle) });
         self.state = CameraState::after_result(&result, CameraState::Open);
@@ -313,7 +338,7 @@ impl Camera {
     /// Poll for an image, waiting up to `timeout_ms` milliseconds. The
     /// returned [`FrameGuard`] releases the SDK buffer on drop.
     pub(crate) fn get_image_buffer(&mut self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
-        let handle = self.handle_in_state(CameraState::Grabbing)?;
+        let handle = self.polling_handle()?;
         let mut raw = sys::MV_FRAME_OUT::default();
         // SAFETY: raw is zero-initialized and will be populated by the SDK.
         let code = unsafe { sys::MV_CC_GetImageBuffer(handle, &mut raw, timeout_ms) };
@@ -325,10 +350,6 @@ impl Camera {
 
     /// Register an image callback. The closure runs on the SDK's streaming
     /// thread; keep it short or forward the frame through a channel.
-    ///
-    /// Replacing the callback while grabbing is active is technically
-    /// supported by the SDK, but to be safe call [`Camera::stop_grabbing`]
-    /// first.
     pub(crate) fn register_image_callback(&mut self, f: ImageCallbackFn) -> MvsResult<()> {
         self.register_image_callback_with(f, &CallbackFns::NATIVE, &mut ())
     }
@@ -340,7 +361,7 @@ impl Camera {
         context: &mut C,
     ) -> MvsResult<()> {
         self.reject_callback_context()?;
-        let handle = self.normal_handle()?;
+        let handle = self.handle_in_state(CameraState::Open)?;
 
         let record = self.image_cb.get_or_insert_with(CallbackRecord::new);
         let previous = record.slot.activate(f);
@@ -383,7 +404,7 @@ impl Camera {
         context: &mut C,
     ) -> MvsResult<()> {
         self.reject_callback_context()?;
-        let handle = self.normal_handle()?;
+        let handle = self.handle_in_state(CameraState::Open)?;
         let Some(record) = self.image_cb.as_ref() else {
             return Ok(());
         };
@@ -769,10 +790,10 @@ impl Camera {
 }
 
 impl Camera {
-    pub(crate) fn debug_details(&self) -> (&'static str, bool, bool, bool, usize) {
+    pub(crate) fn debug_details(&self) -> (&'static str, Option<&'static str>, bool, bool, usize) {
         (
             self.state.name(),
-            self.state.is_grabbing(),
+            self.state.acquisition_mode(),
             self.image_cb
                 .as_ref()
                 .is_some_and(CallbackRecord::is_active),
@@ -819,7 +840,7 @@ impl Camera {
         // Tear down in reverse of open(). A successful DestroyHandle is the
         // SDK's quiescence boundary: after it returns, no new callback may use
         // one of the registered user pointers.
-        if matches!(self.state, CameraState::Grabbing | CameraState::Faulted) {
+        if self.state.is_grabbing() || self.state == CameraState::Faulted {
             let code = (fns.stop_grabbing)(context, handle);
             record_cleanup_result(&mut failures, CleanupStep::StopGrabbing, code);
         }
@@ -964,7 +985,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use crate::backend::CameraState;
+    use crate::backend::{AcquisitionMode, CameraState};
     use crate::camera::{
         EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
         ImageCallback as ImageCallbackFn,
@@ -1266,7 +1287,7 @@ mod tests {
     }
 
     fn camera_with_all_callbacks() -> Camera {
-        let mut camera = camera_with_handle(CameraState::Grabbing);
+        let mut camera = camera_with_handle(CameraState::Grabbing(AcquisitionMode::Callback));
         camera.image_cb = Some(active_record(image_callback()));
         camera.exception_cb = Some(active_record(exception_callback()));
         camera
@@ -1333,6 +1354,150 @@ mod tests {
 
     fn registration_count<T>(calls: &[T], is_registration: impl Fn(&T) -> bool) -> usize {
         calls.iter().filter(|call| is_registration(call)).count()
+    }
+
+    #[test]
+    fn begin_grabbing_selects_mode_from_the_active_image_slot_only() {
+        let mut polling = camera_with_handle(CameraState::Open);
+        polling.image_cb = Some(CallbackRecord::new());
+        polling.exception_cb = Some(active_record(exception_callback()));
+        polling
+            .event_cbs
+            .push(event_record("ExposureEnd", event_callback()));
+        let polling_handle = polling.handle.unwrap();
+
+        assert_eq!(polling.begin_grabbing().unwrap(), polling_handle);
+        assert_eq!(
+            polling.state,
+            CameraState::Grabbing(AcquisitionMode::Polling)
+        );
+
+        let mut callback = camera_with_handle(CameraState::Open);
+        callback.image_cb = Some(active_record(image_callback()));
+        let callback_handle = callback.handle.unwrap();
+
+        assert_eq!(callback.begin_grabbing().unwrap(), callback_handle);
+        assert_eq!(
+            callback.state,
+            CameraState::Grabbing(AcquisitionMode::Callback)
+        );
+
+        polling.handle = None;
+        callback.handle = None;
+    }
+
+    #[test]
+    fn grabbing_and_polling_handle_checks_distinguish_modes() {
+        for mode in [AcquisitionMode::Callback, AcquisitionMode::Polling] {
+            let mut camera = camera_with_handle(CameraState::Grabbing(mode));
+            let handle = camera.handle.unwrap();
+
+            assert_eq!(camera.grabbing_handle().unwrap(), handle);
+            if mode == AcquisitionMode::Polling {
+                assert_eq!(camera.polling_handle().unwrap(), handle);
+            } else {
+                assert!(matches!(camera.polling_handle(), Err(MvsError::CallOrder)));
+            }
+
+            camera.handle = None;
+        }
+    }
+
+    #[test]
+    fn grabbing_rejects_image_callback_changes_without_side_effects() {
+        let mut callbacks = FakeCallbacks::default();
+        let mut polling = camera_with_handle(CameraState::Grabbing(AcquisitionMode::Polling));
+
+        assert!(matches!(
+            polling.register_image_callback_with(
+                image_callback(),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks
+            ),
+            Err(MvsError::CallOrder)
+        ));
+        assert!(polling.image_cb.is_none());
+        assert!(matches!(
+            polling.unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks),
+            Err(MvsError::CallOrder)
+        ));
+        assert!(callbacks.image_calls.is_empty());
+
+        let old_drops = Arc::new(AtomicUsize::new(0));
+        let mut callback = camera_with_handle(CameraState::Grabbing(AcquisitionMode::Callback));
+        callback.image_cb = Some(active_record(probed_image_callback(Arc::clone(&old_drops))));
+        let old_user = callback.image_cb.as_ref().unwrap().user_data();
+
+        assert!(matches!(
+            callback.register_image_callback_with(
+                image_callback(),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks
+            ),
+            Err(MvsError::CallOrder)
+        ));
+        assert!(matches!(
+            callback.unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks),
+            Err(MvsError::CallOrder)
+        ));
+        let record = callback.image_cb.as_ref().unwrap();
+        assert_eq!(record.user_data(), old_user);
+        assert!(record.is_active());
+        assert_eq!(old_drops.load(Ordering::SeqCst), 0);
+        assert!(callbacks.image_calls.is_empty());
+
+        polling.handle = None;
+        callback.handle = None;
+    }
+
+    #[test]
+    fn exception_and_event_callbacks_do_not_change_acquisition_mode() {
+        let state = CameraState::Grabbing(AcquisitionMode::Polling);
+        let mut camera = camera_with_handle(state);
+        let mut callbacks = FakeCallbacks::default();
+
+        camera
+            .register_exception_callback_with(
+                exception_callback(),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
+        camera
+            .register_event_callback_with(
+                "ExposureEnd",
+                event_callback(),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
+        assert_eq!(camera.state, state);
+
+        camera
+            .unregister_exception_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks)
+            .unwrap();
+        camera
+            .unregister_event_callback_with("ExposureEnd", &FAKE_CALLBACK_FNS, &mut callbacks)
+            .unwrap();
+        assert_eq!(camera.state, state);
+        assert_eq!(callbacks.exception_calls.len(), 2);
+        assert_eq!(callbacks.event_calls.len(), 2);
+
+        camera.handle = None;
+    }
+
+    #[test]
+    fn cleanup_stops_both_grabbing_modes() {
+        for mode in [AcquisitionMode::Callback, AcquisitionMode::Polling] {
+            assert_cleanup_calls(
+                camera_with_handle(CameraState::Grabbing(mode)),
+                &[
+                    CleanupStep::StopGrabbing,
+                    CleanupStep::CloseDevice,
+                    CleanupStep::DestroyHandle,
+                ],
+            );
+        }
     }
 
     #[test]

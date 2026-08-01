@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 轮询取图
 
-需要主动等待单帧时，使用 `get_image_buffer`。返回的 `FrameGuard` 在 drop 时自动释放 SDK buffer。
+需要主动等待单帧时，在未注册图像回调的情况下开始采集，再使用 `get_image_buffer`。返回的 `FrameGuard` 在 drop 时自动释放 SDK buffer。
 
 ```rust
 cam.start_grabbing()?;
@@ -155,11 +155,11 @@ guard.release()?;
 | --- | --- | --- |
 | `as_raw_handle` | `fn as_raw_handle(&self) -> *mut c_void` | 返回底层 SDK handle，适合高级用法。 |
 | `is_connected` | `fn is_connected(&self) -> bool` | 检查设备是否仍连接。 |
-| `start_grabbing` | `fn start_grabbing(&mut self) -> MvsResult<()>` | 开始采集。 |
+| `start_grabbing` | `fn start_grabbing(&mut self) -> MvsResult<()>` | 开始采集；已有图像回调时进入回调模式，否则进入轮询模式。 |
 | `stop_grabbing` | `fn stop_grabbing(&mut self) -> MvsResult<()>` | 停止采集。 |
-| `get_image_buffer` | `fn get_image_buffer(&mut self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>>` | 轮询获取一帧图像，超时时间单位为毫秒。 |
-| `register_image_callback` | `fn register_image_callback<F>(&mut self, f: F) -> MvsResult<()> where F: FnMut(&Frame<'_>) + Send + 'static` | 注册图像回调。回调在 SDK 采集线程中执行，建议尽量短。 |
-| `unregister_image_callback` | `fn unregister_image_callback(&mut self) -> MvsResult<()>` | 注销图像回调。 |
+| `get_image_buffer` | `fn get_image_buffer(&mut self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>>` | 仅在轮询模式中获取一帧图像，超时时间单位为毫秒。 |
+| `register_image_callback` | `fn register_image_callback<F>(&mut self, f: F) -> MvsResult<()> where F: FnMut(&Frame<'_>) + Send + 'static` | 停止采集时注册或替换图像回调。回调在 SDK 采集线程中执行，建议尽量短。 |
+| `unregister_image_callback` | `fn unregister_image_callback(&mut self) -> MvsResult<()>` | 停止采集时注销图像回调。 |
 | `register_exception_callback` | `fn register_exception_callback<F>(&mut self, f: F) -> MvsResult<()> where F: FnMut(u32) + Send + 'static` | 注册异常回调，参数为 SDK 原始消息类型。 |
 | `unregister_exception_callback` | `fn unregister_exception_callback(&mut self) -> MvsResult<()>` | 注销异常回调。 |
 | `register_event_callback` | `fn register_event_callback<F>(&mut self, event_name: &str, f: F) -> MvsResult<()> where F: FnMut(&EventInfo<'_>) + Send + 'static` | 注册指定 GenICam 事件回调。 |
@@ -186,6 +186,8 @@ guard.release()?;
 正常路径应显式调用 `Camera::close`，以观察清理错误。清理会先停止并等待 Rust callback 退出，再依次尝试停止采集、注销所有回调、关闭设备和销毁 handle；某一步失败不会阻止后续步骤，`CleanupError` 按调用顺序保留所有失败。因此，`close` 返回 `Err` 时 handle 也可能已经成功销毁。drop 仅复用同一清理路径作为兜底，并忽略错误。若在该相机自己的 callback 内调用 `close`，清理不能等待当前 callback；此时不会调用任何原生 teardown，handle 与回调 backing 会被定向保留，并返回 `DrainCallbacks / CallOrder`。
 
 采集控制或回调注册、注销失败且结果可能已部分生效时，`Camera` 会进入故障状态。此后普通操作返回 `MvsError::CallOrder`，只保留 `as_raw_handle`、`is_connected`、`Debug` 等诊断能力和消费式 `close`。`event_notification_off` 只关闭设备端事件通知；需要移除 Rust callback 时还必须调用 `unregister_event_callback`。
+
+`start_grabbing` 会按当时是否存在有效图像回调选择采集模式，并将该模式固定到 `stop_grabbing` 成功为止；停止失败时相机会进入故障状态。回调模式拒绝 `get_image_buffer`；采集期间也不能注册、替换或注销图像回调。切换模式时应先停止采集，再修改图像回调，最后重新开始。异常回调和事件回调不参与采集模式选择。
 
 `Camera` 实现 `Send`，但不实现 `Sync`，同一相机实例的并发访问需要外部同步。
 

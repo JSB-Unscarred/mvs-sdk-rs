@@ -193,7 +193,6 @@ fn camera_api_contract(camera: &mut Camera) {
     let _: *mut c_void = camera.as_raw_handle();
     let _: bool = camera.is_connected();
     let _: MvsResult<()> = camera.start_grabbing();
-    let _: MvsResult<()> = camera.stop_grabbing();
 
     // End the guard result's mutable camera borrow before probing the next
     // method. The function is never executed; only its types are checked.
@@ -201,8 +200,7 @@ fn camera_api_contract(camera: &mut Camera) {
         let result: MvsResult<FrameGuard<'_>> = camera.get_image_buffer(100);
         drop(result);
     }
-
-    let _: MvsResult<()> = camera.unregister_image_callback();
+    let _: MvsResult<()> = camera.stop_grabbing();
 
     // Each closure deliberately combines two kinds of captured state:
     // - directly mutating a counter makes it FnMut-only rather than Fn;
@@ -234,6 +232,7 @@ fn camera_api_contract(camera: &mut Camera) {
         image_state.set(frame.data().len());
         let _: u32 = image_calls;
     });
+    let _: MvsResult<()> = camera.unregister_image_callback();
 
     let _: MvsResult<()> = camera.event_notification_on("ExposureEnd");
     let _: MvsResult<()> = camera.event_notification_off("ExposureEnd");

@@ -60,6 +60,11 @@ impl Camera {
         self.inner.is_connected()
     }
 
+    /// Start image acquisition in callback or polling mode.
+    ///
+    /// An active image callback selects callback mode; otherwise polling mode
+    /// is selected. The mode remains fixed until [`Camera::stop_grabbing`]
+    /// succeeds; a failed stop faults the camera.
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }
@@ -68,12 +73,20 @@ impl Camera {
         self.inner.stop_grabbing()
     }
 
+    /// Poll for one image while acquisition is running in polling mode.
+    ///
+    /// Calling this in callback mode returns [`MvsError::CallOrder`].
+    ///
+    /// [`MvsError::CallOrder`]: crate::MvsError::CallOrder
     pub fn get_image_buffer(&mut self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
         self.inner.get_image_buffer(timeout_ms).map(FrameGuard::new)
     }
 
     /// Register an image callback that may be invoked by the SDK's streaming
     /// thread.
+    ///
+    /// Registration and replacement require acquisition to be stopped. Stop,
+    /// update the callback, and start again to switch acquisition modes.
     ///
     /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
     ///
@@ -96,6 +109,8 @@ impl Camera {
     }
 
     /// Unregister the current image callback.
+    ///
+    /// Acquisition must be stopped before unregistering the callback.
     ///
     /// This waits for an in-flight closure and silences later native calls.
     /// A native failure still faults the camera because the stable slot may
@@ -260,11 +275,16 @@ impl Camera {
 
 impl fmt::Debug for Camera {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (state, grabbing, image_cb, exception_cb, event_cbs) = self.inner.debug_details();
-        f.debug_struct("Camera")
+        let (state, acquisition_mode, image_cb, exception_cb, event_cbs) =
+            self.inner.debug_details();
+        let mut debug = f.debug_struct("Camera");
+        debug
             .field("handle", &self.as_raw_handle())
-            .field("state", &state)
-            .field("grabbing", &grabbing)
+            .field("state", &state);
+        if let Some(mode) = acquisition_mode {
+            debug.field("acquisition_mode", &mode);
+        }
+        debug
             .field("image_cb", &image_cb)
             .field("exception_cb", &exception_cb)
             .field("event_cbs", &event_cbs)

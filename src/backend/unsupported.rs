@@ -218,8 +218,8 @@ impl Camera {
         unsupported()
     }
 
-    pub(crate) fn debug_details(&self) -> (&'static str, bool, bool, bool, usize) {
-        ("Closed", false, false, false, 0)
+    pub(crate) fn debug_details(&self) -> (&'static str, Option<&'static str>, bool, bool, usize) {
+        ("Closed", None, false, false, 0)
     }
 
     pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
