@@ -11,7 +11,7 @@ pub(crate) struct FrameGuard<'cam> {
     raw: sys::MV_FRAME_OUT,
     handle: *mut c_void,
     metadata: FrameMetadata,
-    _marker: PhantomData<&'cam mut ()>,
+    _marker: PhantomData<&'cam ()>,
 }
 
 impl<'cam> FrameGuard<'cam> {

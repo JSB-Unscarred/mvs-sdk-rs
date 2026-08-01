@@ -337,7 +337,7 @@ impl Camera {
 
     /// Poll for an image, waiting up to `timeout_ms` milliseconds. The
     /// returned [`FrameGuard`] releases the SDK buffer on drop.
-    pub(crate) fn get_image_buffer(&mut self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
+    pub(crate) fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
         let handle = self.polling_handle()?;
         let mut raw = sys::MV_FRAME_OUT::default();
         // SAFETY: raw is zero-initialized and will be populated by the SDK.

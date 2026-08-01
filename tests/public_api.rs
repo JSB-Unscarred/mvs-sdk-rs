@@ -40,7 +40,7 @@ assert_impl_all!(DeviceIter<'static>: Iterator, ExactSizeIterator, Send, Sync);
 assert_impl_all!(Camera: std::fmt::Debug, Send);
 assert_not_impl_any!(Camera: Sync);
 
-// A guard owns an SDK buffer tied to a mutable camera borrow and must remain
+// A guard owns an SDK buffer tied to a shared camera borrow and must remain
 // on the acquiring thread.
 assert_not_impl_any!(FrameGuard<'static>: Send, Sync);
 
@@ -189,13 +189,19 @@ fn camera_close_api_contract() {
     let _: fn(Camera) -> Result<(), CleanupError> = Camera::close;
 }
 
+fn polling_pipeline_api_contract(camera: &Camera) {
+    let first: MvsResult<FrameGuard<'_>> = camera.get_image_buffer(100);
+    let second: MvsResult<FrameGuard<'_>> = camera.get_image_buffer(100);
+    drop((first, second));
+}
+
 fn camera_api_contract(camera: &mut Camera) {
     let _: *mut c_void = camera.as_raw_handle();
     let _: bool = camera.is_connected();
     let _: MvsResult<()> = camera.start_grabbing();
 
-    // End the guard result's mutable camera borrow before probing the next
-    // method. The function is never executed; only its types are checked.
+    // End the guard result's shared camera borrow before calling a method that
+    // requires exclusive access. This function is compiled but never run.
     {
         let result: MvsResult<FrameGuard<'_>> = camera.get_image_buffer(100);
         drop(result);

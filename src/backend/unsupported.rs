@@ -115,7 +115,7 @@ impl Camera {
         unsupported()
     }
 
-    pub(crate) fn get_image_buffer(&mut self, _timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
+    pub(crate) fn get_image_buffer(&self, _timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
         unsupported()
     }
 
@@ -229,7 +229,7 @@ impl Camera {
 
 pub(crate) struct FrameGuard<'cam> {
     metadata: FrameMetadata,
-    _marker: PhantomData<&'cam mut ()>,
+    _marker: PhantomData<&'cam ()>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
 

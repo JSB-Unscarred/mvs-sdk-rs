@@ -35,8 +35,8 @@ pub struct Camera {
     _not_sync: PhantomData<Cell<()>>,
 }
 
-// SAFETY: the native SDK permits moving a handle between threads. Public
-// methods require `&mut self` for stateful operations, and `Cell` keeps !Sync.
+// SAFETY: the native SDK permits moving a handle between threads. Operations
+// that mutate Rust-managed state require `&mut self`, and `Cell` keeps !Sync.
 unsafe impl Send for Camera {}
 
 impl Camera {
@@ -76,9 +76,11 @@ impl Camera {
     /// Poll for one image while acquisition is running in polling mode.
     ///
     /// Calling this in callback mode returns [`MvsError::CallOrder`].
+    /// Multiple guards may coexist, up to the SDK's configured image-node
+    /// count. Each guard keeps the camera borrowed until it is released.
     ///
     /// [`MvsError::CallOrder`]: crate::MvsError::CallOrder
-    pub fn get_image_buffer(&mut self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
+    pub fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
         self.inner.get_image_buffer(timeout_ms).map(FrameGuard::new)
     }
 

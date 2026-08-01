@@ -157,7 +157,7 @@ guard.release()?;
 | `is_connected` | `fn is_connected(&self) -> bool` | 检查设备是否仍连接。 |
 | `start_grabbing` | `fn start_grabbing(&mut self) -> MvsResult<()>` | 开始采集；已有图像回调时进入回调模式，否则进入轮询模式。 |
 | `stop_grabbing` | `fn stop_grabbing(&mut self) -> MvsResult<()>` | 停止采集。 |
-| `get_image_buffer` | `fn get_image_buffer(&mut self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>>` | 仅在轮询模式中获取一帧图像，超时时间单位为毫秒。 |
+| `get_image_buffer` | `fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>>` | 仅在轮询模式中获取一帧图像，超时时间单位为毫秒；可同时持有不超过图像节点数的 buffer。 |
 | `register_image_callback` | `fn register_image_callback<F>(&mut self, f: F) -> MvsResult<()> where F: FnMut(&Frame<'_>) + Send + 'static` | 停止采集时注册或替换图像回调。回调在 SDK 采集线程中执行，建议尽量短。 |
 | `unregister_image_callback` | `fn unregister_image_callback(&mut self) -> MvsResult<()>` | 停止采集时注销图像回调。 |
 | `register_exception_callback` | `fn register_exception_callback<F>(&mut self, f: F) -> MvsResult<()> where F: FnMut(u32) + Send + 'static` | 注册异常回调，参数为 SDK 原始消息类型。 |
