@@ -7,6 +7,7 @@
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_float, c_int, c_void};
+use std::sync::Arc;
 
 use crate::backend::{AcquisitionMode, CameraState};
 use crate::camera::{
@@ -57,20 +58,31 @@ enum UncertainRegistration {
 }
 
 struct CallbackRecord<C> {
-    slot: Box<CallbackSlot<C>>,
+    slot: Arc<CallbackSlot<C>>,
+    native_slot: *const CallbackSlot<C>,
     native_registered: bool,
 }
 
 impl<C> CallbackRecord<C> {
     fn new() -> Self {
+        // Preserve a pointer produced by Arc::into_raw, as required by
+        // Arc::increment_strong_count in the trampoline, while immediately
+        // reconstructing the camera-owned strong reference. The record keeps
+        // that Arc alive for as long as the SDK may retain pUser.
+        let native_slot = Arc::into_raw(Arc::new(CallbackSlot::new()));
+        // SAFETY: `native_slot` was just produced by Arc::into_raw and is
+        // reconstructed exactly once. Later trampoline increments create
+        // independent strong references before calling Arc::from_raw.
+        let slot = unsafe { Arc::from_raw(native_slot) };
         Self {
-            slot: Box::new(CallbackSlot::new()),
+            slot,
+            native_slot,
             native_registered: false,
         }
     }
 
     fn user_data(&self) -> *mut c_void {
-        self.slot.user_data()
+        self.native_slot.cast_mut().cast()
     }
 
     fn is_active(&self) -> bool {
@@ -241,18 +253,24 @@ impl Camera {
         self.handle.ok_or(MvsError::CallOrder)
     }
 
-    fn is_callback_context(&self) -> bool {
+    fn is_exception_callback_context(&self) -> bool {
+        self.exception_cb
+            .as_ref()
+            .is_some_and(|record| record.slot.is_current())
+    }
+
+    fn is_restricted_callback_context(&self) -> bool {
         self.image_cb
             .as_ref()
             .is_some_and(|record| record.slot.is_current())
             || self
-                .exception_cb
-                .as_ref()
-                .is_some_and(|record| record.slot.is_current())
-            || self
                 .event_cbs
                 .iter()
                 .any(|record| record.callback.slot.is_current())
+    }
+
+    fn is_callback_context(&self) -> bool {
+        self.is_restricted_callback_context() || self.is_exception_callback_context()
     }
 
     fn reject_callback_context(&self) -> MvsResult<()> {
@@ -821,57 +839,78 @@ impl Camera {
             return Ok(());
         }
 
-        if self.is_callback_context() {
-            return self.abandon_from_callback_context();
+        // The SDK's reconnect sample explicitly closes and destroys a handle
+        // from its device-disconnect exception callback. It gives no such
+        // guarantee for image callbacks (whose frame is still borrowed) or
+        // event callbacks, so those contexts retain the conservative path.
+        if self.is_restricted_callback_context() {
+            return self.abandon_from_restricted_callback_context();
         }
+        let from_exception_callback = self.is_exception_callback_context();
 
         // Revoke admission for every slot before waiting for any one slot.
         // This prevents a busy callback from allowing another callback to
         // enter while cleanup is already under way.
         self.stop_accepting_callbacks();
-        self.drain_callbacks();
+        if from_exception_callback {
+            // The current exception trampoline owns the closure mutex and a
+            // temporary Arc reference. Drain every other slot now; it will
+            // remove this closure and release the last Arc after it returns.
+            self.drain_callbacks_except_current_exception();
+        } else {
+            self.drain_callbacks();
+        }
 
         // Reserve before consuming the handle so recording an error cannot
-        // allocate between native calls. There are at most five non-event
-        // attempts, one uncertain event, and one attempt per active event.
+        // allocate between native calls. Normal cleanup has at most five
+        // non-event attempts, one uncertain event, and one attempt per active
+        // event; exception-context cleanup uses only two of these slots.
         let mut failures = Vec::with_capacity(self.event_cbs.len().saturating_add(6));
         let handle = self.handle.take().expect("handle checked above");
 
-        // Tear down in reverse of open(). A successful DestroyHandle is the
-        // SDK's quiescence boundary: after it returns, no new callback may use
-        // one of the registered user pointers.
-        if self.state.is_grabbing() || self.state == CameraState::Faulted {
-            let code = (fns.stop_grabbing)(context, handle);
-            record_cleanup_result(&mut failures, CleanupStep::StopGrabbing, code);
-        }
-        if self
-            .image_cb
-            .as_ref()
-            .is_some_and(|record| record.native_registered)
-            || self.uncertain_registration == Some(UncertainRegistration::Image)
-        {
-            let code = (fns.unregister_image_callback)(context, handle);
-            record_cleanup_result(&mut failures, CleanupStep::UnregisterImageCallback, code);
-        }
-        if self
-            .exception_cb
-            .as_ref()
-            .is_some_and(|record| record.native_registered)
-            || self.uncertain_registration == Some(UncertainRegistration::Exception)
-        {
-            let code = (fns.unregister_exception_callback)(context, handle);
-            record_cleanup_result(
-                &mut failures,
-                CleanupStep::UnregisterExceptionCallback,
-                code,
-            );
-        }
-        for (index, record) in self.event_cbs.iter().enumerate() {
-            let uncertain =
-                self.uncertain_registration == Some(UncertainRegistration::Event(index));
-            if record.callback.native_registered || uncertain {
-                let code = (fns.unregister_event_callback)(context, handle, record.name.as_ptr());
-                record_cleanup_result(&mut failures, CleanupStep::UnregisterEventCallback, code);
+        // Normal cleanup tears down in reverse of open(). Inside an exception
+        // callback, stay within the SDK's documented reconnect pattern:
+        // CloseDevice followed by DestroyHandle, without stopping acquisition
+        // or unregistering the callback that is currently executing.
+        if !from_exception_callback {
+            if self.state.is_grabbing() || self.state == CameraState::Faulted {
+                let code = (fns.stop_grabbing)(context, handle);
+                record_cleanup_result(&mut failures, CleanupStep::StopGrabbing, code);
+            }
+            if self
+                .image_cb
+                .as_ref()
+                .is_some_and(|record| record.native_registered)
+                || self.uncertain_registration == Some(UncertainRegistration::Image)
+            {
+                let code = (fns.unregister_image_callback)(context, handle);
+                record_cleanup_result(&mut failures, CleanupStep::UnregisterImageCallback, code);
+            }
+            if self
+                .exception_cb
+                .as_ref()
+                .is_some_and(|record| record.native_registered)
+                || self.uncertain_registration == Some(UncertainRegistration::Exception)
+            {
+                let code = (fns.unregister_exception_callback)(context, handle);
+                record_cleanup_result(
+                    &mut failures,
+                    CleanupStep::UnregisterExceptionCallback,
+                    code,
+                );
+            }
+            for (index, record) in self.event_cbs.iter().enumerate() {
+                let uncertain =
+                    self.uncertain_registration == Some(UncertainRegistration::Event(index));
+                if record.callback.native_registered || uncertain {
+                    let code =
+                        (fns.unregister_event_callback)(context, handle, record.name.as_ptr());
+                    record_cleanup_result(
+                        &mut failures,
+                        CleanupStep::UnregisterEventCallback,
+                        code,
+                    );
+                }
             }
         }
 
@@ -893,8 +932,9 @@ impl Camera {
             self.leak_callback_backing();
         }
 
-        // On failure the raw native handle is intentionally leaked as well;
-        // taking it above guarantees this wrapper never retries teardown.
+        // When DestroyHandle fails, the raw native handle is intentionally
+        // leaked as well; taking it above guarantees this wrapper never
+        // retries teardown.
         self.state = CameraState::Closed;
 
         if failures.is_empty() {
@@ -934,6 +974,25 @@ impl Camera {
         }
     }
 
+    fn drain_callbacks_except_current_exception(&self) {
+        if let Some(record) = &self.image_cb
+            && let Some(callback) = record.slot.take_callback()
+        {
+            drop_callback_safely(callback);
+        }
+        if let Some(record) = &self.exception_cb
+            && !record.slot.is_current()
+            && let Some(callback) = record.slot.take_callback()
+        {
+            drop_callback_safely(callback);
+        }
+        for record in &self.event_cbs {
+            if let Some(callback) = record.callback.slot.take_callback() {
+                drop_callback_safely(callback);
+            }
+        }
+    }
+
     fn try_drain_callbacks(&self) {
         if let Some(record) = &self.image_cb
             && let Some(callback) = record.slot.deactivate_nonblocking()
@@ -952,13 +1011,13 @@ impl Camera {
         }
     }
 
-    fn abandon_from_callback_context(&mut self) -> Result<(), CleanupError> {
+    fn abandon_from_restricted_callback_context(&mut self) -> Result<(), CleanupError> {
         self.stop_accepting_callbacks();
         self.try_drain_callbacks();
 
-        // Native teardown can wait for the callback currently executing this
-        // code. Leave the handle and every native-referenced allocation alive
-        // instead of deadlocking or freeing the current trampoline's slot.
+        // Native teardown is not documented as safe from image/event callback
+        // contexts. Leave the handle and every native-referenced allocation
+        // alive instead of releasing borrowed data or the current slot.
         let _ = self.handle.take();
         self.leak_callback_backing();
         self.state = CameraState::Closed;
@@ -993,7 +1052,8 @@ mod tests {
     use crate::{CleanupStep, Frame, MvsError, sys};
 
     use super::{
-        CallbackFns, CallbackRecord, Camera, CleanupFns, EventRecord, UncertainRegistration,
+        CallbackFns, CallbackRecord, CallbackSlot, Camera, CleanupFns, EventRecord,
+        UncertainRegistration,
     };
 
     const FULL_CLEANUP_STEPS: [CleanupStep; 7] = [
@@ -2079,17 +2139,188 @@ mod tests {
     unsafe impl Send for SendCamera {}
 
     #[test]
-    fn callback_context_cleanup_abandons_without_native_teardown() {
+    fn exception_callback_cleanup_closes_and_destroys_then_defers_current_slot() {
+        type Outcome = (bool, Vec<CleanupStep>, Vec<usize>, bool, bool, usize);
+
         let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
-        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let outcome = Arc::new(Mutex::new(None::<Outcome>));
+        let slot_weak_holder = Arc::new(Mutex::new(
+            None::<std::sync::Weak<CallbackSlot<ExceptionCallbackFn>>>,
+        ));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let current_probe = DropProbe(Arc::clone(&drops));
         let holder_for_callback = Arc::clone(&camera_holder);
         let outcome_for_callback = Arc::clone(&outcome);
+        let weak_for_callback = Arc::clone(&slot_weak_holder);
+        let drops_for_callback = Arc::clone(&drops);
+
+        let mut camera = camera_with_handle(CameraState::Grabbing(AcquisitionMode::Callback));
+        let mut callbacks = FakeCallbacks::default();
+        camera
+            .register_exception_callback_with(
+                Box::new(move |_| {
+                    let _ = &current_probe;
+                    let SendCamera(mut camera) = holder_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                        .expect("camera installed before callback");
+
+                    let mut native = FakeCleanup::with_results_and_probe(
+                        [sys::MV_OK, sys::MV_OK],
+                        Arc::clone(&drops_for_callback),
+                    );
+                    let result = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+                    let slot_is_pinned = weak_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .expect("slot weak reference installed before callback")
+                        .upgrade()
+                        .is_some();
+                    let camera_is_closed =
+                        camera.handle.is_none() && camera.state == CameraState::Closed;
+                    let calls = std::mem::take(&mut native.calls);
+                    let drops_seen = std::mem::take(&mut native.drops_seen);
+                    *outcome_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+                        result.is_ok(),
+                        calls,
+                        drops_seen,
+                        slot_is_pinned,
+                        camera_is_closed,
+                        drops_for_callback.load(Ordering::SeqCst),
+                    ));
+                }),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
+        camera.image_cb = Some(active_record(probed_image_callback(Arc::clone(&drops))));
+        camera.event_cbs.push(event_record(
+            "ExposureEnd",
+            probed_event_callback(Arc::clone(&drops)),
+        ));
+
+        let slot_weak = Arc::downgrade(&camera.exception_cb.as_ref().unwrap().slot);
+        *slot_weak_holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(slot_weak.clone());
+        *camera_holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+
+        callbacks.invoke_exception(0);
+
+        let (
+            succeeded,
+            native_calls,
+            drops_seen,
+            slot_was_pinned,
+            camera_was_closed,
+            drops_in_callback,
+        ) = outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("callback recorded cleanup outcome");
+        assert!(succeeded);
+        assert_eq!(
+            native_calls,
+            [CleanupStep::CloseDevice, CleanupStep::DestroyHandle]
+        );
+        assert_eq!(drops_seen, [2, 2]);
+        assert!(slot_was_pinned);
+        assert!(camera_was_closed);
+        assert_eq!(drops_in_callback, 2);
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
+        assert!(slot_weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn exception_callback_destroy_failure_keeps_backing_and_silences_late_calls() {
+        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
+        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let callback_drops = Arc::new(AtomicUsize::new(0));
+        let probe = DropProbe(Arc::clone(&callback_drops));
+        let holder_for_callback = Arc::clone(&camera_holder);
+        let outcome_for_callback = Arc::clone(&outcome);
+        let calls_for_callback = Arc::clone(&callback_calls);
+
+        let mut camera = camera_with_handle(CameraState::Open);
+        let mut callbacks = FakeCallbacks::default();
+        camera
+            .register_exception_callback_with(
+                Box::new(move |_| {
+                    let _ = &probe;
+                    calls_for_callback.fetch_add(1, Ordering::SeqCst);
+                    let SendCamera(mut camera) = holder_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                        .expect("camera installed before callback");
+                    let mut native = FakeCleanup::with_results([sys::MV_OK, sys::MV_E_RESOURCE]);
+                    let error = camera
+                        .cleanup_with(&FAKE_CLEANUP_FNS, &mut native)
+                        .expect_err("destroy failure must be reported");
+                    let failure_steps = error
+                        .failures()
+                        .iter()
+                        .map(|failure| failure.step)
+                        .collect();
+                    *outcome_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((native.calls, failure_steps));
+                }),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
+
+        let slot_weak = Arc::downgrade(&camera.exception_cb.as_ref().unwrap().slot);
+        *camera_holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        callbacks.invoke_exception(0);
+
+        let (native_calls, failure_steps) = outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("callback recorded cleanup outcome");
+        assert_eq!(
+            native_calls,
+            [CleanupStep::CloseDevice, CleanupStep::DestroyHandle]
+        );
+        assert_eq!(failure_steps, [CleanupStep::DestroyHandle]);
+        assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(callback_drops.load(Ordering::SeqCst), 1);
+        assert!(slot_weak.upgrade().is_some());
+
+        // The failed destroy may leave pUser registered. Its backing is
+        // intentionally leaked, but the closure has been removed.
+        callbacks.invoke_exception(0);
+        assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn image_callback_cleanup_abandons_without_native_teardown() {
+        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
+        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let holder_for_callback = Arc::clone(&camera_holder);
+        let outcome_for_callback = Arc::clone(&outcome);
+        let calls_for_callback = Arc::clone(&callback_calls);
 
         let mut camera = camera_with_handle(CameraState::Open);
         let mut callbacks = FakeCallbacks::default();
         camera
             .register_image_callback_with(
                 Box::new(move |_| {
+                    calls_for_callback.fetch_add(1, Ordering::SeqCst);
                     let SendCamera(mut camera) = holder_for_callback
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2178,6 +2409,134 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_none()
         );
+
+        // DestroyHandle was deliberately skipped, so a late native call may
+        // still reach the leaked backing but must observe the disabled slot.
+        callbacks.invoke_image(0);
+        assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn nested_exception_inside_image_callback_remains_conservative() {
+        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
+        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let holder_for_callback = Arc::clone(&camera_holder);
+        let outcome_for_callback = Arc::clone(&outcome);
+
+        let mut camera = camera_with_handle(CameraState::Open);
+        let mut callbacks = FakeCallbacks::default();
+        camera
+            .register_exception_callback_with(
+                Box::new(move |_| {
+                    let SendCamera(mut camera) = holder_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                        .expect("camera installed before nested callback");
+                    let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
+                    let error = camera
+                        .cleanup_with(&FAKE_CLEANUP_FNS, &mut native)
+                        .expect_err("outer image borrow must keep cleanup conservative");
+                    let failure_steps = error
+                        .failures()
+                        .iter()
+                        .map(|failure| failure.step)
+                        .collect();
+                    *outcome_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((native.calls, failure_steps));
+                }),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
+        let exception_call = callbacks.exception_calls[0];
+        camera
+            .register_image_callback_with(
+                Box::new(move |_| {
+                    let callback = exception_call
+                        .callback
+                        .expect("expected an exception registration");
+                    // SAFETY: the Camera containing this live exception slot
+                    // remains in the holder until the nested callback takes it.
+                    unsafe { callback(7, exception_call.user as *mut c_void) };
+                }),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
+
+        *camera_holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        callbacks.invoke_image(0);
+
+        let (native_calls, failure_steps) = outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("nested callback recorded cleanup outcome");
+        assert!(native_calls.is_empty());
+        assert_eq!(failure_steps, [CleanupStep::DrainCallbacks]);
+    }
+
+    #[test]
+    fn event_callback_cleanup_abandons_without_native_teardown() {
+        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
+        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let holder_for_callback = Arc::clone(&camera_holder);
+        let outcome_for_callback = Arc::clone(&outcome);
+        let calls_for_callback = Arc::clone(&callback_calls);
+
+        let mut camera = camera_with_handle(CameraState::Open);
+        let mut callbacks = FakeCallbacks::default();
+        camera
+            .register_event_callback_with(
+                "ExposureEnd",
+                Box::new(move |_| {
+                    calls_for_callback.fetch_add(1, Ordering::SeqCst);
+                    let SendCamera(mut camera) = holder_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                        .expect("camera installed before callback");
+
+                    let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
+                    let error = camera
+                        .cleanup_with(&FAKE_CLEANUP_FNS, &mut native)
+                        .expect_err("event callback cleanup must remain conservative");
+                    let failure_steps = error
+                        .failures()
+                        .iter()
+                        .map(|failure| failure.step)
+                        .collect();
+                    *outcome_for_callback
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some((native.calls, failure_steps));
+                }),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
+
+        *camera_holder
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        callbacks.invoke_event(0);
+
+        let (native_calls, failure_steps) = outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("callback recorded cleanup outcome");
+        assert!(native_calls.is_empty());
+        assert_eq!(failure_steps, [CleanupStep::DrainCallbacks]);
+
+        callbacks.invoke_event(0);
+        assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

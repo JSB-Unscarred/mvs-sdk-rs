@@ -264,9 +264,14 @@ impl Camera {
     /// and [`CleanupError`] retains failures in call order.
     /// Consequently, an error does not imply that the handle is still alive:
     /// destruction may already have succeeded after an earlier failure.
-    /// Calling `close` from one of this camera's callbacks cannot safely wait
-    /// for that callback, so native teardown is skipped and reported as
-    /// `CleanupStep::DrainCallbacks` with `MvsError::CallOrder`.
+    /// Calling `close` from this camera's image callback cannot release the
+    /// frame that callback is still borrowing; event callbacks are treated
+    /// conservatively as well. Those contexts skip native teardown and report
+    /// `CleanupStep::DrainCallbacks` with `MvsError::CallOrder`. The SDK does
+    /// explicitly support closing and destroying a disconnected handle from
+    /// its exception callback, so that context performs only `CloseDevice`
+    /// followed by `DestroyHandle`; the current callback slot stays alive
+    /// until its trampoline returns.
     ///
     /// This is preferred over relying on [`Drop`], which uses the same cleanup
     /// path but cannot report its result.

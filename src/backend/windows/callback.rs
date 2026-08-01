@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::os::raw::{c_uchar, c_uint, c_void};
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
 use crate::callback::EventInfo;
 use crate::camera::{
@@ -23,12 +23,16 @@ thread_local! {
 ///
 /// # Native lifetime contract
 ///
-/// The owning camera keeps this slot allocated until
-/// `MV_CC_DestroyHandle(handle)` returns `MV_OK`. That successful return is
-/// the quiescence boundary: the SDK must not subsequently start or retain a
-/// callback that can access this slot (or an event name passed alongside it).
-/// Register, unregister, stop, and close are not assumed to drain callbacks,
-/// so admission can be revoked independently while the allocation stays put.
+/// The owning camera keeps an [`Arc`] reference to this slot until
+/// `MV_CC_DestroyHandle(handle)` returns `MV_OK`. Every trampoline acquires a
+/// temporary strong reference on entry, so a supported teardown from an
+/// exception callback may release the camera's reference while the current
+/// invocation keeps the slot alive until it returns. A successful handle
+/// destruction is the quiescence boundary: the SDK must not subsequently
+/// start or retain a callback that can access this slot (or an event name
+/// passed alongside it). Register, unregister, stop, and close are not
+/// otherwise assumed to drain callbacks, so admission can be revoked
+/// independently while the allocation stays put.
 pub(super) struct CallbackSlot<C> {
     accepting: AtomicBool,
     callback: Mutex<Option<C>>,
@@ -40,10 +44,6 @@ impl<C> CallbackSlot<C> {
             accepting: AtomicBool::new(false),
             callback: Mutex::new(None),
         }
-    }
-
-    pub(super) fn user_data(&self) -> *mut c_void {
-        (self as *const Self).cast_mut().cast()
     }
 
     pub(super) fn is_current(&self) -> bool {
@@ -214,10 +214,18 @@ unsafe fn invoke_slot<C>(user: *mut c_void, callback_name: &str, invoke: impl Fn
         return;
     }
 
-    // SAFETY: `user` points to the live boxed CallbackSlot<C> registered for
-    // this exact trampoline type. The owner retains it until successful
-    // native handle destruction (or leaks it when destruction is uncertain).
-    let slot = unsafe { &*user.cast::<CallbackSlot<C>>() };
+    let slot_ptr = user.cast::<CallbackSlot<C>>();
+    // SAFETY: `user` was originally produced by `Arc::into_raw` for the live
+    // CallbackSlot<C> registered for this exact trampoline type. The camera
+    // retains the reconstructed associated strong reference until successful
+    // handle destruction (or leaks it when destruction is uncertain), so the
+    // count is non-zero when the SDK is permitted to enter this callback. This
+    // temporary strong reference pins the slot if an exception callback
+    // destroys its camera.
+    unsafe { Arc::increment_strong_count(slot_ptr) };
+    // SAFETY: the increment above created the strong reference reconstructed
+    // here. It is released on every return path when `slot` is dropped.
+    let slot = unsafe { Arc::from_raw(slot_ptr) };
     let Some(_context) = CallbackContextGuard::enter(slot.address()) else {
         // FnMut is serialized by a non-reentrant mutex. Reject synchronous
         // recursion into the same slot instead of self-deadlocking.
@@ -331,10 +339,37 @@ mod tests {
         }
     }
 
+    struct NativeSlot<C> {
+        slot: Arc<CallbackSlot<C>>,
+        user: *const CallbackSlot<C>,
+    }
+
+    impl<C> NativeSlot<C> {
+        fn new() -> Self {
+            let user = Arc::into_raw(Arc::new(CallbackSlot::new()));
+            // SAFETY: `user` was just produced by Arc::into_raw and is
+            // reconstructed exactly once into this test owner's Arc.
+            let slot = unsafe { Arc::from_raw(user) };
+            Self { slot, user }
+        }
+
+        fn user_data(&self) -> *mut c_void {
+            self.user.cast_mut().cast()
+        }
+    }
+
+    impl<C> std::ops::Deref for NativeSlot<C> {
+        type Target = CallbackSlot<C>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.slot
+        }
+    }
+
     #[test]
     fn slot_address_is_stable_across_replacement_and_deactivation() {
         let drops = Arc::new(AtomicUsize::new(0));
-        let slot = Box::new(CallbackSlot::<ExceptionCallbackFn>::new());
+        let slot = NativeSlot::<ExceptionCallbackFn>::new();
         let user = slot.user_data();
 
         let first_probe = DropProbe(Arc::clone(&drops));
@@ -363,7 +398,7 @@ mod tests {
     #[test]
     fn disabled_slot_ignores_late_native_invocations() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let slot = Box::new(CallbackSlot::<ExceptionCallbackFn>::new());
+        let slot = NativeSlot::<ExceptionCallbackFn>::new();
         let callback_calls = Arc::clone(&calls);
         assert!(
             slot.activate(Box::new(move |_| {
@@ -383,7 +418,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let (entered_tx, entered_rx) = mpsc::sync_channel(0);
         let (release_tx, release_rx) = mpsc::sync_channel(0);
-        let slot = Box::new(CallbackSlot::<ExceptionCallbackFn>::new());
+        let slot = NativeSlot::<ExceptionCallbackFn>::new();
         let callback_calls = Arc::clone(&calls);
         assert!(
             slot.activate(Box::new(move |_| {
@@ -404,7 +439,7 @@ mod tests {
 
             let (started_tx, started_rx) = mpsc::sync_channel(0);
             let (finished_tx, finished_rx) = mpsc::sync_channel(0);
-            let slot = &slot;
+            let slot = Arc::clone(&slot.slot);
             scope.spawn(move || {
                 started_tx.send(()).unwrap();
                 let callback = slot.deactivate();
@@ -432,7 +467,7 @@ mod tests {
     fn same_slot_synchronous_reentry_is_rejected() {
         let calls = Arc::new(AtomicUsize::new(0));
         let address = Arc::new(AtomicUsize::new(0));
-        let slot = Box::new(CallbackSlot::<ExceptionCallbackFn>::new());
+        let slot = NativeSlot::<ExceptionCallbackFn>::new();
         let callback_calls = Arc::clone(&calls);
         let callback_address = Arc::clone(&address);
         assert!(
@@ -456,7 +491,7 @@ mod tests {
     fn different_slots_may_nest_on_one_thread() {
         let outer_calls = Arc::new(AtomicUsize::new(0));
         let inner_calls = Arc::new(AtomicUsize::new(0));
-        let inner = Box::new(CallbackSlot::<ExceptionCallbackFn>::new());
+        let inner = NativeSlot::<ExceptionCallbackFn>::new();
         let counted_inner = Arc::clone(&inner_calls);
         assert!(
             inner
@@ -466,7 +501,7 @@ mod tests {
                 .is_none()
         );
 
-        let outer = Box::new(CallbackSlot::<ExceptionCallbackFn>::new());
+        let outer = NativeSlot::<ExceptionCallbackFn>::new();
         let counted_outer = Arc::clone(&outer_calls);
         let inner_user = inner.user_data() as usize;
         assert!(
@@ -491,7 +526,7 @@ mod tests {
     fn callback_panic_is_contained_and_slot_remains_usable() {
         let calls = Arc::new(AtomicUsize::new(0));
         let callback_calls = Arc::clone(&calls);
-        let slot = Box::new(CallbackSlot::<ExceptionCallbackFn>::new());
+        let slot = NativeSlot::<ExceptionCallbackFn>::new();
         assert!(
             slot.activate(Box::new(move |_| {
                 if callback_calls.fetch_add(1, Ordering::Relaxed) == 0 {

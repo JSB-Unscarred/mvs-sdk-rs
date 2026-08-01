@@ -183,7 +183,7 @@ guard.release()?;
 | `exec_command` | `fn exec_command(&self, key: &str) -> MvsResult<()>` | 执行命令节点，例如 `TriggerSoftware`。 |
 | `close` | `fn close(self) -> Result<(), CleanupError>` | 消费 `Camera`，执行完整清理并返回所有清理失败。 |
 
-正常路径应显式调用 `Camera::close`，以观察清理错误。清理会先停止并等待 Rust callback 退出，再依次尝试停止采集、注销所有回调、关闭设备和销毁 handle；某一步失败不会阻止后续步骤，`CleanupError` 按调用顺序保留所有失败。因此，`close` 返回 `Err` 时 handle 也可能已经成功销毁。drop 仅复用同一清理路径作为兜底，并忽略错误。若在该相机自己的 callback 内调用 `close`，清理不能等待当前 callback；此时不会调用任何原生 teardown，handle 与回调 backing 会被定向保留，并返回 `DrainCallbacks / CallOrder`。
+正常路径应显式调用 `Camera::close`，以观察清理错误。清理会先停止并等待 Rust callback 退出，再依次尝试停止采集、注销所有回调、关闭设备和销毁 handle；某一步失败不会阻止后续步骤，`CleanupError` 按调用顺序保留所有失败。因此，`close` 返回 `Err` 时 handle 也可能已经成功销毁。drop 仅复用同一清理路径作为兜底，并忽略错误。若在该相机自己的图像 callback 内调用 `close`，因当前 frame 仍被借用而不能安全释放；事件 callback 在 SDK 没有明确保证前也按相同策略处理。这两种上下文不会调用原生 teardown，handle 与回调 backing 会被定向保留，并返回 `DrainCallbacks / CallOrder`。MVS 官方重连流程明确支持在断连 exception callback 内关闭并销毁旧 handle，因此该上下文只执行 `CloseDevice → DestroyHandle`，跳过没有同等保证的停止采集和回调注销；当前 exception slot 由 trampoline 保持到 callback 返回后再释放。
 
 采集控制或回调注册、注销失败且结果可能已部分生效时，`Camera` 会进入故障状态。此后普通操作返回 `MvsError::CallOrder`，只保留 `as_raw_handle`、`is_connected`、`Debug` 等诊断能力和消费式 `close`。`event_notification_off` 只关闭设备端事件通知；需要移除 Rust callback 时还必须调用 `unregister_event_callback`。
 

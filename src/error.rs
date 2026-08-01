@@ -75,10 +75,11 @@ impl std::error::Error for CleanupFailure {
 /// Cleanup normally continues after each failure so that handle destruction
 /// is attempted, and failures are retained in call order. An error therefore
 /// does not imply that the handle is still alive: destruction may have
-/// succeeded after an earlier step failed. Cleanup requested from within one
-/// of the same camera's callbacks is the exception: it reports
+/// succeeded after an earlier step failed. Cleanup requested from within the
+/// same camera's image or event callback is the exception: it reports
 /// [`CleanupStep::DrainCallbacks`] and deliberately skips native teardown to
-/// avoid waiting on the callback that is currently executing.
+/// avoid releasing data still borrowed by that callback. Exception callbacks
+/// use the SDK-supported `CloseDevice`/`DestroyHandle` reconnect path instead.
 #[derive(Debug)]
 pub struct CleanupError {
     failures: Vec<CleanupFailure>,
