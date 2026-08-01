@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let devices = sdk.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB)?;
     let Some(device) = devices.iter().next() else {
         println!("No camera found");
+        sdk.shutdown()?;
         return Ok(());
     };
 
@@ -47,10 +48,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::sleep(std::time::Duration::from_secs(3));
     cam.stop_grabbing()?;
     cam.close()?;
+    sdk.shutdown()?;
 
     Ok(())
 }
 ```
+
+`Sdk` 是进程级单例：初始化失败不会被缓存，成功后的重复 `init()` 返回同一实例。正常退出顺序是关闭所有 `Camera`，再调用 `sdk.shutdown()`。shutdown 成功后本进程不能重新初始化；`InUse` 可在关闭活动资源后重试，`UnresolvedResources` 或 Finalize 失败则应记录错误并结束进程。
 
 ## 轮询取图
 
@@ -75,17 +79,18 @@ guard.release()?;
 
 | 路径 | 导出 |
 | --- | --- |
-| `mvs_sdk_rs::*` | `Sdk`、`TransportLayer`、`DeviceList`、`DeviceIter`、`DeviceInfo`、`AccessMode`、`Camera`、`IntNode`、`FloatNode`、`EnumNode`、`EventInfo`、`Frame`、`FrameGuard`、`FrameInfo`、`OwnedFrame`、`PixelType`、`MvsResult`、`MvsError`、`CleanupStep`、`CleanupFailure`、`CleanupError` |
-| `mvs_sdk_rs::error::*` | `MvsResult`、`MvsError`、`CleanupStep`、`CleanupFailure`、`CleanupError` |
+| `mvs_sdk_rs::*` | `Sdk`、`TransportLayer`、`DeviceList`、`DeviceIter`、`DeviceInfo`、`AccessMode`、`Camera`、`IntNode`、`FloatNode`、`EnumNode`、`EventInfo`、`Frame`、`FrameGuard`、`FrameInfo`、`OwnedFrame`、`PixelType`、`MvsResult`、`MvsError`、`ShutdownError`、`CleanupStep`、`CleanupFailure`、`CleanupError` |
+| `mvs_sdk_rs::error::*` | `MvsResult`、`MvsError`、`ShutdownError`、`CleanupStep`、`CleanupFailure`、`CleanupError` |
 | `Camera` 方法返回值 | `IntNode`、`FloatNode`、`EnumNode`，分别由 `get_int_range`、`get_float_range`、`get_enum_info` 返回 |
 
 ### `Sdk`
 
 | API | 签名 | 说明 |
 | --- | --- | --- |
-| `Sdk::init` | `fn init() -> MvsResult<Arc<Sdk>>` | 初始化 MVS SDK。进程内只初始化一次，多次调用成本很低。 |
-| `Sdk::sdk_version` | `fn sdk_version(&self) -> u32` | 返回 MVS SDK packed version，解释方式以 MVS 文档为准。 |
-| `Sdk::enumerate_devices` | `fn enumerate_devices(self: &Arc<Self>, layers: TransportLayer) -> MvsResult<DeviceList>` | 枚举指定传输层上的设备，常用 <code>TransportLayer::GIGE &#124; TransportLayer::USB</code>。 |
+| `Sdk::init` | `fn init() -> MvsResult<Arc<Sdk>>` | 初始化进程级 MVS SDK；只缓存成功结果，重复调用返回同一 Arc。 |
+| `Sdk::shutdown` | `fn shutdown(&self) -> Result<(), ShutdownError>` | 在无活动相机、callback 或 unresolved handle 时执行进程级 Finalize；成功后不可重新初始化。 |
+| `Sdk::sdk_version` | `fn sdk_version(&self) -> u32` | 返回初始化时缓存的 packed version。 |
+| `Sdk::enumerate_devices` | `fn enumerate_devices(&self, layers: TransportLayer) -> MvsResult<DeviceList>` | 枚举指定传输层上的设备，常用 <code>TransportLayer::GIGE &#124; TransportLayer::USB</code>。 |
 
 ### `TransportLayer`
 
@@ -115,8 +120,8 @@ guard.release()?;
 | `DeviceList::len` | `fn len(&self) -> usize` | 返回设备数量。 |
 | `DeviceList::is_empty` | `fn is_empty(&self) -> bool` | 判断是否没有设备。 |
 | `DeviceList::iter` | `fn iter(&self) -> DeviceIter<'_>` | 遍历设备列表。 |
-| `DeviceList::get` | `fn get(&self, index: usize) -> Option<DeviceInfo<'_>>` | 按索引获取设备信息。 |
-| `DeviceIter` | `Iterator<Item = DeviceInfo<'_>>` | 设备迭代器，同时实现 `ExactSizeIterator`。 |
+| `DeviceList::get` | `fn get(&self, index: usize) -> Option<DeviceInfo>` | 按索引获取 owned 设备快照。 |
+| `DeviceIter` | `Iterator<Item = DeviceInfo>` | 设备迭代器，同时实现 `ExactSizeIterator`。 |
 
 ### `DeviceInfo`
 
@@ -131,7 +136,7 @@ guard.release()?;
 | `user_defined_name` | `fn user_defined_name(&self) -> String` | 读取用户自定义名称。 |
 | `ip` | `fn ip(&self) -> Option<Ipv4Addr>` | 读取 GigE 设备当前 IP，其它传输层返回 `None`。 |
 | `host_nic_ip` | `fn host_nic_ip(&self) -> Option<Ipv4Addr>` | 读取 GigE 设备所在主机网卡 IP，其它传输层返回 `None`。 |
-| `is_accessible` | `fn is_accessible(&self, mode: AccessMode) -> bool` | 检查设备当前是否能用指定模式打开。 |
+| `is_accessible` | `fn is_accessible(&self, mode: AccessMode) -> MvsResult<bool>` | 检查设备当前是否能用指定模式打开；SDK 已 shutdown 时返回生命周期错误。 |
 | `open` | `fn open(&self, mode: AccessMode) -> MvsResult<Camera>` | 按指定访问模式打开相机。 |
 | `open_exclusive` | `fn open_exclusive(&self) -> MvsResult<Camera>` | 以 `AccessMode::Exclusive` 打开。 |
 | `open_control` | `fn open_control(&self) -> MvsResult<Camera>` | 以 `AccessMode::Control` 打开。 |
@@ -231,14 +236,14 @@ guard.release()?;
 | 类型 | API | 签名 | 说明 |
 | --- | --- | --- | --- |
 | `Frame<'a>` | `data` | `fn data(&self) -> &[u8]` | 借用当前帧像素数据。 |
-| `Frame<'a>` | `info` | `fn info(&self) -> &FrameInfo<'a>` | 读取当前帧元数据。 |
+| `Frame<'a>` | `info` | `fn info(&self) -> FrameInfo` | 返回 owned 元数据快照。 |
 | `Frame<'a>` | `to_owned` | `fn to_owned(&self) -> OwnedFrame` | 复制为拥有独立 buffer 的帧。 |
 | `FrameGuard<'cam>` | `frame` | `fn frame(&self) -> Frame<'_>` | 从 SDK buffer 借用一帧。 |
-| `FrameGuard<'cam>` | `info` | `fn info(&self) -> FrameInfo<'_>` | 直接读取 guard 内的帧元数据。 |
+| `FrameGuard<'cam>` | `info` | `fn info(&self) -> FrameInfo` | 返回 owned 元数据快照。 |
 | `FrameGuard<'cam>` | `to_owned` | `fn to_owned(&self) -> OwnedFrame` | 复制为 `OwnedFrame`。 |
 | `FrameGuard<'cam>` | `release` | `fn release(self) -> MvsResult<()>` | 显式释放 SDK buffer；不调用也会在 drop 时自动释放。 |
 | `OwnedFrame` | `data` | `pub data: Vec<u8>` | 拥有的像素数据。 |
-| `OwnedFrame` | `info` | `fn info(&self) -> FrameInfo<'_>` | 读取拥有帧的元数据。 |
+| `OwnedFrame` | `info` | `fn info(&self) -> FrameInfo` | 返回 owned 元数据快照。 |
 | `OwnedFrame` | `as_frame` | `fn as_frame(&self) -> Frame<'_>` | 将拥有帧临时借用为 `Frame`。 |
 
 ### `PixelType`
@@ -365,6 +370,10 @@ guard.release()?;
 | `CleanupFailure` | `step: CleanupStep`、`error: MvsError` | 一次清理步骤及其错误。 |
 | `CleanupError::failures` | `fn failures(&self) -> &[CleanupFailure]` | 按清理尝试顺序借用全部失败。 |
 | `CleanupError::into_failures` | `fn into_failures(self) -> Vec<CleanupFailure>` | 消费错误并返回有序失败列表。 |
+| `CleanupError::native_handle_destroyed` | `fn native_handle_destroyed(&self) -> bool` | 即使其它清理步骤失败，也可判断 DestroyHandle 是否确认成功。 |
+| `ShutdownError::InUse` | `{ live_cameras, active_callbacks }` | 仍有可关闭的活动资源；关闭后可重试。 |
+| `ShutdownError::UnresolvedResources` | `{ orphaned_handles }` | handle 销毁结果不确定，当前进程不得再 Finalize。 |
+| `ShutdownError::Finalize` | `MvsError` | Finalize 失败，SDK 进入未知终态。 |
 
 ### Trait 和行为
 
@@ -373,8 +382,8 @@ guard.release()?;
 | `Sdk` | `Send`、`Sync` |
 | `TransportLayer` | `Copy`、`Clone`、`PartialEq`、`Eq`、`Default`、`Debug`、`BitOr`、`BitOrAssign` |
 | `DeviceList` | `Debug`、`Send`、`Sync` |
-| `DeviceIter` | `Iterator<Item = DeviceInfo<'_>>`、`ExactSizeIterator`、`Send`、`Sync` |
-| `DeviceInfo` | `Copy`、`Clone`、`Debug`、`Send`、`Sync` |
+| `DeviceIter` | `Iterator<Item = DeviceInfo>`、`ExactSizeIterator`、`Send`、`Sync` |
+| `DeviceInfo` | `Clone`、`Debug`、`Send`、`Sync` |
 | `AccessMode` | `Copy`、`Clone`、`PartialEq`、`Eq`、`Debug` |
 | `Camera` | `Debug`、`Drop`、`Send`；不实现 `Sync` |
 | `IntNode` | `Copy`、`Clone`、`Debug` |
@@ -390,6 +399,7 @@ guard.release()?;
 | `CleanupStep` | `Copy`、`Clone`、`Debug`、`Display`、`Eq` |
 | `CleanupFailure` | `Debug`、`Display`、`std::error::Error`、`Send`、`Sync` |
 | `CleanupError` | `Debug`、`Display`、`std::error::Error`、`Send`、`Sync` |
+| `ShutdownError` | `Debug`、`Display`、`std::error::Error`、`Send`、`Sync` |
 
 ### 非 Windows backend
 

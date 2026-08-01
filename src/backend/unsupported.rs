@@ -16,12 +16,21 @@ fn unsupported<T>() -> MvsResult<T> {
 pub(crate) struct Sdk;
 
 impl Sdk {
+    #[cfg(test)]
+    pub(crate) fn test_instance() -> Self {
+        Self
+    }
+
     pub(crate) fn init() -> MvsResult<Self> {
         unsupported()
     }
 
     pub(crate) fn sdk_version(&self) -> u32 {
         0
+    }
+
+    pub(crate) fn finalize(&self) -> MvsResult<()> {
+        unsupported()
     }
 }
 
@@ -36,17 +45,15 @@ impl DeviceList {
         0
     }
 
-    pub(crate) fn get(&self, _index: usize) -> Option<DeviceInfo<'_>> {
+    pub(crate) fn get(&self, _index: usize) -> Option<DeviceInfo> {
         None
     }
 }
 
 #[derive(Copy, Clone)]
-pub(crate) struct DeviceInfo<'a> {
-    _marker: PhantomData<&'a ()>,
-}
+pub(crate) struct DeviceInfo;
 
-impl DeviceInfo<'_> {
+impl DeviceInfo {
     pub(crate) fn transport_layer(&self) -> TransportLayer {
         TransportLayer::UNKNOWN
     }
@@ -94,9 +101,32 @@ impl DeviceInfo<'_> {
 
 pub(crate) struct Camera;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) enum HandleDisposition {
+    Destroyed,
+    Orphaned,
+}
+
+#[derive(Debug)]
+pub(crate) struct OpenFailure {
+    pub(crate) error: MvsError,
+    pub(crate) rollback_error: Option<MvsError>,
+    pub(crate) disposition: Option<HandleDisposition>,
+}
+
+pub(crate) struct CleanupReport {
+    pub(crate) result: Result<(), CleanupError>,
+    pub(crate) disposition: Option<HandleDisposition>,
+}
+
 impl Camera {
-    pub(crate) fn open(_device: DeviceInfo<'_>, _mode: AccessMode) -> MvsResult<Self> {
-        unsupported()
+    pub(crate) fn open(_device: DeviceInfo, _mode: AccessMode) -> Result<Self, OpenFailure> {
+        Err(OpenFailure {
+            error: MvsError::UnsupportedPlatform,
+            rollback_error: None,
+            disposition: None,
+        })
     }
 
     pub(crate) fn as_raw_handle(&self) -> *mut c_void {
@@ -222,8 +252,11 @@ impl Camera {
         ("Closed", None, false, false, 0)
     }
 
-    pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
-        Ok(())
+    pub(crate) fn cleanup(&mut self) -> CleanupReport {
+        CleanupReport {
+            result: Ok(()),
+            disposition: None,
+        }
     }
 }
 
@@ -238,7 +271,7 @@ impl FrameGuard<'_> {
         Frame::from_parts(&[], &self.metadata)
     }
 
-    pub(crate) fn info(&self) -> FrameInfo<'_> {
+    pub(crate) fn info(&self) -> FrameInfo {
         FrameInfo::from_metadata(&self.metadata)
     }
 

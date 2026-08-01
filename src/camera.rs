@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::backend;
 use crate::callback::EventInfo;
 use crate::frame::{Frame, FrameGuard};
-use crate::library::Sdk;
-use crate::{AccessMode, CleanupError, EnumNode, FloatNode, IntNode, MvsResult};
+use crate::library::{CameraLease, Sdk};
+use crate::{AccessMode, CleanupError, EnumNode, FloatNode, IntNode, MvsError, MvsResult};
 
 pub(crate) type ImageCallback = Box<dyn FnMut(&Frame<'_>) + Send + 'static>;
 pub(crate) type ExceptionCallback = Box<dyn FnMut(u32) + Send + 'static>;
@@ -31,7 +31,7 @@ pub(crate) type EventCallback = Box<dyn FnMut(&EventInfo<'_>) + Send + 'static>;
 ///
 pub struct Camera {
     inner: backend::Camera,
-    _library: Arc<Sdk>,
+    lease: CameraLease,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -41,15 +41,43 @@ unsafe impl Send for Camera {}
 
 impl Camera {
     pub(crate) fn open(
-        device: backend::DeviceInfo<'_>,
+        device: backend::DeviceInfo,
         library: &Arc<Sdk>,
         mode: AccessMode,
     ) -> MvsResult<Self> {
-        Ok(Self {
-            inner: backend::Camera::open(device, mode)?,
-            _library: Arc::clone(library),
-            _not_sync: PhantomData,
-        })
+        let pending = library.begin_camera_open();
+        match backend::Camera::open(device, mode) {
+            Ok(inner) => Ok(Self {
+                inner,
+                lease: pending.opened(),
+                _not_sync: PhantomData,
+            }),
+            Err(failure) => {
+                let backend::OpenFailure {
+                    error,
+                    rollback_error,
+                    disposition,
+                } = failure;
+                let orphaned = matches!(disposition, Some(backend::HandleDisposition::Orphaned));
+                pending.failed(orphaned);
+                match rollback_error {
+                    Some(destroy) => Err(MvsError::OpenRollback {
+                        open: Box::new(error),
+                        destroy: Box::new(destroy),
+                    }),
+                    None => Err(error),
+                }
+            }
+        }
+    }
+
+    fn cleanup(&mut self) -> Result<(), CleanupError> {
+        let report = self.inner.cleanup();
+        if let Some(disposition) = report.disposition {
+            self.lease
+                .settle(disposition == backend::HandleDisposition::Destroyed);
+        }
+        report.result
     }
 
     pub fn as_raw_handle(&self) -> *mut c_void {
@@ -278,7 +306,7 @@ impl Camera {
     /// This is preferred over relying on [`Drop`], which uses the same cleanup
     /// path but cannot report its result.
     pub fn close(mut self) -> Result<(), CleanupError> {
-        self.inner.cleanup()
+        self.cleanup()
     }
 }
 
@@ -303,6 +331,6 @@ impl fmt::Debug for Camera {
 
 impl Drop for Camera {
     fn drop(&mut self) {
-        let _ = self.inner.cleanup();
+        let _ = self.cleanup();
     }
 }

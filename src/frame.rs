@@ -25,11 +25,11 @@ pub(crate) struct FrameMetadata {
 
 /// Metadata for an image frame.
 #[derive(Copy, Clone)]
-pub struct FrameInfo<'a>(&'a FrameMetadata);
+pub struct FrameInfo(FrameMetadata);
 
-impl FrameInfo<'_> {
-    pub(crate) fn from_metadata(metadata: &FrameMetadata) -> FrameInfo<'_> {
-        FrameInfo(metadata)
+impl FrameInfo {
+    pub(crate) fn from_metadata(metadata: &FrameMetadata) -> Self {
+        Self(*metadata)
     }
 
     pub fn width(&self) -> u32 {
@@ -90,7 +90,7 @@ impl FrameInfo<'_> {
     }
 }
 
-impl fmt::Debug for FrameInfo<'_> {
+impl fmt::Debug for FrameInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FrameInfo")
             .field("width", &self.width())
@@ -106,14 +106,14 @@ impl fmt::Debug for FrameInfo<'_> {
 /// call [`Frame::to_owned`].
 pub struct Frame<'a> {
     data: &'a [u8],
-    info: FrameInfo<'a>,
+    info: FrameInfo,
 }
 
 impl<'a> Frame<'a> {
-    pub(crate) fn from_parts(data: &'a [u8], metadata: &'a FrameMetadata) -> Self {
+    pub(crate) fn from_parts(data: &'a [u8], metadata: &FrameMetadata) -> Self {
         Self {
             data,
-            info: FrameInfo(metadata),
+            info: FrameInfo::from_metadata(metadata),
         }
     }
 
@@ -121,14 +121,14 @@ impl<'a> Frame<'a> {
         self.data
     }
 
-    pub fn info(&self) -> &FrameInfo<'a> {
-        &self.info
+    pub fn info(&self) -> FrameInfo {
+        self.info
     }
 
     pub fn to_owned(&self) -> OwnedFrame {
         OwnedFrame {
             data: self.data.to_vec(),
-            info: *self.info.0,
+            info: self.info.0,
         }
     }
 }
@@ -151,8 +151,8 @@ pub struct OwnedFrame {
 }
 
 impl OwnedFrame {
-    pub fn info(&self) -> FrameInfo<'_> {
-        FrameInfo(&self.info)
+    pub fn info(&self) -> FrameInfo {
+        FrameInfo::from_metadata(&self.info)
     }
 
     pub fn as_frame(&self) -> Frame<'_> {
@@ -183,7 +183,7 @@ impl<'cam> FrameGuard<'cam> {
         self.inner.frame()
     }
 
-    pub fn info(&self) -> FrameInfo<'_> {
+    pub fn info(&self) -> FrameInfo {
         self.inner.info()
     }
 
@@ -204,12 +204,43 @@ impl Drop for FrameGuard<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::OwnedFrame;
+    use std::time::Duration;
+
+    use super::{FrameInfo, FrameMetadata, OwnedFrame};
+    use crate::PixelType;
 
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
     fn owned_frame_is_send_and_sync() {
         assert_send_sync::<OwnedFrame>();
+    }
+
+    #[test]
+    fn frame_info_owns_its_metadata_snapshot() {
+        let info = {
+            let metadata = FrameMetadata {
+                width: 640,
+                height: 480,
+                pixel_type: PixelType::MONO8,
+                frame_num: 42,
+                frame_len: 307_200,
+                offset_x: 3,
+                offset_y: 4,
+                gain: 1.5,
+                exposure_time: 250.0,
+                trigger_index: 7,
+                lost_packets: 2,
+                device_timestamp: 99,
+                host_timestamp_raw: 123,
+            };
+            FrameInfo::from_metadata(&metadata)
+        };
+
+        assert_eq!(info.width(), 640);
+        assert_eq!(info.height(), 480);
+        assert_eq!(info.pixel_type(), PixelType::MONO8);
+        assert_eq!(info.frame_num(), 42);
+        assert_eq!(info.host_timestamp(), Duration::from_nanos(12_300));
     }
 }

@@ -4,7 +4,7 @@ mod device;
 mod frame;
 mod library;
 
-pub(crate) use camera::Camera;
+pub(crate) use camera::{Camera, HandleDisposition, OpenFailure};
 pub(crate) use device::{DeviceInfo, DeviceList};
 pub(crate) use frame::FrameGuard;
 pub(crate) use library::Sdk;

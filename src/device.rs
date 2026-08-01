@@ -3,7 +3,6 @@
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::os::raw::c_void;
-use std::sync::Arc;
 
 use crate::backend;
 use crate::camera::Camera;
@@ -13,14 +12,12 @@ use crate::{AccessMode, MvsResult, TransportLayer};
 /// Owned list of enumerated devices. Iterate via [`DeviceList::iter`].
 pub struct DeviceList {
     inner: backend::DeviceList,
-    library: Arc<Sdk>,
 }
 
 impl DeviceList {
-    pub(crate) fn enumerate(library: &Arc<Sdk>, layers: TransportLayer) -> MvsResult<Self> {
+    pub(crate) fn enumerate(layers: TransportLayer) -> MvsResult<Self> {
         Ok(Self {
             inner: backend::DeviceList::enumerate(layers)?,
-            library: Arc::clone(library),
         })
     }
 
@@ -39,11 +36,8 @@ impl DeviceList {
         }
     }
 
-    pub fn get(&self, index: usize) -> Option<DeviceInfo<'_>> {
-        self.inner.get(index).map(|inner| DeviceInfo {
-            inner,
-            library: &self.library,
-        })
+    pub fn get(&self, index: usize) -> Option<DeviceInfo> {
+        self.inner.get(index).map(|inner| DeviceInfo { inner })
     }
 }
 
@@ -61,7 +55,7 @@ pub struct DeviceIter<'a> {
 }
 
 impl<'a> Iterator for DeviceIter<'a> {
-    type Item = DeviceInfo<'a>;
+    type Item = DeviceInfo;
 
     fn next(&mut self) -> Option<Self::Item> {
         let info = self.list.get(self.index)?;
@@ -77,14 +71,13 @@ impl<'a> Iterator for DeviceIter<'a> {
 
 impl ExactSizeIterator for DeviceIter<'_> {}
 
-/// Borrowed view of one entry in a [`DeviceList`].
-#[derive(Copy, Clone)]
-pub struct DeviceInfo<'a> {
-    inner: backend::DeviceInfo<'a>,
-    library: &'a Arc<Sdk>,
+/// Owned snapshot of one enumerated device.
+#[derive(Clone)]
+pub struct DeviceInfo {
+    inner: backend::DeviceInfo,
 }
 
-impl DeviceInfo<'_> {
+impl DeviceInfo {
     pub fn transport_layer(&self) -> TransportLayer {
         self.inner.transport_layer()
     }
@@ -121,12 +114,14 @@ impl DeviceInfo<'_> {
         self.inner.host_nic_ip()
     }
 
-    pub fn is_accessible(&self, mode: AccessMode) -> bool {
-        self.inner.is_accessible(mode)
+    pub fn is_accessible(&self, mode: AccessMode) -> MvsResult<bool> {
+        let _active = Sdk::active()?;
+        Ok(self.inner.is_accessible(mode))
     }
 
     pub fn open(&self, mode: AccessMode) -> MvsResult<Camera> {
-        Camera::open(self.inner, self.library, mode)
+        let active = Sdk::active()?;
+        Camera::open(self.inner.clone(), active.sdk(), mode)
     }
 
     pub fn open_exclusive(&self) -> MvsResult<Camera> {
@@ -137,14 +132,17 @@ impl DeviceInfo<'_> {
         self.open(AccessMode::Control)
     }
 
-    /// Opaque pointer to the backend device-info record. It remains valid
-    /// while the parent [`DeviceList`] is alive.
+    /// Opaque pointer to the owned backend device-info snapshot.
+    ///
+    /// The address remains valid while this value or one of its clones keeps
+    /// the snapshot alive. After [`Sdk::shutdown`], the pointer remains valid
+    /// as Rust-owned memory but must not be passed back to the native SDK.
     pub fn as_raw(&self) -> *const c_void {
         self.inner.as_raw()
     }
 }
 
-impl fmt::Debug for DeviceInfo<'_> {
+impl fmt::Debug for DeviceInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceInfo")
             .field("transport", &self.transport_layer())

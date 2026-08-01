@@ -14,6 +14,70 @@ use crate::sys;
 /// Crate-wide result alias.
 pub type MvsResult<T> = Result<T, MvsError>;
 
+/// Error returned by [`Sdk::shutdown`](crate::Sdk::shutdown).
+#[non_exhaustive]
+#[derive(Debug)]
+pub enum ShutdownError {
+    /// Native camera resources or callbacks are still live.
+    InUse {
+        /// Cameras that have not completed handle destruction.
+        live_cameras: usize,
+        /// Native callbacks whose trampolines have not returned yet.
+        active_callbacks: usize,
+    },
+    /// A native handle could not be destroyed safely, so finalization is
+    /// permanently blocked for this process.
+    UnresolvedResources {
+        /// Number of native handles whose destruction could not be confirmed.
+        orphaned_handles: usize,
+    },
+    /// The vendor finalization call failed.
+    Finalize(MvsError),
+    /// A previous finalization attempt left the vendor SDK in an unknown
+    /// process-wide state. The call is not retried.
+    StateUnknown {
+        /// Original vendor error code, when one was available.
+        finalize_code: Option<u32>,
+    },
+}
+
+impl fmt::Display for ShutdownError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InUse {
+                live_cameras,
+                active_callbacks,
+            } => write!(
+                f,
+                "MVS SDK is still in use by {live_cameras} camera(s) and {active_callbacks} callback(s)"
+            ),
+            Self::UnresolvedResources { orphaned_handles } => write!(
+                f,
+                "MVS SDK cannot be finalized because {orphaned_handles} native handle(s) could not be destroyed"
+            ),
+            Self::Finalize(error) => write!(f, "MVS SDK finalization failed: {error}"),
+            Self::StateUnknown {
+                finalize_code: Some(code),
+            } => write!(
+                f,
+                "MVS SDK state is unknown after finalization failed with 0x{code:08X}"
+            ),
+            Self::StateUnknown {
+                finalize_code: None,
+            } => f.write_str("MVS SDK state is unknown after finalization failed"),
+        }
+    }
+}
+
+impl std::error::Error for ShutdownError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Finalize(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// One operation attempted while closing a camera.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -100,6 +164,17 @@ impl CleanupError {
     /// Consume this error and return its ordered failures.
     pub fn into_failures(self) -> Vec<CleanupFailure> {
         self.failures
+    }
+
+    /// Whether native handle destruction was confirmed despite the reported
+    /// cleanup failures.
+    pub fn native_handle_destroyed(&self) -> bool {
+        !self.failures.iter().any(|failure| {
+            matches!(
+                failure.step,
+                CleanupStep::DrainCallbacks | CleanupStep::DestroyHandle
+            )
+        })
     }
 }
 
@@ -263,6 +338,21 @@ pub enum MvsError {
 
     #[error("MVS SDK is only available on Windows x86_64")]
     UnsupportedPlatform,
+
+    #[error("MVS SDK has not been initialized")]
+    SdkNotInitialized,
+    #[error("MVS SDK has already been shut down for this process")]
+    SdkFinalized,
+    #[error("MVS SDK process state is unknown after finalization failed")]
+    SdkStateUnknown,
+
+    #[error("camera open failed ({open}); rollback handle destruction also failed ({destroy})")]
+    OpenRollback {
+        /// Error returned while opening the device.
+        open: Box<MvsError>,
+        /// Error returned while rolling back the newly created handle.
+        destroy: Box<MvsError>,
+    },
 }
 
 impl MvsError {
@@ -329,7 +419,13 @@ impl MvsError {
             Self::UpgInnerErr => sys::MV_E_UPG_INNER_ERR,
             Self::UpgUnknown => sys::MV_E_UPG_UNKNOW,
             Self::Unknown(c) => *c,
-            Self::Nul(_) | Self::Utf8(_) | Self::UnsupportedPlatform => return None,
+            Self::Nul(_)
+            | Self::Utf8(_)
+            | Self::UnsupportedPlatform
+            | Self::SdkNotInitialized
+            | Self::SdkFinalized
+            | Self::SdkStateUnknown
+            | Self::OpenRollback { .. } => return None,
         };
         Some(code)
     }

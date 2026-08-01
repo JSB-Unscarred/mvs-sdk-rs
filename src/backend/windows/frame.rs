@@ -36,7 +36,7 @@ impl<'cam> FrameGuard<'cam> {
         Frame::from_parts(data, &self.metadata)
     }
 
-    pub(crate) fn info(&self) -> FrameInfo<'_> {
+    pub(crate) fn info(&self) -> FrameInfo {
         FrameInfo::from_metadata(&self.metadata)
     }
 

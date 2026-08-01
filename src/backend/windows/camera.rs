@@ -167,6 +167,72 @@ fn native_stop_grabbing(_: &mut (), handle: *mut c_void) -> c_int {
     unsafe { sys::MV_CC_StopGrabbing(handle) }
 }
 
+struct OpenFns<C> {
+    create_handle: fn(&mut C, *mut *mut c_void, *const sys::MV_CC_DEVICE_INFO) -> c_int,
+    open_device: fn(&mut C, *mut c_void, u32, u16) -> c_int,
+    destroy_handle: fn(&mut C, *mut c_void) -> c_int,
+}
+
+impl OpenFns<()> {
+    const NATIVE: Self = Self {
+        create_handle: native_create_handle,
+        open_device: native_open_device,
+        destroy_handle: native_open_rollback_destroy_handle,
+    };
+}
+
+fn native_create_handle(
+    _: &mut (),
+    handle: *mut *mut c_void,
+    device: *const sys::MV_CC_DEVICE_INFO,
+) -> c_int {
+    // SAFETY: the caller supplies writable handle storage and a live copied
+    // device-info record.
+    unsafe { sys::MV_CC_CreateHandle(handle, device) }
+}
+
+fn native_open_device(
+    _: &mut (),
+    handle: *mut c_void,
+    access_mode: u32,
+    switchover_key: u16,
+) -> c_int {
+    // SAFETY: the caller supplies a handle returned by CreateHandle.
+    unsafe { sys::MV_CC_OpenDevice(handle, access_mode, switchover_key) }
+}
+
+fn native_open_rollback_destroy_handle(_: &mut (), handle: *mut c_void) -> c_int {
+    // SAFETY: the caller supplies a handle returned by CreateHandle whose
+    // OpenDevice operation failed.
+    unsafe { sys::MV_CC_DestroyHandle(handle) }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HandleDisposition {
+    /// `MV_CC_DestroyHandle` returned `MV_OK`.
+    Destroyed,
+    /// Destruction was skipped or did not return `MV_OK`; native ownership is
+    /// therefore unresolved.
+    Orphaned,
+}
+
+#[derive(Debug)]
+pub(crate) struct OpenFailure {
+    pub(crate) error: MvsError,
+    pub(crate) rollback_error: Option<MvsError>,
+    /// `None` means CreateHandle itself failed and no native handle existed.
+    pub(crate) disposition: Option<HandleDisposition>,
+}
+
+#[derive(Debug)]
+#[must_use = "cleanup reports must settle the camera's native-handle lease"]
+pub(crate) struct CleanupReport {
+    pub(crate) result: Result<(), CleanupError>,
+    /// `None` means this Camera had already consumed its handle, so a caller
+    /// must not settle its resource lease a second time.
+    pub(crate) disposition: Option<HandleDisposition>,
+}
+
 struct CleanupFns<C> {
     stop_grabbing: fn(&mut C, *mut c_void) -> c_int,
     unregister_image_callback: fn(&mut C, *mut c_void) -> c_int,
@@ -239,22 +305,39 @@ pub(crate) struct Camera {
 // SAFETY: the handle is usable from any thread; we just don't allow concurrent
 // calls on the same Camera (hence !Sync).
 impl Camera {
-    pub(crate) fn open(device: DeviceInfo<'_>, mode: AccessMode) -> MvsResult<Self> {
+    pub(crate) fn open(device: DeviceInfo, mode: AccessMode) -> Result<Self, OpenFailure> {
+        Self::open_with(device.raw(), mode, &OpenFns::NATIVE, &mut ())
+    }
+
+    fn open_with<C>(
+        device: &sys::MV_CC_DEVICE_INFO,
+        mode: AccessMode,
+        fns: &OpenFns<C>,
+        context: &mut C,
+    ) -> Result<Self, OpenFailure> {
         let mut handle: *mut c_void = std::ptr::null_mut();
 
-        // SAFETY: handle is owned locally until success; dev_info remains valid
-        // for the duration of this call (borrowed from DeviceList).
-        let code = unsafe { sys::MV_CC_CreateHandle(&mut handle, device.raw()) };
-        check(code)?;
+        let code = (fns.create_handle)(context, &mut handle, device);
+        if let Err(error) = check(code) {
+            return Err(OpenFailure {
+                error,
+                rollback_error: None,
+                disposition: None,
+            });
+        }
 
-        // SAFETY: handle from MV_CC_CreateHandle.
-        let code = unsafe { sys::MV_CC_OpenDevice(handle, mode.raw(), 0) };
-        if let Err(err) = check(code) {
-            // SAFETY: roll back CreateHandle on OpenDevice failure.
-            unsafe {
-                let _ = sys::MV_CC_DestroyHandle(handle);
-            }
-            return Err(err);
+        let code = (fns.open_device)(context, handle, mode.raw(), 0);
+        if let Err(error) = check(code) {
+            let rollback = check((fns.destroy_handle)(context, handle));
+            let (rollback_error, disposition) = match rollback {
+                Ok(()) => (None, HandleDisposition::Destroyed),
+                Err(rollback_error) => (Some(rollback_error), HandleDisposition::Orphaned),
+            };
+            return Err(OpenFailure {
+                error,
+                rollback_error,
+                disposition: Some(disposition),
+            });
         }
 
         Ok(Self {
@@ -880,17 +963,16 @@ impl Camera {
         )
     }
 
-    pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
+    pub(crate) fn cleanup(&mut self) -> CleanupReport {
         self.cleanup_with(&CleanupFns::NATIVE, &mut ())
     }
 
-    fn cleanup_with<C>(
-        &mut self,
-        fns: &CleanupFns<C>,
-        context: &mut C,
-    ) -> Result<(), CleanupError> {
+    fn cleanup_with<C>(&mut self, fns: &CleanupFns<C>, context: &mut C) -> CleanupReport {
         if self.handle.is_none() {
-            return Ok(());
+            return CleanupReport {
+                result: Ok(()),
+                disposition: None,
+            };
         }
 
         // The SDK's reconnect sample explicitly closes and destroys a handle
@@ -984,10 +1066,18 @@ impl Camera {
         // When DestroyHandle fails, the raw native handle is intentionally
         // leaked as well; taking it above guarantees this wrapper never
         // retries teardown.
-        if failures.is_empty() {
+        let result = if failures.is_empty() {
             Ok(())
         } else {
             Err(CleanupError::new(failures))
+        };
+        CleanupReport {
+            result,
+            disposition: Some(if destroyed {
+                HandleDisposition::Destroyed
+            } else {
+                HandleDisposition::Orphaned
+            }),
         }
     }
 
@@ -1058,7 +1148,7 @@ impl Camera {
         }
     }
 
-    fn abandon_from_restricted_callback_context(&mut self) -> Result<(), CleanupError> {
+    fn abandon_from_restricted_callback_context(&mut self) -> CleanupReport {
         self.stop_accepting_callbacks();
         self.try_drain_callbacks();
 
@@ -1068,10 +1158,13 @@ impl Camera {
         let _ = self.handle.take();
         self.leak_callback_backing();
 
-        Err(CleanupError::new(vec![CleanupFailure {
-            step: CleanupStep::DrainCallbacks,
-            error: MvsError::CallOrder,
-        }]))
+        CleanupReport {
+            result: Err(CleanupError::new(vec![CleanupFailure {
+                step: CleanupStep::DrainCallbacks,
+                error: MvsError::CallOrder,
+            }])),
+            disposition: Some(HandleDisposition::Orphaned),
+        }
     }
 
     fn leak_callback_backing(&mut self) {
@@ -1095,11 +1188,11 @@ mod tests {
         EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
         ImageCallback as ImageCallbackFn,
     };
-    use crate::{CleanupStep, Frame, MvsError, sys};
+    use crate::{AccessMode, CleanupStep, Frame, MvsError, sys};
 
     use super::{
         AcquisitionFns, CallbackFns, CallbackRecord, CallbackSlot, Camera, CleanupFns, EventRecord,
-        RegistrationState,
+        HandleDisposition, OpenFns, RegistrationState,
     };
 
     const FULL_CLEANUP_STEPS: [CleanupStep; 7] = [
@@ -1111,6 +1204,74 @@ mod tests {
         CleanupStep::CloseDevice,
         CleanupStep::DestroyHandle,
     ];
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum OpenCall {
+        CreateHandle,
+        OpenDevice,
+        DestroyHandle,
+    }
+
+    struct FakeOpen {
+        calls: Vec<OpenCall>,
+        results: VecDeque<c_int>,
+        handle: *mut c_void,
+    }
+
+    impl FakeOpen {
+        fn with_results(results: impl IntoIterator<Item = u32>) -> Self {
+            Self {
+                calls: Vec::new(),
+                results: results.into_iter().map(|result| result as c_int).collect(),
+                handle: 1_usize as *mut c_void,
+            }
+        }
+
+        fn call(&mut self, call: OpenCall) -> c_int {
+            self.calls.push(call);
+            self.results
+                .pop_front()
+                .unwrap_or_else(|| panic!("unexpected open call: {call:?}"))
+        }
+    }
+
+    const FAKE_OPEN_FNS: OpenFns<FakeOpen> = OpenFns {
+        create_handle: fake_create_handle,
+        open_device: fake_open_device,
+        destroy_handle: fake_open_destroy_handle,
+    };
+
+    fn fake_create_handle(
+        context: &mut FakeOpen,
+        handle: *mut *mut c_void,
+        device: *const sys::MV_CC_DEVICE_INFO,
+    ) -> c_int {
+        assert!(!handle.is_null());
+        assert!(!device.is_null());
+        let code = context.call(OpenCall::CreateHandle);
+        if code as u32 == sys::MV_OK {
+            // SAFETY: open_with passes writable local handle storage.
+            unsafe { *handle = context.handle };
+        }
+        code
+    }
+
+    fn fake_open_device(
+        context: &mut FakeOpen,
+        handle: *mut c_void,
+        access_mode: u32,
+        switchover_key: u16,
+    ) -> c_int {
+        assert_eq!(handle, context.handle);
+        assert_eq!(access_mode, AccessMode::Exclusive.raw());
+        assert_eq!(switchover_key, 0);
+        context.call(OpenCall::OpenDevice)
+    }
+
+    fn fake_open_destroy_handle(context: &mut FakeOpen, handle: *mut c_void) -> c_int {
+        assert_eq!(handle, context.handle);
+        context.call(OpenCall::DestroyHandle)
+    }
 
     #[derive(Default)]
     struct FakeCleanup {
@@ -1496,9 +1657,9 @@ mod tests {
 
     fn assert_cleanup_calls(mut camera: Camera, expected: &[CleanupStep]) -> FakeCleanup {
         let mut context = FakeCleanup::with_results(vec![sys::MV_OK; expected.len()]);
-        camera
-            .cleanup_with(&FAKE_CLEANUP_FNS, &mut context)
-            .unwrap();
+        let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut context);
+        assert_eq!(report.disposition, Some(HandleDisposition::Destroyed));
+        report.result.unwrap();
 
         assert_eq!(context.calls, expected);
         assert!(context.results.is_empty());
@@ -1508,6 +1669,72 @@ mod tests {
 
     fn registration_count<T>(calls: &[T], is_registration: impl Fn(&T) -> bool) -> usize {
         calls.iter().filter(|call| is_registration(call)).count()
+    }
+
+    #[test]
+    fn create_handle_failure_reports_no_handle_disposition() {
+        let device = sys::MV_CC_DEVICE_INFO::default();
+        let mut context = FakeOpen::with_results([sys::MV_E_RESOURCE]);
+
+        let failure =
+            Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
+                .err()
+                .expect("CreateHandle failure must be returned");
+
+        assert_eq!(context.calls, [OpenCall::CreateHandle]);
+        assert_eq!(failure.error.raw_code(), Some(sys::MV_E_RESOURCE));
+        assert!(failure.rollback_error.is_none());
+        assert_eq!(failure.disposition, None);
+    }
+
+    #[test]
+    fn open_failure_reports_successful_rollback_as_destroyed() {
+        let device = sys::MV_CC_DEVICE_INFO::default();
+        let mut context = FakeOpen::with_results([sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_OK]);
+
+        let failure =
+            Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
+                .err()
+                .expect("OpenDevice failure must be returned");
+
+        assert_eq!(
+            context.calls,
+            [
+                OpenCall::CreateHandle,
+                OpenCall::OpenDevice,
+                OpenCall::DestroyHandle,
+            ]
+        );
+        assert_eq!(failure.error.raw_code(), Some(sys::MV_E_ACCESS_DENIED));
+        assert!(failure.rollback_error.is_none());
+        assert_eq!(failure.disposition, Some(HandleDisposition::Destroyed));
+    }
+
+    #[test]
+    fn open_failure_reports_failed_rollback_as_orphaned() {
+        let device = sys::MV_CC_DEVICE_INFO::default();
+        let mut context =
+            FakeOpen::with_results([sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_E_RESOURCE]);
+
+        let failure =
+            Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
+                .err()
+                .expect("OpenDevice failure must be returned");
+
+        assert_eq!(
+            context.calls,
+            [
+                OpenCall::CreateHandle,
+                OpenCall::OpenDevice,
+                OpenCall::DestroyHandle,
+            ]
+        );
+        assert_eq!(failure.error.raw_code(), Some(sys::MV_E_ACCESS_DENIED));
+        assert_eq!(
+            failure.rollback_error.as_ref().and_then(MvsError::raw_code),
+            Some(sys::MV_E_RESOURCE)
+        );
+        assert_eq!(failure.disposition, Some(HandleDisposition::Orphaned));
     }
 
     #[test]
@@ -2224,9 +2451,9 @@ mod tests {
         let mut camera = camera_with_all_callbacks();
         let mut context = FakeCleanup::with_results(vec![sys::MV_OK; FULL_CLEANUP_STEPS.len()]);
 
-        camera
-            .cleanup_with(&FAKE_CLEANUP_FNS, &mut context)
-            .unwrap();
+        let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut context);
+        assert_eq!(report.disposition, Some(HandleDisposition::Destroyed));
+        report.result.unwrap();
 
         assert_eq!(context.calls, FULL_CLEANUP_STEPS);
         assert_eq!(context.event_names, ["ExposureEnd", "LineStart"]);
@@ -2234,9 +2461,9 @@ mod tests {
         assert!(camera.handle.is_none());
 
         let mut unexpected_call = FakeCleanup::default();
-        camera
-            .cleanup_with(&FAKE_CLEANUP_FNS, &mut unexpected_call)
-            .unwrap();
+        let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut unexpected_call);
+        assert_eq!(report.disposition, None);
+        report.result.unwrap();
         assert!(unexpected_call.calls.is_empty());
     }
 
@@ -2254,9 +2481,14 @@ mod tests {
             });
             let mut context = FakeCleanup::with_results(results);
 
-            let error = camera
-                .cleanup_with(&FAKE_CLEANUP_FNS, &mut context)
-                .unwrap_err();
+            let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut context);
+            let expected_disposition = if expected_failure_step == CleanupStep::DestroyHandle {
+                HandleDisposition::Orphaned
+            } else {
+                HandleDisposition::Destroyed
+            };
+            assert_eq!(report.disposition, Some(expected_disposition));
+            let error = report.result.unwrap_err();
 
             assert_eq!(context.calls, FULL_CLEANUP_STEPS);
             assert!(context.results.is_empty());
@@ -2284,9 +2516,9 @@ mod tests {
         let mut camera = camera_with_all_callbacks();
         let mut context = FakeCleanup::with_results(codes);
 
-        let error = camera
-            .cleanup_with(&FAKE_CLEANUP_FNS, &mut context)
-            .unwrap_err();
+        let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut context);
+        assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
+        let error = report.result.unwrap_err();
 
         assert_eq!(context.calls, FULL_CLEANUP_STEPS);
         assert_eq!(context.calls.last(), Some(&CleanupStep::DestroyHandle));
@@ -2395,9 +2627,9 @@ mod tests {
         let mut successful_camera = camera_with_probed_callbacks(&successful_drops);
         let mut success =
             FakeCleanup::with_results_and_probe(vec![sys::MV_OK; 5], Arc::clone(&successful_drops));
-        successful_camera
-            .cleanup_with(&FAKE_CLEANUP_FNS, &mut success)
-            .unwrap();
+        let report = successful_camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut success);
+        assert_eq!(report.disposition, Some(HandleDisposition::Destroyed));
+        report.result.unwrap();
         assert_eq!(successful_drops.load(Ordering::SeqCst), 3);
         assert!(success.drops_seen.iter().all(|drops| *drops == 3));
         assert!(successful_camera.image_cb.is_none());
@@ -2416,9 +2648,9 @@ mod tests {
             ],
             Arc::clone(&failed_drops),
         );
-        let error = failed_camera
-            .cleanup_with(&FAKE_CLEANUP_FNS, &mut failure)
-            .unwrap_err();
+        let report = failed_camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut failure);
+        assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
+        let error = report.result.unwrap_err();
         assert_eq!(error.failures().len(), 1);
         assert_eq!(error.failures()[0].step, CleanupStep::DestroyHandle);
         assert_eq!(failed_drops.load(Ordering::SeqCst), 3);
@@ -2428,9 +2660,9 @@ mod tests {
         assert!(failed_camera.event_cbs.is_empty());
 
         let mut no_retry = FakeCleanup::default();
-        failed_camera
-            .cleanup_with(&FAKE_CLEANUP_FNS, &mut no_retry)
-            .unwrap();
+        let report = failed_camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut no_retry);
+        assert_eq!(report.disposition, None);
+        report.result.unwrap();
         assert!(no_retry.calls.is_empty());
     }
 
@@ -2472,7 +2704,8 @@ mod tests {
                         [sys::MV_OK, sys::MV_OK],
                         Arc::clone(&drops_for_callback),
                     );
-                    let result = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+                    assert_eq!(report.disposition, Some(HandleDisposition::Destroyed));
                     let slot_is_pinned = weak_for_callback
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2486,7 +2719,7 @@ mod tests {
                     *outcome_for_callback
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
-                        result.is_ok(),
+                        report.result.is_ok(),
                         calls,
                         drops_seen,
                         slot_is_pinned,
@@ -2563,9 +2796,9 @@ mod tests {
                         .take()
                         .expect("camera installed before callback");
                     let mut native = FakeCleanup::with_results([sys::MV_OK, sys::MV_E_RESOURCE]);
-                    let error = camera
-                        .cleanup_with(&FAKE_CLEANUP_FNS, &mut native)
-                        .expect_err("destroy failure must be reported");
+                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
+                    let error = report.result.expect_err("destroy failure must be reported");
                     let failure_steps = error
                         .failures()
                         .iter()
@@ -2674,8 +2907,10 @@ mod tests {
                     assert!(rejected_native.event_calls.is_empty());
 
                     let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
-                    let error = camera
-                        .cleanup_with(&FAKE_CLEANUP_FNS, &mut native)
+                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
+                    let error = report
+                        .result
                         .expect_err("callback-context cleanup must be explicit");
                     let failure_steps = error
                         .failures()
@@ -2735,8 +2970,10 @@ mod tests {
                         .take()
                         .expect("camera installed before nested callback");
                     let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
-                    let error = camera
-                        .cleanup_with(&FAKE_CLEANUP_FNS, &mut native)
+                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
+                    let error = report
+                        .result
                         .expect_err("outer image borrow must keep cleanup conservative");
                     let failure_steps = error
                         .failures()
@@ -2805,8 +3042,10 @@ mod tests {
                         .expect("camera installed before callback");
 
                     let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
-                    let error = camera
-                        .cleanup_with(&FAKE_CLEANUP_FNS, &mut native)
+                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
+                    let error = report
+                        .result
                         .expect_err("event callback cleanup must remain conservative");
                     let failure_steps = error
                         .failures()

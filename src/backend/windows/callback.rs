@@ -210,6 +210,11 @@ pub(super) unsafe extern "C" fn event_trampoline(
 }
 
 unsafe fn invoke_slot<C>(user: *mut c_void, callback_name: &str, invoke: impl FnOnce(&mut C)) {
+    // Count from the first Rust instruction through every return path. This
+    // guard is deliberately independent of the lifecycle read lock: a
+    // callback may ask to shut the SDK down, which must fail as in-use rather
+    // than deadlocking on a lock held by the same callback.
+    let _activity = crate::library::enter_callback();
     if user.is_null() {
         return;
     }

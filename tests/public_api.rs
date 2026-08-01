@@ -17,11 +17,12 @@ use std::time::Duration;
 use mvs_sdk_rs::error::{
     CleanupError as ModuleCleanupError, CleanupFailure as ModuleCleanupFailure,
     CleanupStep as ModuleCleanupStep, MvsError as ModuleError, MvsResult as ModuleResult,
+    ShutdownError as ModuleShutdownError,
 };
 use mvs_sdk_rs::{
     AccessMode, Camera, CleanupError, CleanupFailure, CleanupStep, DeviceInfo, DeviceIter,
     DeviceList, EnumNode, EventInfo, FloatNode, Frame, FrameGuard, FrameInfo, IntNode, MvsError,
-    MvsResult, OwnedFrame, PixelType, Sdk, TransportLayer,
+    MvsResult, OwnedFrame, PixelType, Sdk, ShutdownError, TransportLayer,
 };
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 
@@ -32,7 +33,7 @@ use static_assertions::{assert_impl_all, assert_not_impl_any};
 // SDK state and copied enumeration metadata may be shared between threads.
 assert_impl_all!(Sdk: Send, Sync);
 assert_impl_all!(DeviceList: std::fmt::Debug, Send, Sync);
-assert_impl_all!(DeviceInfo<'static>: Copy, Clone, std::fmt::Debug, Send, Sync);
+assert_impl_all!(DeviceInfo: Clone, std::fmt::Debug, Send, Sync);
 assert_impl_all!(DeviceIter<'static>: Iterator, ExactSizeIterator, Send, Sync);
 
 // A camera handle may move to another thread, but one instance requires
@@ -47,7 +48,7 @@ assert_not_impl_any!(FrameGuard<'static>: Send, Sync);
 // Borrowed frame views are safe to share for their valid lifetime, while an
 // OwnedFrame is independent from all SDK-managed storage.
 assert_impl_all!(Frame<'static>: std::fmt::Debug, Send, Sync);
-assert_impl_all!(FrameInfo<'static>: Copy, Clone, std::fmt::Debug, Send, Sync);
+assert_impl_all!(FrameInfo: Copy, Clone, std::fmt::Debug, Send, Sync);
 assert_impl_all!(EventInfo<'static>: Copy, Clone, std::fmt::Debug, Send, Sync);
 assert_impl_all!(OwnedFrame: Clone, std::fmt::Debug, Send, Sync);
 
@@ -63,6 +64,7 @@ assert_impl_all!(MvsError: std::error::Error, Send, Sync);
 assert_impl_all!(CleanupStep: Copy, Clone, std::fmt::Debug, std::fmt::Display, PartialEq, Eq, Send, Sync);
 assert_impl_all!(CleanupFailure: std::fmt::Debug, std::fmt::Display, std::error::Error, Send, Sync);
 assert_impl_all!(CleanupError: std::fmt::Debug, std::fmt::Display, std::error::Error, Send, Sync);
+assert_impl_all!(ShutdownError: std::fmt::Debug, std::fmt::Display, std::error::Error, Send, Sync);
 
 // -------------------------------------------------------------------------
 // Export paths and aliases
@@ -78,7 +80,7 @@ fn all_public_types_are_nameable_from_the_crate_root() {
     assert_sized::<CleanupError>();
     assert_sized::<CleanupFailure>();
     assert_sized::<CleanupStep>();
-    assert_sized::<DeviceInfo<'static>>();
+    assert_sized::<DeviceInfo>();
     assert_sized::<DeviceIter<'static>>();
     assert_sized::<DeviceList>();
     assert_sized::<EnumNode>();
@@ -86,12 +88,13 @@ fn all_public_types_are_nameable_from_the_crate_root() {
     assert_sized::<FloatNode>();
     assert_sized::<Frame<'static>>();
     assert_sized::<FrameGuard<'static>>();
-    assert_sized::<FrameInfo<'static>>();
+    assert_sized::<FrameInfo>();
     assert_sized::<IntNode>();
     assert_sized::<MvsError>();
     assert_sized::<OwnedFrame>();
     assert_sized::<PixelType>();
     assert_sized::<Sdk>();
+    assert_sized::<ShutdownError>();
     assert_sized::<TransportLayer>();
 }
 
@@ -101,6 +104,7 @@ fn error_export_contract(
     root_cleanup_step: CleanupStep,
     root_error: MvsError,
     root_result: MvsResult<()>,
+    root_shutdown_error: ShutdownError,
 ) {
     // The root exports and `mvs_sdk_rs::error` exports must remain aliases of
     // exactly the same types.
@@ -109,10 +113,12 @@ fn error_export_contract(
     let _: ModuleCleanupStep = root_cleanup_step;
     let _: ModuleError = root_error;
     let _: ModuleResult<()> = root_result;
+    let _: ModuleShutdownError = root_shutdown_error;
 }
 
 fn cleanup_error_api_contract(error: &CleanupError) {
     let _: &[CleanupFailure] = error.failures();
+    let _: bool = error.native_handle_destroyed();
 }
 
 fn cleanup_error_consuming_api_contract(error: CleanupError) {
@@ -143,6 +149,7 @@ fn cleanup_step_api_contract() {
 fn sdk_api_contract(sdk: &Arc<Sdk>) {
     let _: fn() -> MvsResult<Arc<Sdk>> = Sdk::init;
     let _: u32 = sdk.sdk_version();
+    let _: Result<(), ShutdownError> = sdk.shutdown();
     let _: MvsResult<DeviceList> =
         sdk.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB);
 }
@@ -151,17 +158,17 @@ fn device_list_api_contract(list: &DeviceList) {
     let _: usize = list.len();
     let _: bool = list.is_empty();
     let _: DeviceIter<'_> = list.iter();
-    let _: Option<DeviceInfo<'_>> = list.get(0);
+    let _: Option<DeviceInfo> = list.get(0);
 }
 
 fn device_iterator_api_contract<'a>(mut iter: DeviceIter<'a>) {
-    let _: Option<DeviceInfo<'a>> = iter.next();
+    let _: Option<DeviceInfo> = iter.next();
 
     fn require_exact_size<I: ExactSizeIterator>(_iter: &I) {}
     require_exact_size(&iter);
 }
 
-fn device_info_api_contract(info: &DeviceInfo<'_>) {
+fn device_info_api_contract(info: &DeviceInfo) {
     let _: TransportLayer = info.transport_layer();
     let _: bool = info.is_gige();
     let _: bool = info.is_usb();
@@ -171,7 +178,7 @@ fn device_info_api_contract(info: &DeviceInfo<'_>) {
     let _: String = info.user_defined_name();
     let _: Option<Ipv4Addr> = info.ip();
     let _: Option<Ipv4Addr> = info.host_nic_ip();
-    let _: bool = info.is_accessible(AccessMode::Exclusive);
+    let _: MvsResult<bool> = info.is_accessible(AccessMode::Exclusive);
     let _: MvsResult<Camera> = info.open(AccessMode::Control);
     let _: MvsResult<Camera> = info.open_exclusive();
     let _: MvsResult<Camera> = info.open_control();
@@ -272,11 +279,11 @@ fn camera_api_contract(camera: &mut Camera) {
 
 fn frame_api_contract(frame: &Frame<'_>) {
     let _: &[u8] = frame.data();
-    let _: &FrameInfo<'_> = frame.info();
+    let _: FrameInfo = frame.info();
     let _: OwnedFrame = frame.to_owned();
 }
 
-fn frame_info_api_contract(info: &FrameInfo<'_>) {
+fn frame_info_api_contract(info: &FrameInfo) {
     let _: u32 = info.width();
     let _: u32 = info.height();
     let _: PixelType = info.pixel_type();
@@ -295,7 +302,7 @@ fn frame_info_api_contract(info: &FrameInfo<'_>) {
 
 fn owned_frame_api_contract(frame: &OwnedFrame) {
     let _: &[u8] = &frame.data;
-    let _: FrameInfo<'_> = frame.info();
+    let _: FrameInfo = frame.info();
     let _: Frame<'_> = frame.as_frame();
 }
 
@@ -305,7 +312,7 @@ fn frame_guard_api_contract(guard: FrameGuard<'_>) -> MvsResult<()> {
         let _: &[u8] = frame.data();
     }
     {
-        let info: FrameInfo<'_> = guard.info();
+        let info: FrameInfo = guard.info();
         let _: u32 = info.width();
     }
     let _: OwnedFrame = guard.to_owned();

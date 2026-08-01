@@ -1,30 +1,460 @@
-//! SDK lifetime and initialization.
+//! SDK lifetime, process-wide initialization, and native-resource tracking.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard};
 
 use crate::backend;
 use crate::device::DeviceList;
-use crate::{MvsResult, TransportLayer};
+use crate::{MvsError, MvsResult, ShutdownError, TransportLayer};
 
-/// Handle to the initialized MVS SDK. Calling [`Sdk::init`] multiple times is
-/// cheap: the native SDK is initialized exactly once per process.
+static PROCESS: OnceLock<ProcessRuntime> = OnceLock::new();
+
+fn process() -> &'static ProcessRuntime {
+    PROCESS.get_or_init(ProcessRuntime::new)
+}
+
+struct ProcessRuntime {
+    state: RwLock<ProcessState>,
+    resources: OnceLock<Arc<ResourceLedger>>,
+}
+
+impl ProcessRuntime {
+    const fn new() -> Self {
+        Self {
+            state: RwLock::new(ProcessState::Uninitialized),
+            resources: OnceLock::new(),
+        }
+    }
+}
+
+enum ProcessState {
+    Uninitialized,
+    Active(Arc<Sdk>),
+    Finalized,
+    Poisoned { finalize_code: Option<u32> },
+}
+
+/// Process-wide handle to the initialized MVS SDK.
+///
+/// Every successful call to [`Sdk::init`] returns an [`Arc`] to the same
+/// allocation. Native lifetime is controlled explicitly by [`Sdk::shutdown`],
+/// not by the last `Arc` being dropped.
 pub struct Sdk {
     pub(crate) inner: backend::Sdk,
+    sdk_version: u32,
+    enumeration_lock: Mutex<()>,
+    resources: Arc<ResourceLedger>,
 }
 
 impl Sdk {
-    /// Initialize the MVS SDK.
+    /// Initialize the MVS SDK, caching only a successful initialization.
     pub fn init() -> MvsResult<Arc<Self>> {
-        backend::Sdk::init().map(|inner| Arc::new(Self { inner }))
+        Self::init_with(process(), || {
+            let inner = backend::Sdk::init()?;
+            let sdk_version = inner.sdk_version();
+            Ok((inner, sdk_version))
+        })
+    }
+
+    fn init_with(
+        runtime: &ProcessRuntime,
+        initialize: impl FnOnce() -> MvsResult<(backend::Sdk, u32)>,
+    ) -> MvsResult<Arc<Self>> {
+        let mut state = runtime
+            .state
+            .write()
+            .map_err(|_| MvsError::SdkStateUnknown)?;
+
+        match &*state {
+            ProcessState::Active(sdk) => return Ok(Arc::clone(sdk)),
+            ProcessState::Finalized => return Err(MvsError::SdkFinalized),
+            ProcessState::Poisoned { .. } => return Err(MvsError::SdkStateUnknown),
+            ProcessState::Uninitialized => {}
+        }
+
+        let resources = Arc::clone(
+            runtime
+                .resources
+                .get_or_init(|| Arc::new(ResourceLedger::default())),
+        );
+        let (inner, sdk_version) = initialize()?;
+        let sdk = Arc::new(Self {
+            inner,
+            sdk_version,
+            enumeration_lock: Mutex::new(()),
+            resources,
+        });
+        *state = ProcessState::Active(Arc::clone(&sdk));
+        Ok(sdk)
+    }
+
+    /// Finalize the process-wide MVS SDK.
+    ///
+    /// This is a terminal operation: successful shutdown cannot be followed
+    /// by another initialization in the same process. The call is idempotent,
+    /// but it refuses to finalize while a camera or callback remains live, or
+    /// after native handle destruction could not be confirmed.
+    pub fn shutdown(&self) -> Result<(), ShutdownError> {
+        self.shutdown_with(process(), || self.inner.finalize())
+    }
+
+    fn shutdown_with(
+        &self,
+        runtime: &ProcessRuntime,
+        finalize: impl FnOnce() -> MvsResult<()>,
+    ) -> Result<(), ShutdownError> {
+        let mut state = runtime
+            .state
+            .write()
+            .map_err(|_| ShutdownError::StateUnknown {
+                finalize_code: None,
+            })?;
+
+        match &*state {
+            ProcessState::Finalized => return Ok(()),
+            ProcessState::Poisoned { finalize_code } => {
+                return Err(ShutdownError::StateUnknown {
+                    finalize_code: *finalize_code,
+                });
+            }
+            ProcessState::Uninitialized => {
+                return Err(ShutdownError::StateUnknown {
+                    finalize_code: None,
+                });
+            }
+            ProcessState::Active(active) if !std::ptr::eq(self, Arc::as_ptr(active)) => {
+                return Err(ShutdownError::StateUnknown {
+                    finalize_code: None,
+                });
+            }
+            ProcessState::Active(_) => {}
+        }
+
+        let resources = self.resources.snapshot();
+        if resources.orphaned_handles != 0 {
+            return Err(ShutdownError::UnresolvedResources {
+                orphaned_handles: resources.orphaned_handles,
+            });
+        }
+        if resources.opening_cameras != 0
+            || resources.live_cameras != 0
+            || resources.active_callbacks != 0
+        {
+            return Err(ShutdownError::InUse {
+                live_cameras: resources
+                    .live_cameras
+                    .saturating_add(resources.opening_cameras),
+                active_callbacks: resources.active_callbacks,
+            });
+        }
+
+        match finalize() {
+            Ok(()) => {
+                *state = ProcessState::Finalized;
+                Ok(())
+            }
+            Err(error) => {
+                let finalize_code = error.raw_code();
+                *state = ProcessState::Poisoned { finalize_code };
+                Err(ShutdownError::Finalize(error))
+            }
+        }
     }
 
     /// SDK version as a packed `u32`; interpret per MVS SDK documentation.
+    /// The value is cached during initialization and remains readable after
+    /// shutdown without entering the native SDK again.
     pub fn sdk_version(&self) -> u32 {
-        self.inner.sdk_version()
+        self.sdk_version
     }
 
     /// Enumerate connected devices of the requested transport types.
-    pub fn enumerate_devices(self: &Arc<Self>, layers: TransportLayer) -> MvsResult<DeviceList> {
-        DeviceList::enumerate(self, layers)
+    pub fn enumerate_devices(&self, layers: TransportLayer) -> MvsResult<DeviceList> {
+        let _operation = self.operation()?;
+        let _enumeration = self
+            .enumeration_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        DeviceList::enumerate(layers)
+    }
+
+    pub(crate) fn operation(&self) -> MvsResult<OperationPermit> {
+        let active = ActiveSdk::acquire()?;
+        if !std::ptr::eq(self, active.sdk.as_ref()) {
+            return Err(MvsError::SdkFinalized);
+        }
+        Ok(OperationPermit {
+            _state: active.state,
+        })
+    }
+
+    pub(crate) fn active() -> MvsResult<ActiveSdk> {
+        ActiveSdk::acquire()
+    }
+
+    pub(crate) fn begin_camera_open(&self) -> PendingCameraLease {
+        PendingCameraLease::new(Arc::clone(&self.resources))
+    }
+}
+
+pub(crate) struct ActiveSdk {
+    sdk: Arc<Sdk>,
+    state: RwLockReadGuard<'static, ProcessState>,
+}
+
+impl ActiveSdk {
+    fn acquire() -> MvsResult<Self> {
+        let state = process()
+            .state
+            .read()
+            .map_err(|_| MvsError::SdkStateUnknown)?;
+        let sdk = match &*state {
+            ProcessState::Active(sdk) => Arc::clone(sdk),
+            ProcessState::Uninitialized => return Err(MvsError::SdkNotInitialized),
+            ProcessState::Finalized => return Err(MvsError::SdkFinalized),
+            ProcessState::Poisoned { .. } => return Err(MvsError::SdkStateUnknown),
+        };
+        Ok(Self { sdk, state })
+    }
+
+    pub(crate) fn sdk(&self) -> &Arc<Sdk> {
+        &self.sdk
+    }
+}
+
+/// Keeps the process lifecycle in `Active` while a short global FFI call is
+/// in progress.
+pub(crate) struct OperationPermit {
+    _state: RwLockReadGuard<'static, ProcessState>,
+}
+
+#[derive(Default)]
+pub(crate) struct ResourceLedger {
+    counts: Mutex<ResourceCounts>,
+}
+
+#[derive(Default)]
+struct ResourceCounts {
+    opening_cameras: usize,
+    live_cameras: usize,
+    active_callbacks: usize,
+    orphaned_handles: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ResourceSnapshot {
+    pub(crate) opening_cameras: usize,
+    pub(crate) live_cameras: usize,
+    pub(crate) active_callbacks: usize,
+    pub(crate) orphaned_handles: usize,
+}
+
+impl ResourceLedger {
+    fn with_counts<T>(&self, f: impl FnOnce(&mut ResourceCounts) -> T) -> T {
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&mut counts)
+    }
+
+    fn snapshot(&self) -> ResourceSnapshot {
+        self.with_counts(|counts| ResourceSnapshot {
+            opening_cameras: counts.opening_cameras,
+            live_cameras: counts.live_cameras,
+            active_callbacks: counts.active_callbacks,
+            orphaned_handles: counts.orphaned_handles,
+        })
+    }
+
+    #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+    fn enter_callback(self: &Arc<Self>) -> CallbackGuard {
+        self.with_counts(|counts| counts.active_callbacks += 1);
+        CallbackGuard {
+            ledger: Arc::clone(self),
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub(crate) fn enter_callback() -> Option<CallbackGuard> {
+    process()
+        .resources
+        .get()
+        .map(ResourceLedger::enter_callback)
+}
+
+pub(crate) struct PendingCameraLease {
+    ledger: Option<Arc<ResourceLedger>>,
+}
+
+impl PendingCameraLease {
+    fn new(ledger: Arc<ResourceLedger>) -> Self {
+        ledger.with_counts(|counts| counts.opening_cameras += 1);
+        Self {
+            ledger: Some(ledger),
+        }
+    }
+
+    pub(crate) fn opened(mut self) -> CameraLease {
+        let ledger = self.ledger.take().expect("pending lease already settled");
+        ledger.with_counts(|counts| {
+            counts.opening_cameras = counts.opening_cameras.saturating_sub(1);
+            counts.live_cameras += 1;
+        });
+        CameraLease {
+            ledger: Some(ledger),
+        }
+    }
+
+    pub(crate) fn failed(mut self, orphaned: bool) {
+        let ledger = self.ledger.take().expect("pending lease already settled");
+        ledger.with_counts(|counts| {
+            counts.opening_cameras = counts.opening_cameras.saturating_sub(1);
+            if orphaned {
+                counts.orphaned_handles += 1;
+            }
+        });
+    }
+}
+
+impl Drop for PendingCameraLease {
+    fn drop(&mut self) {
+        if let Some(ledger) = self.ledger.take() {
+            ledger.with_counts(|counts| {
+                counts.opening_cameras = counts.opening_cameras.saturating_sub(1);
+                counts.orphaned_handles += 1;
+            });
+        }
+    }
+}
+
+pub(crate) struct CameraLease {
+    ledger: Option<Arc<ResourceLedger>>,
+}
+
+impl CameraLease {
+    pub(crate) fn settle(&mut self, destroyed: bool) {
+        if let Some(ledger) = self.ledger.take() {
+            ledger.with_counts(|counts| {
+                counts.live_cameras = counts.live_cameras.saturating_sub(1);
+                if !destroyed {
+                    counts.orphaned_handles += 1;
+                }
+            });
+        }
+    }
+}
+
+impl Drop for CameraLease {
+    fn drop(&mut self) {
+        self.settle(false);
+    }
+}
+
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+pub(crate) struct CallbackGuard {
+    ledger: Arc<ResourceLedger>,
+}
+
+#[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
+impl Drop for CallbackGuard {
+    fn drop(&mut self) {
+        self.ledger.with_counts(|counts| {
+            counts.active_callbacks = counts.active_callbacks.saturating_sub(1);
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ProcessRuntime, ResourceLedger, Sdk};
+    use crate::{MvsError, ShutdownError, backend, sys};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn camera_and_callback_leases_update_one_shared_ledger() {
+        let ledger = Arc::new(ResourceLedger::default());
+        let pending = super::PendingCameraLease::new(Arc::clone(&ledger));
+        assert_eq!(ledger.snapshot().opening_cameras, 1);
+
+        let mut camera = pending.opened();
+        let callback = ledger.enter_callback();
+        assert_eq!(ledger.snapshot().live_cameras, 1);
+        assert_eq!(ledger.snapshot().active_callbacks, 1);
+
+        camera.settle(true);
+        drop(callback);
+        assert_eq!(ledger.snapshot(), Default::default());
+    }
+
+    #[test]
+    fn unresolved_camera_becomes_an_orphan() {
+        let ledger = Arc::new(ResourceLedger::default());
+        let camera = super::PendingCameraLease::new(Arc::clone(&ledger)).opened();
+        drop(camera);
+        assert_eq!(ledger.snapshot().orphaned_handles, 1);
+    }
+
+    #[test]
+    fn initialization_caches_only_success() {
+        let runtime = ProcessRuntime::new();
+        let first = Sdk::init_with(&runtime, || Err(MvsError::Resource));
+        assert!(matches!(first, Err(MvsError::Resource)));
+
+        let sdk = Sdk::init_with(&runtime, || Ok((backend::Sdk::test_instance(), 0x01020304)))
+            .expect("second initialization succeeds");
+        let same = Sdk::init_with(&runtime, || panic!("successful init must be cached"))
+            .expect("cached SDK is returned");
+
+        assert!(Arc::ptr_eq(&sdk, &same));
+        assert_eq!(sdk.sdk_version(), 0x01020304);
+    }
+
+    #[test]
+    fn live_camera_blocks_shutdown_then_shutdown_is_idempotent() {
+        let runtime = ProcessRuntime::new();
+        let sdk = Sdk::init_with(&runtime, || Ok((backend::Sdk::test_instance(), 1))).unwrap();
+        let mut camera = sdk.begin_camera_open().opened();
+        let finalizations = AtomicUsize::new(0);
+
+        let blocked = sdk.shutdown_with(&runtime, || {
+            finalizations.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        assert!(matches!(blocked, Err(ShutdownError::InUse { .. })));
+        assert_eq!(finalizations.load(Ordering::SeqCst), 0);
+
+        camera.settle(true);
+        sdk.shutdown_with(&runtime, || {
+            finalizations.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap();
+        sdk.shutdown_with(&runtime, || panic!("Finalize must not be called twice"))
+            .unwrap();
+        assert_eq!(finalizations.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn finalize_failure_poisoning_is_terminal() {
+        let runtime = ProcessRuntime::new();
+        let sdk = Sdk::init_with(&runtime, || Ok((backend::Sdk::test_instance(), 1))).unwrap();
+
+        let failed = sdk.shutdown_with(&runtime, || Err(MvsError::Resource));
+        assert!(matches!(
+            failed,
+            Err(ShutdownError::Finalize(MvsError::Resource))
+        ));
+        assert!(matches!(
+            sdk.shutdown_with(&runtime, || panic!("Finalize failure must not be retried")),
+            Err(ShutdownError::StateUnknown {
+                finalize_code: Some(code)
+            }) if code == sys::MV_E_RESOURCE
+        ));
+        assert!(matches!(
+            Sdk::init_with(&runtime, || panic!("poisoned runtime cannot initialize")),
+            Err(MvsError::SdkStateUnknown)
+        ));
     }
 }
