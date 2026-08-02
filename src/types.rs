@@ -6,36 +6,52 @@ use std::ops::{BitOr, BitOrAssign};
 /// Device access mode passed to [`DeviceInfo::open`](crate::DeviceInfo::open).
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum AccessMode {
+    /// Exclusive control of the device.
     Exclusive,
+    /// Exclusive control while allowing the device's control owner to switch.
     ExclusiveWithSwitch,
+    /// Control access without exclusive ownership.
     Control,
+    /// Control access while allowing the control owner to switch.
     ControlWithSwitch,
+    /// Enable control-owner switching without a key.
     ControlSwitchEnable,
+    /// Enable control-owner switching with a key configured by the SDK.
     ControlSwitchEnableWithKey,
+    /// Read-only monitoring access.
     Monitor,
 }
 
 /// Full integer-node information: current value plus its allowed range.
 #[derive(Copy, Clone, Debug)]
 pub struct IntNode {
+    /// Current node value.
     pub current: i64,
+    /// Smallest accepted value.
     pub min: i64,
+    /// Largest accepted value.
     pub max: i64,
+    /// Required increment between accepted values.
     pub inc: i64,
 }
 
 /// Full float-node information: current value plus min/max.
 #[derive(Copy, Clone, Debug)]
 pub struct FloatNode {
+    /// Current node value.
     pub current: f32,
+    /// Smallest accepted value.
     pub min: f32,
+    /// Largest accepted value.
     pub max: f32,
 }
 
 /// Enum-node information: current numeric value and the list of allowed values.
 #[derive(Clone, Debug)]
 pub struct EnumNode {
+    /// Current numeric value.
     pub current: u32,
+    /// Numeric values reported as supported by the node.
     pub supported: Vec<u32>,
 }
 
@@ -44,31 +60,45 @@ pub struct EnumNode {
 pub struct TransportLayer(u32);
 
 impl TransportLayer {
+    /// Unknown or unspecified transport.
     pub const UNKNOWN: Self = Self(0);
+    /// GigE Vision devices.
     pub const GIGE: Self = Self(1);
+    /// USB3 Vision devices.
     pub const USB: Self = Self(4);
+    /// Camera Link devices.
     pub const CAMERALINK: Self = Self(8);
+    /// Virtual GigE devices.
     pub const VIR_GIGE: Self = Self(0x10);
+    /// Virtual USB devices.
     pub const VIR_USB: Self = Self(0x20);
+    /// GigE devices exposed through GenTL.
     pub const GENTL_GIGE: Self = Self(0x40);
+    /// Camera Link devices exposed through GenTL.
     pub const GENTL_CAMERALINK: Self = Self(0x80);
+    /// CoaXPress devices exposed through GenTL.
     pub const GENTL_CXP: Self = Self(0x100);
+    /// XoF devices exposed through GenTL.
     pub const GENTL_XOF: Self = Self(0x200);
+    /// Virtual devices exposed through GenTL.
     pub const GENTL_VIR: Self = Self(0x800);
 
     /// Enumerate every type the SDK knows about.
     pub const ALL: Self = Self(0xFFFF_FFFF);
 
+    /// Construct a transport-layer bit set from the SDK's raw mask.
     #[inline]
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
+    /// Return the SDK transport-layer mask.
     #[inline]
     pub const fn raw(self) -> u32 {
         self.0
     }
 
+    /// Return whether every bit in `other` is present in this set.
     #[inline]
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
@@ -102,34 +132,54 @@ impl fmt::Debug for TransportLayer {
 pub struct PixelType(u32);
 
 impl PixelType {
+    /// Undefined or unknown pixel format.
     pub const UNDEFINED: Self = Self(0xFFFF_FFFF);
 
+    /// 8-bit monochrome pixels.
     pub const MONO8: Self = Self(0x0108_0001);
+    /// 10-bit monochrome pixels stored in 16-bit words.
     pub const MONO10: Self = Self(0x0110_0003);
+    /// Packed 10-bit monochrome pixels.
     pub const MONO10_PACKED: Self = Self(0x010C_0004);
+    /// 12-bit monochrome pixels stored in 16-bit words.
     pub const MONO12: Self = Self(0x0110_0005);
+    /// Packed 12-bit monochrome pixels.
     pub const MONO12_PACKED: Self = Self(0x010C_0006);
+    /// 14-bit monochrome pixels stored in 16-bit words.
     pub const MONO14: Self = Self(0x0110_0025);
+    /// 16-bit monochrome pixels.
     pub const MONO16: Self = Self(0x0110_0007);
 
+    /// 8-bit Bayer pixels in GR order.
     pub const BAYER_GR8: Self = Self(0x0108_0008);
+    /// 8-bit Bayer pixels in RG order.
     pub const BAYER_RG8: Self = Self(0x0108_0009);
+    /// 8-bit Bayer pixels in GB order.
     pub const BAYER_GB8: Self = Self(0x0108_000A);
+    /// 8-bit Bayer pixels in BG order.
     pub const BAYER_BG8: Self = Self(0x0108_000B);
 
+    /// Packed RGB with 8 bits per channel.
     pub const RGB8_PACKED: Self = Self(0x0218_0014);
+    /// Packed BGR with 8 bits per channel.
     pub const BGR8_PACKED: Self = Self(0x0218_0015);
+    /// Packed RGBA with 8 bits per channel.
     pub const RGBA8_PACKED: Self = Self(0x0220_0016);
+    /// Packed BGRA with 8 bits per channel.
     pub const BGRA8_PACKED: Self = Self(0x0220_0017);
 
+    /// Packed YUV 4:2:2 pixels.
     pub const YUV422_PACKED: Self = Self(0x0210_001F);
+    /// Packed YUV 4:2:2 pixels in YUYV order.
     pub const YUV422_YUYV_PACKED: Self = Self(0x0210_0032);
 
+    /// Construct a pixel type from the SDK's raw wire-format code.
     #[inline]
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
+    /// Return the SDK's raw wire-format code.
     #[inline]
     pub const fn raw(self) -> u32 {
         self.0
@@ -141,16 +191,19 @@ impl PixelType {
         (self.0 >> 16) & 0xFF
     }
 
+    /// Return whether the format descriptor identifies monochrome data.
     #[inline]
     pub const fn is_mono(self) -> bool {
         (self.0 & 0xFF00_0000) == 0x0100_0000
     }
 
+    /// Return whether the format descriptor identifies color data.
     #[inline]
     pub const fn is_color(self) -> bool {
         (self.0 & 0xFF00_0000) == 0x0200_0000
     }
 
+    /// Return whether the SDK's custom-format bit is set.
     #[inline]
     pub const fn is_custom(self) -> bool {
         (self.0 & 0x8000_0000) != 0

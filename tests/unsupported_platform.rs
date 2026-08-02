@@ -8,15 +8,13 @@
 use mvs_sdk_rs::{MvsError, Sdk};
 
 #[test]
-fn sdk_init_returns_unsupported_platform() {
+fn sdk_init_reports_unsupported_platform_without_a_native_code() {
     // Unsupported targets must fail explicitly instead of constructing a fake
     // SDK or returning fabricated device information.
-    assert!(matches!(Sdk::init(), Err(MvsError::UnsupportedPlatform)));
-}
+    let Err(error) = Sdk::init() else {
+        panic!("unsupported targets must not construct an SDK");
+    };
 
-#[test]
-fn unsupported_platform_has_no_native_error_code() {
-    // This error originates in the safe wrapper and therefore has no MV_E_*
-    // code from the vendor SDK.
-    assert_eq!(MvsError::UnsupportedPlatform.raw_code(), None);
+    assert!(matches!(&error, MvsError::UnsupportedPlatform));
+    assert_eq!(error.raw_code(), None);
 }

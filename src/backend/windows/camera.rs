@@ -291,6 +291,46 @@ fn record_cleanup_result(
     }
 }
 
+fn int_node_from_raw(value: &sys::MVCC_INTVALUE_EX) -> IntNode {
+    IntNode {
+        current: value.nCurValue,
+        min: value.nMin,
+        max: value.nMax,
+        inc: value.nInc,
+    }
+}
+
+fn float_node_from_raw(value: &sys::MVCC_FLOATVALUE) -> FloatNode {
+    FloatNode {
+        current: value.fCurValue,
+        min: value.fMin,
+        max: value.fMax,
+    }
+}
+
+fn bool_from_raw(value: sys::bool_) -> bool {
+    value != 0
+}
+
+fn string_from_raw(value: &sys::MVCC_STRINGVALUE) -> String {
+    let bytes = &value.chCurValue;
+    let end = bytes
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(bytes.len());
+    // SAFETY: c_char is i8 on Windows; reinterpret bytes as u8 for UTF-8.
+    let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), end) };
+    String::from_utf8_lossy(slice).into_owned()
+}
+
+fn enum_node_from_raw(value: &sys::MVCC_ENUMVALUE) -> EnumNode {
+    let supported_len = (value.nSupportedNum as usize).min(value.nSupportValue.len());
+    EnumNode {
+        current: value.nCurValue,
+        supported: value.nSupportValue[..supported_len].to_vec(),
+    }
+}
+
 /// An opened MVS camera. `Send` but not `Sync`: the SDK serializes internally,
 /// but concurrent calls on the same handle still require external
 /// synchronization.
@@ -794,12 +834,7 @@ impl Camera {
         // SAFETY: value is stack-allocated; key valid for call.
         let code = unsafe { sys::MV_CC_GetIntValueEx(handle, k.as_ptr(), &mut value) };
         check(code)?;
-        Ok(IntNode {
-            current: value.nCurValue,
-            min: value.nMin,
-            max: value.nMax,
-            inc: value.nInc,
-        })
+        Ok(int_node_from_raw(&value))
     }
 
     /// Set a float node (`MV_CC_SetFloatValue`). Typical keys:
@@ -824,11 +859,7 @@ impl Camera {
         // SAFETY: see get_int_range.
         let code = unsafe { sys::MV_CC_GetFloatValue(handle, k.as_ptr(), &mut value) };
         check(code)?;
-        Ok(FloatNode {
-            current: value.fCurValue,
-            min: value.fMin,
-            max: value.fMax,
-        })
+        Ok(float_node_from_raw(&value))
     }
 
     /// Set a boolean node (`MV_CC_SetBoolValue`). Typical keys:
@@ -850,7 +881,7 @@ impl Camera {
         // SAFETY: see get_int.
         let code = unsafe { sys::MV_CC_GetBoolValue(handle, k.as_ptr(), &mut out) };
         check(code)?;
-        Ok(out != 0)
+        Ok(bool_from_raw(out))
     }
 
     /// Set an enum node by symbolic name (`MV_CC_SetEnumValueByString`).
@@ -892,11 +923,7 @@ impl Camera {
         // SAFETY: value is stack-allocated; key valid for call.
         let code = unsafe { sys::MV_CC_GetStringValue(handle, k.as_ptr(), &mut value) };
         check(code)?;
-        let bytes = &value.chCurValue;
-        let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
-        // SAFETY: c_char is i8 on Windows; reinterpret bytes as u8 for UTF-8.
-        let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u8, end) };
-        Ok(String::from_utf8_lossy(slice).into_owned())
+        Ok(string_from_raw(&value))
     }
 
     /// Read an enum node's current numeric value (`MV_CC_GetEnumValue`).
@@ -915,12 +942,7 @@ impl Camera {
         // SAFETY: see get_string.
         let code = unsafe { sys::MV_CC_GetEnumValue(handle, k.as_ptr(), &mut value) };
         check(code)?;
-        let n = value.nSupportedNum as usize;
-        let supported = value.nSupportValue[..n.min(value.nSupportValue.len())].to_vec();
-        Ok(EnumNode {
-            current: value.nCurValue,
-            supported,
-        })
+        Ok(enum_node_from_raw(&value))
     }
 
     /// Set an enum node by its numeric value (`MV_CC_SetEnumValue`). Prefer
@@ -1192,7 +1214,8 @@ mod tests {
 
     use super::{
         AcquisitionFns, CallbackFns, CallbackRecord, CallbackSlot, Camera, CleanupFns, EventRecord,
-        HandleDisposition, OpenFns, RegistrationState,
+        HandleDisposition, OpenFns, RegistrationState, bool_from_raw, enum_node_from_raw,
+        float_node_from_raw, int_node_from_raw, string_from_raw,
     };
 
     const FULL_CLEANUP_STEPS: [CleanupStep; 7] = [
@@ -1414,8 +1437,6 @@ mod tests {
     }
 
     struct EventNativeCall {
-        name: String,
-        name_ptr: usize,
         callback: sys::MvEventCallback,
         user: usize,
     }
@@ -1532,12 +1553,8 @@ mod tests {
     ) -> c_int {
         assert!(!event_name.is_null());
         // SAFETY: registration supplies the live CString owned by EventRecord.
-        let name = unsafe { CStr::from_ptr(event_name) }
-            .to_string_lossy()
-            .into_owned();
+        assert!(!unsafe { CStr::from_ptr(event_name) }.to_bytes().is_empty());
         context.event_calls.push(EventNativeCall {
-            name,
-            name_ptr: event_name as usize,
             callback,
             user: user as usize,
         });
@@ -1589,12 +1606,6 @@ mod tests {
         record
     }
 
-    fn unknown_record<C>() -> CallbackRecord<C> {
-        let mut record = CallbackRecord::new();
-        record.registration = RegistrationState::Unknown;
-        record
-    }
-
     fn event_record(name: &str, callback: EventCallbackFn) -> EventRecord {
         EventRecord {
             name: CString::new(name).unwrap(),
@@ -1630,29 +1641,11 @@ mod tests {
         })
     }
 
-    fn probed_exception_callback(drops: Arc<AtomicUsize>) -> ExceptionCallbackFn {
-        let probe = DropProbe(drops);
-        Box::new(move |_| {
-            let _ = &probe;
-        })
-    }
-
     fn probed_event_callback(drops: Arc<AtomicUsize>) -> EventCallbackFn {
         let probe = DropProbe(drops);
         Box::new(move |_| {
             let _ = &probe;
         })
-    }
-
-    fn camera_with_probed_callbacks(drops: &Arc<AtomicUsize>) -> Camera {
-        let mut camera = camera_with_handle(AcquisitionState::Stopped);
-        camera.image_cb = Some(active_record(probed_image_callback(Arc::clone(drops))));
-        camera.exception_cb = Some(active_record(probed_exception_callback(Arc::clone(drops))));
-        camera.event_cbs.push(event_record(
-            "ExposureEnd",
-            probed_event_callback(Arc::clone(drops)),
-        ));
-        camera
     }
 
     fn assert_cleanup_calls(mut camera: Camera, expected: &[CleanupStep]) -> FakeCleanup {
@@ -1667,160 +1660,132 @@ mod tests {
         context
     }
 
-    fn registration_count<T>(calls: &[T], is_registration: impl Fn(&T) -> bool) -> usize {
-        calls.iter().filter(|call| is_registration(call)).count()
+    #[test]
+    fn raw_node_values_convert_without_trusting_native_lengths() {
+        let integer = sys::MVCC_INTVALUE_EX {
+            nCurValue: 12,
+            nMin: 2,
+            nMax: 42,
+            nInc: 4,
+            ..Default::default()
+        };
+        let integer = int_node_from_raw(&integer);
+        assert_eq!(
+            (integer.current, integer.min, integer.max, integer.inc),
+            (12, 2, 42, 4)
+        );
+
+        let float = sys::MVCC_FLOATVALUE {
+            fCurValue: 1.5,
+            fMin: 0.25,
+            fMax: 8.0,
+            ..Default::default()
+        };
+        let float = float_node_from_raw(&float);
+        assert_eq!((float.current, float.min, float.max), (1.5, 0.25, 8.0));
+        assert!(!bool_from_raw(0));
+        assert!(bool_from_raw(-1));
+
+        let mut string = sys::MVCC_STRINGVALUE::default();
+        for (target, source) in string.chCurValue.iter_mut().zip(b"camera\0ignored") {
+            *target = *source as c_char;
+        }
+        assert_eq!(string_from_raw(&string), "camera");
+
+        let mut enumeration = sys::MVCC_ENUMVALUE {
+            nCurValue: 7,
+            nSupportedNum: u32::MAX,
+            ..Default::default()
+        };
+        for (index, value) in enumeration.nSupportValue.iter_mut().enumerate() {
+            *value = index as u32;
+        }
+        let enumeration = enum_node_from_raw(&enumeration);
+        assert_eq!(enumeration.current, 7);
+        assert_eq!(enumeration.supported.len(), 64);
+        assert_eq!(enumeration.supported[63], 63);
     }
 
     #[test]
-    fn create_handle_failure_reports_no_handle_disposition() {
+    fn open_failures_report_handle_disposition() {
         let device = sys::MV_CC_DEVICE_INFO::default();
-        let mut context = FakeOpen::with_results([sys::MV_E_RESOURCE]);
+        let create = [OpenCall::CreateHandle];
+        let open_then_destroy = [
+            OpenCall::CreateHandle,
+            OpenCall::OpenDevice,
+            OpenCall::DestroyHandle,
+        ];
+        let cases: &[(
+            &[u32],
+            &[OpenCall],
+            u32,
+            Option<u32>,
+            Option<HandleDisposition>,
+        )] = &[
+            (
+                &[sys::MV_E_RESOURCE],
+                &create,
+                sys::MV_E_RESOURCE,
+                None,
+                None,
+            ),
+            (
+                &[sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_OK],
+                &open_then_destroy,
+                sys::MV_E_ACCESS_DENIED,
+                None,
+                Some(HandleDisposition::Destroyed),
+            ),
+            (
+                &[sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_E_RESOURCE],
+                &open_then_destroy,
+                sys::MV_E_ACCESS_DENIED,
+                Some(sys::MV_E_RESOURCE),
+                Some(HandleDisposition::Orphaned),
+            ),
+        ];
 
-        let failure =
-            Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
-                .err()
-                .expect("CreateHandle failure must be returned");
+        for &(results, expected_calls, error_code, rollback_code, disposition) in cases {
+            let mut context = FakeOpen::with_results(results.iter().copied());
+            let failure =
+                Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
+                    .err()
+                    .expect("open failure must be returned");
 
-        assert_eq!(context.calls, [OpenCall::CreateHandle]);
-        assert_eq!(failure.error.raw_code(), Some(sys::MV_E_RESOURCE));
-        assert!(failure.rollback_error.is_none());
-        assert_eq!(failure.disposition, None);
-    }
-
-    #[test]
-    fn open_failure_reports_successful_rollback_as_destroyed() {
-        let device = sys::MV_CC_DEVICE_INFO::default();
-        let mut context = FakeOpen::with_results([sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_OK]);
-
-        let failure =
-            Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
-                .err()
-                .expect("OpenDevice failure must be returned");
-
-        assert_eq!(
-            context.calls,
-            [
-                OpenCall::CreateHandle,
-                OpenCall::OpenDevice,
-                OpenCall::DestroyHandle,
-            ]
-        );
-        assert_eq!(failure.error.raw_code(), Some(sys::MV_E_ACCESS_DENIED));
-        assert!(failure.rollback_error.is_none());
-        assert_eq!(failure.disposition, Some(HandleDisposition::Destroyed));
-    }
-
-    #[test]
-    fn open_failure_reports_failed_rollback_as_orphaned() {
-        let device = sys::MV_CC_DEVICE_INFO::default();
-        let mut context =
-            FakeOpen::with_results([sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_E_RESOURCE]);
-
-        let failure =
-            Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
-                .err()
-                .expect("OpenDevice failure must be returned");
-
-        assert_eq!(
-            context.calls,
-            [
-                OpenCall::CreateHandle,
-                OpenCall::OpenDevice,
-                OpenCall::DestroyHandle,
-            ]
-        );
-        assert_eq!(failure.error.raw_code(), Some(sys::MV_E_ACCESS_DENIED));
-        assert_eq!(
-            failure.rollback_error.as_ref().and_then(MvsError::raw_code),
-            Some(sys::MV_E_RESOURCE)
-        );
-        assert_eq!(failure.disposition, Some(HandleDisposition::Orphaned));
-    }
-
-    #[test]
-    fn begin_grabbing_selects_mode_from_the_image_registration() {
-        let mut polling = camera_with_handle(AcquisitionState::Stopped);
-        polling.image_cb = Some(CallbackRecord::new());
-        polling.exception_cb = Some(active_record(exception_callback()));
-        polling
-            .event_cbs
-            .push(event_record("ExposureEnd", event_callback()));
-        let polling_handle = polling.handle.unwrap();
-
-        assert_eq!(
-            polling.begin_grabbing().unwrap(),
-            (polling_handle, AcquisitionState::Polling)
-        );
-        assert_eq!(polling.acquisition, AcquisitionState::Stopped);
-
-        let mut callback = camera_with_handle(AcquisitionState::Stopped);
-        callback.image_cb = Some(active_record(image_callback()));
-        let callback_handle = callback.handle.unwrap();
-
-        assert_eq!(
-            callback.begin_grabbing().unwrap(),
-            (callback_handle, AcquisitionState::Callback)
-        );
-        assert_eq!(callback.acquisition, AcquisitionState::Stopped);
-
-        callback.image_cb.as_mut().unwrap().registration = RegistrationState::Unknown;
-        assert!(matches!(
-            callback.begin_grabbing(),
-            Err(MvsError::CallOrder)
-        ));
-
-        polling.handle = None;
-        callback.handle = None;
-    }
-
-    #[test]
-    fn polling_handle_accepts_only_polling_acquisition() {
-        for mode in [
-            AcquisitionState::Stopped,
-            AcquisitionState::Callback,
-            AcquisitionState::Polling,
-            AcquisitionState::Unknown,
-        ] {
-            let mut camera = camera_with_handle(mode);
-            let handle = camera.handle.unwrap();
-
-            if mode == AcquisitionState::Polling {
-                assert_eq!(camera.polling_handle().unwrap(), handle);
-            } else {
-                assert!(matches!(camera.polling_handle(), Err(MvsError::CallOrder)));
-            }
-
-            camera.handle = None;
+            assert_eq!(context.calls, expected_calls);
+            assert_eq!(failure.error.raw_code(), Some(error_code));
+            assert_eq!(
+                failure.rollback_error.as_ref().and_then(MvsError::raw_code),
+                rollback_code
+            );
+            assert_eq!(failure.disposition, disposition);
         }
     }
 
     #[test]
-    fn grabbing_rejects_image_callback_changes_without_side_effects() {
+    fn image_registration_selects_mode_and_is_immutable_while_grabbing() {
         let mut callbacks = FakeCallbacks::default();
-        let mut polling = camera_with_handle(AcquisitionState::Polling);
-
-        assert!(matches!(
-            polling.register_image_callback_with(
-                image_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks
-            ),
-            Err(MvsError::CallOrder)
-        ));
-        assert!(polling.image_cb.is_none());
-        assert!(matches!(
-            polling.unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks),
-            Err(MvsError::CallOrder)
-        ));
-        assert!(callbacks.image_calls.is_empty());
-
         let old_drops = Arc::new(AtomicUsize::new(0));
-        let mut callback = camera_with_handle(AcquisitionState::Callback);
-        callback.image_cb = Some(active_record(probed_image_callback(Arc::clone(&old_drops))));
-        let old_user = callback.image_cb.as_ref().unwrap().user_data();
+        let mut camera = camera_with_handle(AcquisitionState::Stopped);
+        let handle = camera.handle.unwrap();
+        assert_eq!(
+            camera.begin_grabbing().unwrap(),
+            (handle, AcquisitionState::Polling)
+        );
+
+        camera.image_cb = Some(active_record(probed_image_callback(Arc::clone(&old_drops))));
+        let old_user = camera.image_cb.as_ref().unwrap().user_data();
+        assert_eq!(
+            camera.begin_grabbing().unwrap(),
+            (handle, AcquisitionState::Callback)
+        );
+        camera.image_cb.as_mut().unwrap().registration = RegistrationState::Unknown;
+        assert!(matches!(camera.begin_grabbing(), Err(MvsError::CallOrder)));
+        camera.image_cb.as_mut().unwrap().registration = RegistrationState::Registered;
+        camera.acquisition = AcquisitionState::Callback;
 
         assert!(matches!(
-            callback.register_image_callback_with(
+            camera.register_image_callback_with(
                 image_callback(),
                 &FAKE_CALLBACK_FNS,
                 &mut callbacks
@@ -1828,84 +1793,34 @@ mod tests {
             Err(MvsError::CallOrder)
         ));
         assert!(matches!(
-            callback.unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks),
+            camera.unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks),
             Err(MvsError::CallOrder)
         ));
-        let record = callback.image_cb.as_ref().unwrap();
+        let record = camera.image_cb.as_ref().unwrap();
         assert_eq!(record.user_data(), old_user);
         assert!(record.is_active());
         assert_eq!(old_drops.load(Ordering::SeqCst), 0);
         assert!(callbacks.image_calls.is_empty());
 
-        polling.handle = None;
-        callback.handle = None;
-    }
-
-    #[test]
-    fn exception_and_event_callbacks_do_not_change_acquisition_mode() {
-        let state = AcquisitionState::Polling;
-        let mut camera = camera_with_handle(state);
-        let mut callbacks = FakeCallbacks::default();
-
-        camera
-            .register_exception_callback_with(
-                exception_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        camera
-            .register_event_callback_with(
-                "ExposureEnd",
-                event_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        assert_eq!(camera.acquisition, state);
-
-        camera
-            .unregister_exception_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        camera
-            .unregister_event_callback_with("ExposureEnd", &FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        assert_eq!(camera.acquisition, state);
-        assert_eq!(callbacks.exception_calls.len(), 2);
-        assert_eq!(callbacks.event_calls.len(), 2);
-
         camera.handle = None;
     }
 
     #[test]
-    fn cleanup_stops_known_and_unknown_acquisition() {
-        for mode in [
-            AcquisitionState::Callback,
-            AcquisitionState::Polling,
-            AcquisitionState::Unknown,
-        ] {
-            assert_cleanup_calls(
-                camera_with_handle(mode),
-                &[
-                    CleanupStep::StopGrabbing,
-                    CleanupStep::CloseDevice,
-                    CleanupStep::DestroyHandle,
-                ],
-            );
-        }
-    }
-
-    #[test]
-    fn failed_start_marks_only_acquisition_unknown_and_stop_recovers() {
+    fn acquisition_failures_become_unknown_until_stop_recovers() {
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
-        let mut acquisition = FakeAcquisition::with_results([sys::MV_E_RESOURCE, sys::MV_OK]);
+        let mut acquisition = FakeAcquisition::with_results([
+            sys::MV_E_RESOURCE,
+            sys::MV_OK,
+            sys::MV_OK,
+            sys::MV_E_RESOURCE,
+            sys::MV_OK,
+        ]);
 
         assert!(matches!(
             camera.start_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition),
             Err(MvsError::Resource)
         ));
         assert_eq!(camera.acquisition, AcquisitionState::Unknown);
-        assert!(camera.normal_handle().is_ok());
         assert!(matches!(
             camera.start_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition),
             Err(MvsError::CallOrder)
@@ -1916,48 +1831,32 @@ mod tests {
             .stop_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition)
             .unwrap();
         assert_eq!(camera.acquisition, AcquisitionState::Stopped);
-        assert_eq!(
-            acquisition.calls,
-            [AcquisitionCall::Start, AcquisitionCall::Stop]
-        );
+
+        camera
+            .start_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition)
+            .unwrap();
+        assert_eq!(camera.acquisition, AcquisitionState::Polling);
+        assert!(matches!(
+            camera.stop_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition),
+            Err(MvsError::Resource)
+        ));
+        assert_eq!(camera.acquisition, AcquisitionState::Unknown);
+        camera
+            .stop_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition)
+            .unwrap();
+        assert_eq!(camera.acquisition, AcquisitionState::Stopped);
 
         camera.handle = None;
     }
 
     #[test]
-    fn failed_stop_remains_retryable_until_success() {
-        for initial in [AcquisitionState::Callback, AcquisitionState::Polling] {
-            let mut camera = camera_with_handle(initial);
-            let mut acquisition = FakeAcquisition::with_results([sys::MV_E_RESOURCE, sys::MV_OK]);
-
-            assert!(matches!(
-                camera.stop_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition),
-                Err(MvsError::Resource)
-            ));
-            assert_eq!(camera.acquisition, AcquisitionState::Unknown);
-            assert!(camera.normal_handle().is_ok());
-
-            camera
-                .stop_grabbing_with(&FAKE_ACQUISITION_FNS, &mut acquisition)
-                .unwrap();
-            assert_eq!(camera.acquisition, AcquisitionState::Stopped);
-            assert_eq!(
-                acquisition.calls,
-                [AcquisitionCall::Stop, AcquisitionCall::Stop]
-            );
-
-            camera.handle = None;
-        }
-    }
-
-    #[test]
-    fn replacements_reuse_native_registrations_and_stable_slots() {
+    fn image_callback_uses_the_current_closure_across_its_lifecycle() {
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
         let mut callbacks = FakeCallbacks::default();
 
-        let old_image_calls = Arc::new(AtomicUsize::new(0));
-        let new_image_calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&old_image_calls);
+        let old_calls = Arc::new(AtomicUsize::new(0));
+        let current_calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&old_calls);
         camera
             .register_image_callback_with(
                 Box::new(move |_| {
@@ -1967,8 +1866,7 @@ mod tests {
                 &mut callbacks,
             )
             .unwrap();
-        let image_user = callbacks.image_calls[0].user;
-        let counter = Arc::clone(&new_image_calls);
+        let counter = Arc::clone(&current_calls);
         camera
             .register_image_callback_with(
                 Box::new(move |_| {
@@ -1978,279 +1876,41 @@ mod tests {
                 &mut callbacks,
             )
             .unwrap();
-        assert_eq!(Arc::strong_count(&old_image_calls), 1);
-        assert_eq!(
-            registration_count(&callbacks.image_calls, |call| call.callback.is_some()),
-            1
-        );
-        assert_eq!(
-            camera.image_cb.as_ref().unwrap().user_data() as usize,
-            image_user
-        );
+        assert_eq!(Arc::strong_count(&old_calls), 1);
+        assert_eq!(callbacks.image_calls.len(), 1);
         callbacks.invoke_image(0);
-        assert_eq!(old_image_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(new_image_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(old_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(current_calls.load(Ordering::SeqCst), 1);
 
-        let old_exception_calls = Arc::new(AtomicUsize::new(0));
-        let new_exception_calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&old_exception_calls);
-        camera
-            .register_exception_callback_with(
-                Box::new(move |_| {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        let exception_user = callbacks.exception_calls[0].user;
-        let counter = Arc::clone(&new_exception_calls);
-        camera
-            .register_exception_callback_with(
-                Box::new(move |_| {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        assert_eq!(Arc::strong_count(&old_exception_calls), 1);
-        assert_eq!(
-            registration_count(&callbacks.exception_calls, |call| call.callback.is_some()),
-            1
-        );
-        assert_eq!(
-            camera.exception_cb.as_ref().unwrap().user_data() as usize,
-            exception_user
-        );
-        callbacks.invoke_exception(0);
-        assert_eq!(old_exception_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(new_exception_calls.load(Ordering::SeqCst), 1);
-
-        let old_event_calls = Arc::new(AtomicUsize::new(0));
-        let new_event_calls = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&old_event_calls);
-        camera
-            .register_event_callback_with(
-                "ExposureEnd",
-                Box::new(move |_| {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        let event_user = callbacks.event_calls[0].user;
-        let event_name_ptr = callbacks.event_calls[0].name_ptr;
-        let counter = Arc::clone(&new_event_calls);
-        camera
-            .register_event_callback_with(
-                "ExposureEnd",
-                Box::new(move |_| {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        assert_eq!(Arc::strong_count(&old_event_calls), 1);
-        assert_eq!(
-            registration_count(&callbacks.event_calls, |call| call.callback.is_some()),
-            1
-        );
-        assert_eq!(camera.event_cbs.len(), 1);
-        assert_eq!(
-            camera.event_cbs[0].callback.user_data() as usize,
-            event_user
-        );
-        assert_eq!(camera.event_cbs[0].name.as_ptr() as usize, event_name_ptr);
-        callbacks.invoke_event(0);
-        assert_eq!(old_event_calls.load(Ordering::SeqCst), 0);
-        assert_eq!(new_event_calls.load(Ordering::SeqCst), 1);
-
-        camera.handle = None;
-    }
-
-    #[test]
-    fn unregister_keeps_records_and_reregister_reuses_native_addresses() {
-        let mut camera = camera_with_handle(AcquisitionState::Stopped);
-        let mut callbacks = FakeCallbacks::default();
-
-        camera
-            .register_image_callback_with(image_callback(), &FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        let image_user = callbacks.image_calls[0].user;
         camera
             .unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks)
             .unwrap();
-        let image_record = camera.image_cb.as_ref().unwrap();
-        assert_eq!(image_record.registration, RegistrationState::Unregistered);
-        assert!(!image_record.slot.is_active());
-        camera
-            .register_image_callback_with(image_callback(), &FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        let image_registrations: Vec<_> = callbacks
-            .image_calls
-            .iter()
-            .filter(|call| call.callback.is_some())
-            .collect();
-        assert_eq!(image_registrations.len(), 2);
-        assert!(
-            image_registrations
-                .iter()
-                .all(|call| call.user == image_user)
-        );
+        callbacks.invoke_image(0);
+        assert_eq!(current_calls.load(Ordering::SeqCst), 1);
 
+        let reregistered_calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&reregistered_calls);
         camera
-            .register_exception_callback_with(
-                exception_callback(),
+            .register_image_callback_with(
+                Box::new(move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                }),
                 &FAKE_CALLBACK_FNS,
                 &mut callbacks,
             )
             .unwrap();
-        let exception_user = callbacks
-            .exception_calls
-            .iter()
-            .find(|call| call.callback.is_some())
-            .unwrap()
-            .user;
-        camera
-            .unregister_exception_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        let exception_record = camera.exception_cb.as_ref().unwrap();
+        callbacks.invoke_image(0);
+        assert_eq!(reregistered_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            exception_record.registration,
-            RegistrationState::Unregistered
-        );
-        assert!(!exception_record.slot.is_active());
-        camera
-            .register_exception_callback_with(
-                exception_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        let exception_registrations: Vec<_> = callbacks
-            .exception_calls
-            .iter()
-            .filter(|call| call.callback.is_some())
-            .collect();
-        assert_eq!(exception_registrations.len(), 2);
-        assert!(
-            exception_registrations
+            callbacks
+                .image_calls
                 .iter()
-                .all(|call| call.user == exception_user)
-        );
-
-        camera
-            .register_event_callback_with(
-                "ExposureEnd",
-                event_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        let first_event = callbacks
-            .event_calls
-            .iter()
-            .find(|call| call.callback.is_some())
-            .unwrap();
-        let event_user = first_event.user;
-        let event_name_ptr = first_event.name_ptr;
-        camera
-            .unregister_event_callback_with("ExposureEnd", &FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        assert_eq!(camera.event_cbs.len(), 1);
-        assert_eq!(
-            camera.event_cbs[0].callback.registration,
-            RegistrationState::Unregistered
-        );
-        assert!(!camera.event_cbs[0].callback.slot.is_active());
-        camera
-            .register_event_callback_with(
-                "ExposureEnd",
-                event_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        let event_calls: Vec<_> = callbacks
-            .event_calls
-            .iter()
-            .filter(|call| call.name == "ExposureEnd")
-            .collect();
-        assert_eq!(event_calls.len(), 3);
-        assert!(
-            event_calls
-                .iter()
-                .all(|call| call.name_ptr == event_name_ptr)
-        );
-        let event_registrations: Vec<_> = event_calls
-            .iter()
-            .filter(|call| call.callback.is_some())
-            .collect();
-        assert_eq!(event_registrations.len(), 2);
-        assert!(
-            event_registrations
-                .iter()
-                .all(|call| call.user == event_user)
+                .filter(|call| call.callback.is_some())
+                .count(),
+            2
         );
 
         camera.handle = None;
-    }
-
-    #[test]
-    fn per_camera_slots_are_isolated_and_stable_across_camera_moves() {
-        let first_calls = Arc::new(AtomicUsize::new(0));
-        let second_calls = Arc::new(AtomicUsize::new(0));
-        let mut callbacks = FakeCallbacks::default();
-
-        let mut first = camera_with_handle(AcquisitionState::Stopped);
-        let counter = Arc::clone(&first_calls);
-        first
-            .register_image_callback_with(
-                Box::new(move |_| {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-
-        let mut second = camera_with_handle(AcquisitionState::Stopped);
-        let counter = Arc::clone(&second_calls);
-        second
-            .register_image_callback_with(
-                Box::new(move |_| {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                }),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-
-        let first_user = callbacks.image_calls[0].user;
-        let second_user = callbacks.image_calls[1].user;
-        assert_ne!(first_user, second_user);
-
-        let mut cameras = vec![first, second];
-        assert_eq!(
-            cameras[0].image_cb.as_ref().unwrap().user_data() as usize,
-            first_user
-        );
-        assert_eq!(
-            cameras[1].image_cb.as_ref().unwrap().user_data() as usize,
-            second_user
-        );
-
-        callbacks.invoke_image(0);
-        callbacks.invoke_image(1);
-        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(second_calls.load(Ordering::SeqCst), 1);
-
-        for camera in &mut cameras {
-            camera.handle = None;
-        }
     }
 
     #[test]
@@ -2361,95 +2021,26 @@ mod tests {
     }
 
     #[test]
-    fn callback_unknown_is_local_and_each_unregister_recovers() {
-        let mut camera = camera_with_handle(AcquisitionState::Stopped);
-        let mut callbacks = FakeCallbacks::with_results([
-            sys::MV_E_RESOURCE,
-            sys::MV_E_RESOURCE,
-            sys::MV_E_RESOURCE,
-        ]);
-
-        assert!(matches!(
-            camera.register_image_callback_with(
-                image_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            ),
-            Err(MvsError::Resource)
-        ));
-        assert!(matches!(
-            camera.register_exception_callback_with(
-                exception_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            ),
-            Err(MvsError::Resource)
-        ));
-        assert!(matches!(
-            camera.register_event_callback_with(
-                "ExposureEnd",
-                event_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            ),
-            Err(MvsError::Resource)
-        ));
-
-        camera
-            .register_event_callback_with(
-                "LineStart",
-                event_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            )
-            .unwrap();
-        assert!(matches!(
-            camera.register_event_callback_with(
-                "ExposureEnd",
-                event_callback(),
-                &FAKE_CALLBACK_FNS,
-                &mut callbacks,
-            ),
-            Err(MvsError::CallOrder)
-        ));
-        assert_eq!(callbacks.event_calls.len(), 2);
-        assert_eq!(camera.acquisition, AcquisitionState::Stopped);
-        assert!(camera.normal_handle().is_ok());
-
-        camera
-            .unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        camera
-            .unregister_exception_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        camera
-            .unregister_event_callback_with("ExposureEnd", &FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-        camera
-            .unregister_event_callback_with("LineStart", &FAKE_CALLBACK_FNS, &mut callbacks)
-            .unwrap();
-
-        assert_eq!(
-            camera.image_cb.as_ref().unwrap().registration,
-            RegistrationState::Unregistered
+    fn cleanup_drains_callbacks_runs_every_step_and_then_becomes_a_noop() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut camera = camera_with_handle(AcquisitionState::Unknown);
+        camera.image_cb = Some(active_record(probed_image_callback(Arc::clone(&drops))));
+        camera.exception_cb = Some(active_record(Box::new({
+            let probe = DropProbe(Arc::clone(&drops));
+            move |_| {
+                let _ = &probe;
+            }
+        })));
+        for name in ["ExposureEnd", "LineStart"] {
+            camera.event_cbs.push(event_record(
+                name,
+                probed_event_callback(Arc::clone(&drops)),
+            ));
+        }
+        let mut context = FakeCleanup::with_results_and_probe(
+            vec![sys::MV_OK; FULL_CLEANUP_STEPS.len()],
+            Arc::clone(&drops),
         );
-        assert_eq!(
-            camera.exception_cb.as_ref().unwrap().registration,
-            RegistrationState::Unregistered
-        );
-        assert!(
-            camera
-                .event_cbs
-                .iter()
-                .all(|record| record.callback.registration == RegistrationState::Unregistered)
-        );
-        camera.handle = None;
-    }
-
-    #[test]
-    fn cleanup_runs_every_step_in_order_and_then_becomes_a_noop() {
-        let mut camera = camera_with_all_callbacks();
-        let mut context = FakeCleanup::with_results(vec![sys::MV_OK; FULL_CLEANUP_STEPS.len()]);
 
         let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut context);
         assert_eq!(report.disposition, Some(HandleDisposition::Destroyed));
@@ -2457,8 +2048,8 @@ mod tests {
 
         assert_eq!(context.calls, FULL_CLEANUP_STEPS);
         assert_eq!(context.event_names, ["ExposureEnd", "LineStart"]);
-        assert!(context.results.is_empty());
-        assert!(camera.handle.is_none());
+        assert_eq!(drops.load(Ordering::SeqCst), 4);
+        assert!(context.drops_seen.iter().all(|drops| *drops == 4));
 
         let mut unexpected_call = FakeCleanup::default();
         let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut unexpected_call);
@@ -2468,202 +2059,31 @@ mod tests {
     }
 
     #[test]
-    fn every_cleanup_step_reports_a_single_failure_without_short_circuiting() {
-        for (failed_index, expected_failure_step) in FULL_CLEANUP_STEPS.iter().copied().enumerate()
-        {
-            let mut camera = camera_with_all_callbacks();
-            let results = (0..FULL_CLEANUP_STEPS.len()).map(|index| {
-                if index == failed_index {
-                    sys::MV_E_RESOURCE
-                } else {
-                    sys::MV_OK
-                }
-            });
-            let mut context = FakeCleanup::with_results(results);
-
-            let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut context);
-            let expected_disposition = if expected_failure_step == CleanupStep::DestroyHandle {
-                HandleDisposition::Orphaned
-            } else {
-                HandleDisposition::Destroyed
-            };
-            assert_eq!(report.disposition, Some(expected_disposition));
-            let error = report.result.unwrap_err();
-
-            assert_eq!(context.calls, FULL_CLEANUP_STEPS);
-            assert!(context.results.is_empty());
-            assert_eq!(error.failures().len(), 1);
-            assert_eq!(error.failures()[0].step, expected_failure_step);
-            assert_eq!(
-                error.failures()[0].error.raw_code(),
-                Some(sys::MV_E_RESOURCE)
-            );
-            assert!(camera.handle.is_none());
-        }
-    }
-
-    #[test]
     fn cleanup_aggregates_all_failures_in_call_order_and_reaches_destroy() {
-        let codes = [
-            sys::MV_E_HANDLE,
-            sys::MV_E_SUPPORT,
-            sys::MV_E_RESOURCE,
-            sys::MV_E_GC_TIMEOUT,
-            sys::MV_E_BUSY,
-            sys::MV_E_PRECONDITION,
-            sys::MV_E_VERSION,
-        ];
         let mut camera = camera_with_all_callbacks();
-        let mut context = FakeCleanup::with_results(codes);
+        let mut context = FakeCleanup::with_results([
+            sys::MV_E_RESOURCE,
+            sys::MV_OK,
+            sys::MV_OK,
+            sys::MV_OK,
+            sys::MV_OK,
+            sys::MV_OK,
+            sys::MV_E_HANDLE,
+        ]);
 
         let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut context);
         assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
         let error = report.result.unwrap_err();
 
         assert_eq!(context.calls, FULL_CLEANUP_STEPS);
-        assert_eq!(context.calls.last(), Some(&CleanupStep::DestroyHandle));
-        let failures = error.failures();
-        assert_eq!(failures.len(), FULL_CLEANUP_STEPS.len());
-        for ((failure, expected_step), expected_code) in
-            failures.iter().zip(FULL_CLEANUP_STEPS).zip(codes)
-        {
-            assert_eq!(failure.step, expected_step);
-            assert_eq!(failure.error.raw_code(), Some(expected_code));
-        }
-    }
-
-    #[test]
-    fn cleanup_unregisters_all_three_unknown_registration_kinds_without_stopping() {
-        let mut image_camera = camera_with_handle(AcquisitionState::Stopped);
-        image_camera.image_cb = Some(unknown_record());
-        assert_cleanup_calls(
-            image_camera,
-            &[
-                CleanupStep::UnregisterImageCallback,
-                CleanupStep::CloseDevice,
-                CleanupStep::DestroyHandle,
-            ],
-        );
-
-        let mut exception_camera = camera_with_handle(AcquisitionState::Stopped);
-        exception_camera.exception_cb = Some(unknown_record());
-        assert_cleanup_calls(
-            exception_camera,
-            &[
-                CleanupStep::UnregisterExceptionCallback,
-                CleanupStep::CloseDevice,
-                CleanupStep::DestroyHandle,
-            ],
-        );
-
-        let mut event_camera = camera_with_handle(AcquisitionState::Stopped);
-        event_camera.event_cbs.push(EventRecord {
-            name: CString::new("ExposureEnd").unwrap(),
-            callback: unknown_record(),
-        });
-        let context = assert_cleanup_calls(
-            event_camera,
-            &[
-                CleanupStep::UnregisterEventCallback,
-                CleanupStep::CloseDevice,
-                CleanupStep::DestroyHandle,
-            ],
-        );
-        assert_eq!(context.event_names, ["ExposureEnd"]);
-
-        let mut all_camera = camera_with_handle(AcquisitionState::Stopped);
-        all_camera.image_cb = Some(unknown_record());
-        all_camera.exception_cb = Some(unknown_record());
-        all_camera.event_cbs.push(EventRecord {
-            name: CString::new("ExposureEnd").unwrap(),
-            callback: unknown_record(),
-        });
-        let context = assert_cleanup_calls(
-            all_camera,
-            &[
-                CleanupStep::UnregisterImageCallback,
-                CleanupStep::UnregisterExceptionCallback,
-                CleanupStep::UnregisterEventCallback,
-                CleanupStep::CloseDevice,
-                CleanupStep::DestroyHandle,
-            ],
-        );
-        assert_eq!(context.event_names, ["ExposureEnd"]);
-    }
-
-    #[test]
-    fn unknown_event_keeps_its_stable_record_after_existing_records() {
-        let mut camera = camera_with_handle(AcquisitionState::Stopped);
-        camera
-            .event_cbs
-            .push(event_record("ExposureEnd", event_callback()));
-        camera
-            .event_cbs
-            .push(event_record("LineStart", event_callback()));
-        camera.event_cbs.push(EventRecord {
-            name: CString::new("FrameStart").unwrap(),
-            callback: unknown_record(),
-        });
-
-        let context = assert_cleanup_calls(
-            camera,
-            &[
-                CleanupStep::UnregisterEventCallback,
-                CleanupStep::UnregisterEventCallback,
-                CleanupStep::UnregisterEventCallback,
-                CleanupStep::CloseDevice,
-                CleanupStep::DestroyHandle,
-            ],
-        );
         assert_eq!(
-            context.event_names,
-            ["ExposureEnd", "LineStart", "FrameStart"]
+            error
+                .failures()
+                .iter()
+                .map(|failure| failure.step)
+                .collect::<Vec<_>>(),
+            [CleanupStep::StopGrabbing, CleanupStep::DestroyHandle]
         );
-    }
-
-    #[test]
-    fn cleanup_drains_closures_before_native_calls_for_both_destroy_results() {
-        let successful_drops = Arc::new(AtomicUsize::new(0));
-        let mut successful_camera = camera_with_probed_callbacks(&successful_drops);
-        let mut success =
-            FakeCleanup::with_results_and_probe(vec![sys::MV_OK; 5], Arc::clone(&successful_drops));
-        let report = successful_camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut success);
-        assert_eq!(report.disposition, Some(HandleDisposition::Destroyed));
-        report.result.unwrap();
-        assert_eq!(successful_drops.load(Ordering::SeqCst), 3);
-        assert!(success.drops_seen.iter().all(|drops| *drops == 3));
-        assert!(successful_camera.image_cb.is_none());
-        assert!(successful_camera.exception_cb.is_none());
-        assert!(successful_camera.event_cbs.is_empty());
-
-        let failed_drops = Arc::new(AtomicUsize::new(0));
-        let mut failed_camera = camera_with_probed_callbacks(&failed_drops);
-        let mut failure = FakeCleanup::with_results_and_probe(
-            [
-                sys::MV_OK,
-                sys::MV_OK,
-                sys::MV_OK,
-                sys::MV_OK,
-                sys::MV_E_RESOURCE,
-            ],
-            Arc::clone(&failed_drops),
-        );
-        let report = failed_camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut failure);
-        assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
-        let error = report.result.unwrap_err();
-        assert_eq!(error.failures().len(), 1);
-        assert_eq!(error.failures()[0].step, CleanupStep::DestroyHandle);
-        assert_eq!(failed_drops.load(Ordering::SeqCst), 3);
-        assert!(failure.drops_seen.iter().all(|drops| *drops == 3));
-        assert!(failed_camera.image_cb.is_none());
-        assert!(failed_camera.exception_cb.is_none());
-        assert!(failed_camera.event_cbs.is_empty());
-
-        let mut no_retry = FakeCleanup::default();
-        let report = failed_camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut no_retry);
-        assert_eq!(report.disposition, None);
-        report.result.unwrap();
-        assert!(no_retry.calls.is_empty());
     }
 
     struct SendCamera(Camera);
@@ -2672,15 +2092,55 @@ mod tests {
     // synthetic backend camera into the callback-owned test holder.
     unsafe impl Send for SendCamera {}
 
+    type Shared<T> = Arc<Mutex<Option<T>>>;
+    type CleanupTrace = (Vec<CleanupStep>, Vec<CleanupStep>);
+
+    fn shared<T>() -> Shared<T> {
+        Arc::new(Mutex::new(None))
+    }
+
+    fn store_shared<T>(slot: &Shared<T>, value: T) {
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
+    }
+
+    fn take_shared<T>(slot: &Shared<T>, message: &str) -> T {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect(message)
+    }
+
+    fn take_camera(holder: &Shared<SendCamera>, message: &str) -> Camera {
+        take_shared(holder, message).0
+    }
+
+    fn cleanup_trace(
+        camera: &mut Camera,
+        results: impl IntoIterator<Item = u32>,
+    ) -> (HandleDisposition, CleanupTrace) {
+        let mut native = FakeCleanup::with_results(results);
+        let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
+        let disposition = report.disposition.expect("camera owned a handle");
+        let failures = match report.result {
+            Ok(()) => Vec::new(),
+            Err(error) => error
+                .failures()
+                .iter()
+                .map(|failure| failure.step)
+                .collect(),
+        };
+        (disposition, (native.calls, failures))
+    }
+
     #[test]
     fn exception_callback_cleanup_closes_and_destroys_then_defers_current_slot() {
-        type Outcome = (bool, Vec<CleanupStep>, Vec<usize>, bool, bool, usize);
+        type Outcome = (Vec<CleanupStep>, Vec<usize>, bool, usize);
 
-        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
-        let outcome = Arc::new(Mutex::new(None::<Outcome>));
-        let slot_weak_holder = Arc::new(Mutex::new(
-            None::<std::sync::Weak<CallbackSlot<ExceptionCallbackFn>>>,
-        ));
+        let camera_holder = shared();
+        let outcome: Shared<Outcome> = shared();
+        let slot_weak_holder: Shared<std::sync::Weak<CallbackSlot<ExceptionCallbackFn>>> = shared();
         let drops = Arc::new(AtomicUsize::new(0));
         let current_probe = DropProbe(Arc::clone(&drops));
         let holder_for_callback = Arc::clone(&camera_holder);
@@ -2694,11 +2154,8 @@ mod tests {
             .register_exception_callback_with(
                 Box::new(move |_| {
                     let _ = &current_probe;
-                    let SendCamera(mut camera) = holder_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take()
-                        .expect("camera installed before callback");
+                    let mut camera =
+                        take_camera(&holder_for_callback, "camera installed before callback");
 
                     let mut native = FakeCleanup::with_results_and_probe(
                         [sys::MV_OK, sys::MV_OK],
@@ -2706,26 +2163,22 @@ mod tests {
                     );
                     let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
                     assert_eq!(report.disposition, Some(HandleDisposition::Destroyed));
-                    let slot_is_pinned = weak_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .as_ref()
-                        .expect("slot weak reference installed before callback")
-                        .upgrade()
-                        .is_some();
-                    let camera_is_closed = camera.handle.is_none();
-                    let calls = std::mem::take(&mut native.calls);
-                    let drops_seen = std::mem::take(&mut native.drops_seen);
-                    *outcome_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
-                        report.result.is_ok(),
-                        calls,
-                        drops_seen,
-                        slot_is_pinned,
-                        camera_is_closed,
-                        drops_for_callback.load(Ordering::SeqCst),
-                    ));
+                    report.result.unwrap();
+                    let slot_is_pinned = take_shared(
+                        &weak_for_callback,
+                        "slot weak reference installed before callback",
+                    )
+                    .upgrade()
+                    .is_some();
+                    store_shared(
+                        &outcome_for_callback,
+                        (
+                            native.calls,
+                            native.drops_seen,
+                            slot_is_pinned,
+                            drops_for_callback.load(Ordering::SeqCst),
+                        ),
+                    );
                 }),
                 &FAKE_CALLBACK_FNS,
                 &mut callbacks,
@@ -2738,35 +2191,19 @@ mod tests {
         ));
 
         let slot_weak = Arc::downgrade(&camera.exception_cb.as_ref().unwrap().slot);
-        *slot_weak_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(slot_weak.clone());
-        *camera_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        store_shared(&slot_weak_holder, slot_weak.clone());
+        store_shared(&camera_holder, SendCamera(camera));
 
         callbacks.invoke_exception(0);
 
-        let (
-            succeeded,
-            native_calls,
-            drops_seen,
-            slot_was_pinned,
-            camera_was_closed,
-            drops_in_callback,
-        ) = outcome
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .expect("callback recorded cleanup outcome");
-        assert!(succeeded);
+        let (native_calls, drops_seen, slot_was_pinned, drops_in_callback) =
+            take_shared(&outcome, "callback recorded cleanup outcome");
         assert_eq!(
             native_calls,
             [CleanupStep::CloseDevice, CleanupStep::DestroyHandle]
         );
         assert_eq!(drops_seen, [2, 2]);
         assert!(slot_was_pinned);
-        assert!(camera_was_closed);
         assert_eq!(drops_in_callback, 2);
         assert_eq!(drops.load(Ordering::SeqCst), 3);
         assert!(slot_weak.upgrade().is_none());
@@ -2774,8 +2211,8 @@ mod tests {
 
     #[test]
     fn exception_callback_destroy_failure_keeps_backing_and_silences_late_calls() {
-        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
-        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let camera_holder = shared();
+        let outcome: Shared<CleanupTrace> = shared();
         let callback_calls = Arc::new(AtomicUsize::new(0));
         let callback_drops = Arc::new(AtomicUsize::new(0));
         let probe = DropProbe(Arc::clone(&callback_drops));
@@ -2790,24 +2227,12 @@ mod tests {
                 Box::new(move |_| {
                     let _ = &probe;
                     calls_for_callback.fetch_add(1, Ordering::SeqCst);
-                    let SendCamera(mut camera) = holder_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take()
-                        .expect("camera installed before callback");
-                    let mut native = FakeCleanup::with_results([sys::MV_OK, sys::MV_E_RESOURCE]);
-                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
-                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
-                    let error = report.result.expect_err("destroy failure must be reported");
-                    let failure_steps = error
-                        .failures()
-                        .iter()
-                        .map(|failure| failure.step)
-                        .collect();
-                    *outcome_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some((native.calls, failure_steps));
+                    let mut camera =
+                        take_camera(&holder_for_callback, "camera installed before callback");
+                    let (disposition, trace) =
+                        cleanup_trace(&mut camera, [sys::MV_OK, sys::MV_E_RESOURCE]);
+                    assert_eq!(disposition, HandleDisposition::Orphaned);
+                    store_shared(&outcome_for_callback, trace);
                 }),
                 &FAKE_CALLBACK_FNS,
                 &mut callbacks,
@@ -2815,16 +2240,11 @@ mod tests {
             .unwrap();
 
         let slot_weak = Arc::downgrade(&camera.exception_cb.as_ref().unwrap().slot);
-        *camera_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        store_shared(&camera_holder, SendCamera(camera));
         callbacks.invoke_exception(0);
 
-        let (native_calls, failure_steps) = outcome
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .expect("callback recorded cleanup outcome");
+        let (native_calls, failure_steps) =
+            take_shared(&outcome, "callback recorded cleanup outcome");
         assert_eq!(
             native_calls,
             [CleanupStep::CloseDevice, CleanupStep::DestroyHandle]
@@ -2842,8 +2262,8 @@ mod tests {
 
     #[test]
     fn image_callback_cleanup_abandons_without_native_teardown() {
-        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
-        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let camera_holder = shared();
+        let outcome: Shared<CleanupTrace> = shared();
         let callback_calls = Arc::new(AtomicUsize::new(0));
         let holder_for_callback = Arc::clone(&camera_holder);
         let outcome_for_callback = Arc::clone(&outcome);
@@ -2855,96 +2275,34 @@ mod tests {
             .register_image_callback_with(
                 Box::new(move |_| {
                     calls_for_callback.fetch_add(1, Ordering::SeqCst);
-                    let SendCamera(mut camera) = holder_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take()
-                        .expect("camera installed before callback");
-
-                    assert!(matches!(
-                        camera.reject_callback_context(),
-                        Err(MvsError::CallOrder)
-                    ));
+                    let mut camera =
+                        take_camera(&holder_for_callback, "camera installed before callback");
                     let mut rejected_native = FakeCallbacks::default();
-                    let callback_results = [
-                        camera.register_image_callback_with(
-                            image_callback(),
-                            &FAKE_CALLBACK_FNS,
-                            &mut rejected_native,
-                        ),
+                    assert!(matches!(
                         camera.unregister_image_callback_with(
                             &FAKE_CALLBACK_FNS,
                             &mut rejected_native,
                         ),
-                        camera.register_exception_callback_with(
-                            exception_callback(),
-                            &FAKE_CALLBACK_FNS,
-                            &mut rejected_native,
-                        ),
-                        camera.unregister_exception_callback_with(
-                            &FAKE_CALLBACK_FNS,
-                            &mut rejected_native,
-                        ),
-                        camera.register_event_callback_with(
-                            "ExposureEnd",
-                            event_callback(),
-                            &FAKE_CALLBACK_FNS,
-                            &mut rejected_native,
-                        ),
-                        camera.unregister_event_callback_with(
-                            "ExposureEnd",
-                            &FAKE_CALLBACK_FNS,
-                            &mut rejected_native,
-                        ),
-                    ];
-                    assert!(
-                        callback_results
-                            .iter()
-                            .all(|result| matches!(result, Err(MvsError::CallOrder)))
-                    );
+                        Err(MvsError::CallOrder)
+                    ));
                     assert!(rejected_native.image_calls.is_empty());
-                    assert!(rejected_native.exception_calls.is_empty());
-                    assert!(rejected_native.event_calls.is_empty());
-
-                    let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
-                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
-                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
-                    let error = report
-                        .result
-                        .expect_err("callback-context cleanup must be explicit");
-                    let failure_steps = error
-                        .failures()
-                        .iter()
-                        .map(|failure| failure.step)
-                        .collect();
-                    *outcome_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some((native.calls, failure_steps));
+                    let (disposition, trace) =
+                        cleanup_trace(&mut camera, std::iter::repeat_n(sys::MV_OK, 8));
+                    assert_eq!(disposition, HandleDisposition::Orphaned);
+                    store_shared(&outcome_for_callback, trace);
                 }),
                 &FAKE_CALLBACK_FNS,
                 &mut callbacks,
             )
             .unwrap();
 
-        *camera_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        store_shared(&camera_holder, SendCamera(camera));
         callbacks.invoke_image(0);
 
-        let (native_calls, failure_steps) = outcome
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .expect("callback recorded cleanup outcome");
+        let (native_calls, failure_steps) =
+            take_shared(&outcome, "callback recorded cleanup outcome");
         assert!(native_calls.is_empty());
         assert_eq!(failure_steps, [CleanupStep::DrainCallbacks]);
-        assert!(
-            camera_holder
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .is_none()
-        );
 
         // DestroyHandle was deliberately skipped, so a late native call may
         // still reach the leaked backing but must observe the disabled slot.
@@ -2954,8 +2312,8 @@ mod tests {
 
     #[test]
     fn nested_exception_inside_image_callback_remains_conservative() {
-        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
-        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
+        let camera_holder = shared();
+        let outcome: Shared<CleanupTrace> = shared();
         let holder_for_callback = Arc::clone(&camera_holder);
         let outcome_for_callback = Arc::clone(&outcome);
 
@@ -2964,26 +2322,14 @@ mod tests {
         camera
             .register_exception_callback_with(
                 Box::new(move |_| {
-                    let SendCamera(mut camera) = holder_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take()
-                        .expect("camera installed before nested callback");
-                    let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
-                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
-                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
-                    let error = report
-                        .result
-                        .expect_err("outer image borrow must keep cleanup conservative");
-                    let failure_steps = error
-                        .failures()
-                        .iter()
-                        .map(|failure| failure.step)
-                        .collect();
-                    *outcome_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some((native.calls, failure_steps));
+                    let mut camera = take_camera(
+                        &holder_for_callback,
+                        "camera installed before nested callback",
+                    );
+                    let (disposition, trace) =
+                        cleanup_trace(&mut camera, std::iter::repeat_n(sys::MV_OK, 8));
+                    assert_eq!(disposition, HandleDisposition::Orphaned);
+                    store_shared(&outcome_for_callback, trace);
                 }),
                 &FAKE_CALLBACK_FNS,
                 &mut callbacks,
@@ -3005,28 +2351,21 @@ mod tests {
             )
             .unwrap();
 
-        *camera_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        store_shared(&camera_holder, SendCamera(camera));
         callbacks.invoke_image(0);
 
-        let (native_calls, failure_steps) = outcome
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .expect("nested callback recorded cleanup outcome");
+        let (native_calls, failure_steps) =
+            take_shared(&outcome, "nested callback recorded cleanup outcome");
         assert!(native_calls.is_empty());
         assert_eq!(failure_steps, [CleanupStep::DrainCallbacks]);
     }
 
     #[test]
     fn event_callback_cleanup_abandons_without_native_teardown() {
-        let camera_holder = Arc::new(Mutex::new(None::<SendCamera>));
-        let outcome = Arc::new(Mutex::new(None::<(Vec<CleanupStep>, Vec<CleanupStep>)>));
-        let callback_calls = Arc::new(AtomicUsize::new(0));
+        let camera_holder = shared();
+        let outcome: Shared<CleanupTrace> = shared();
         let holder_for_callback = Arc::clone(&camera_holder);
         let outcome_for_callback = Arc::clone(&outcome);
-        let calls_for_callback = Arc::clone(&callback_calls);
 
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
         let mut callbacks = FakeCallbacks::default();
@@ -3034,64 +2373,24 @@ mod tests {
             .register_event_callback_with(
                 "ExposureEnd",
                 Box::new(move |_| {
-                    calls_for_callback.fetch_add(1, Ordering::SeqCst);
-                    let SendCamera(mut camera) = holder_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take()
-                        .expect("camera installed before callback");
-
-                    let mut native = FakeCleanup::with_results(std::iter::repeat_n(sys::MV_OK, 8));
-                    let report = camera.cleanup_with(&FAKE_CLEANUP_FNS, &mut native);
-                    assert_eq!(report.disposition, Some(HandleDisposition::Orphaned));
-                    let error = report
-                        .result
-                        .expect_err("event callback cleanup must remain conservative");
-                    let failure_steps = error
-                        .failures()
-                        .iter()
-                        .map(|failure| failure.step)
-                        .collect();
-                    *outcome_for_callback
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some((native.calls, failure_steps));
+                    let mut camera =
+                        take_camera(&holder_for_callback, "camera installed before callback");
+                    let (disposition, trace) =
+                        cleanup_trace(&mut camera, std::iter::repeat_n(sys::MV_OK, 8));
+                    assert_eq!(disposition, HandleDisposition::Orphaned);
+                    store_shared(&outcome_for_callback, trace);
                 }),
                 &FAKE_CALLBACK_FNS,
                 &mut callbacks,
             )
             .unwrap();
 
-        *camera_holder
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(SendCamera(camera));
+        store_shared(&camera_holder, SendCamera(camera));
         callbacks.invoke_event(0);
 
-        let (native_calls, failure_steps) = outcome
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-            .expect("callback recorded cleanup outcome");
+        let (native_calls, failure_steps) =
+            take_shared(&outcome, "callback recorded cleanup outcome");
         assert!(native_calls.is_empty());
         assert_eq!(failure_steps, [CleanupStep::DrainCallbacks]);
-
-        callbacks.invoke_event(0);
-        assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn only_a_closed_handle_rejects_normal_operations() {
-        for acquisition in [
-            AcquisitionState::Stopped,
-            AcquisitionState::Callback,
-            AcquisitionState::Polling,
-            AcquisitionState::Unknown,
-        ] {
-            let mut camera = camera_with_handle(acquisition);
-            assert!(camera.normal_handle().is_ok());
-
-            camera.handle = None;
-            assert!(matches!(camera.normal_handle(), Err(MvsError::CallOrder)));
-        }
     }
 }

@@ -172,6 +172,7 @@ fn cstr_array_to_string(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
     use std::sync::Arc;
 
     use super::{DeviceInfo, DeviceList, with_raw_device_list};
@@ -218,5 +219,85 @@ mod tests {
         // SAFETY: `info` and `cloned` keep the Arc allocation alive.
         assert_eq!(unsafe { (*raw).nTLayerType }, sys::MV_USB_DEVICE);
         assert_eq!(cloned.raw().nTLayerType, sys::MV_USB_DEVICE);
+    }
+
+    #[test]
+    fn device_metadata_decodes_gige_and_usb_union_records() {
+        fn c_string<const N: usize>(value: &str) -> [u8; N] {
+            assert!(value.len() < N);
+            let mut bytes = [0; N];
+            bytes[..value.len()].copy_from_slice(value.as_bytes());
+            bytes
+        }
+
+        let mut gige_record = sys::MV_CC_DEVICE_INFO {
+            nTLayerType: sys::MV_GIGE_DEVICE,
+            ..Default::default()
+        };
+        gige_record.SpecialInfo.stGigEInfo = sys::MV_GIGE_DEVICE_INFO {
+            chManufacturerName: c_string("Hikrobot"),
+            chModelName: c_string("GigE-42"),
+            chSerialNumber: c_string("GE-0001"),
+            chUserDefinedName: c_string("line-a"),
+            nCurrentIp: u32::from_be_bytes([192, 168, 1, 64]),
+            nNetExport: u32::from_be_bytes([192, 168, 1, 10]),
+            ..Default::default()
+        };
+        let gige = DeviceInfo {
+            raw: Arc::new(gige_record),
+        };
+
+        assert_eq!(
+            (
+                gige.manufacturer(),
+                gige.model(),
+                gige.serial(),
+                gige.user_defined_name(),
+                gige.ip(),
+                gige.host_nic_ip(),
+            ),
+            (
+                "Hikrobot".into(),
+                "GigE-42".into(),
+                "GE-0001".into(),
+                "line-a".into(),
+                Some(Ipv4Addr::new(192, 168, 1, 64)),
+                Some(Ipv4Addr::new(192, 168, 1, 10)),
+            )
+        );
+
+        let mut usb_record = sys::MV_CC_DEVICE_INFO {
+            nTLayerType: sys::MV_USB_DEVICE,
+            ..Default::default()
+        };
+        usb_record.SpecialInfo.stUsb3VInfo = sys::MV_USB3_DEVICE_INFO {
+            chManufacturerName: c_string("Vision USB"),
+            chModelName: c_string("USB-7"),
+            chSerialNumber: c_string("USB-0002"),
+            chUserDefinedName: c_string("bench"),
+            ..Default::default()
+        };
+        let usb = DeviceInfo {
+            raw: Arc::new(usb_record),
+        };
+
+        assert_eq!(
+            (
+                usb.manufacturer(),
+                usb.model(),
+                usb.serial(),
+                usb.user_defined_name(),
+                usb.ip(),
+                usb.host_nic_ip(),
+            ),
+            (
+                "Vision USB".into(),
+                "USB-7".into(),
+                "USB-0002".into(),
+                "bench".into(),
+                None,
+                None,
+            )
+        );
     }
 }

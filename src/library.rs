@@ -46,7 +46,17 @@ pub struct Sdk {
 }
 
 impl Sdk {
-    /// Initialize the MVS SDK, caching only a successful initialization.
+    /// Initialize the process-wide MVS SDK runtime.
+    ///
+    /// Successful calls return clones of the same [`Arc`]. A failed native
+    /// initialization is not cached, so a later call may retry after the
+    /// runtime environment has been repaired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MvsError::UnsupportedPlatform`] outside Windows x86_64.
+    /// Initialization also fails after a successful [`Sdk::shutdown`] or when
+    /// a failed finalization left the process-wide SDK state unknown.
     pub fn init() -> MvsResult<Arc<Self>> {
         Self::init_with(process(), || {
             let inner = backend::Sdk::init()?;
@@ -92,7 +102,14 @@ impl Sdk {
     /// This is a terminal operation: successful shutdown cannot be followed
     /// by another initialization in the same process. The call is idempotent,
     /// but it refuses to finalize while a camera or callback remains live, or
-    /// after native handle destruction could not be confirmed.
+    /// after native handle destruction could not be confirmed. Close every
+    /// [`Camera`](crate::Camera), wait for callbacks to return, and then call
+    /// this method if explicit process-wide finalization is required.
+    ///
+    /// # Errors
+    ///
+    /// See [`ShutdownError`] for live resources, unresolved handles, native
+    /// finalization failures, and an already-unknown process state.
     pub fn shutdown(&self) -> Result<(), ShutdownError> {
         self.shutdown_with(process(), || self.inner.finalize())
     }
@@ -168,6 +185,16 @@ impl Sdk {
     }
 
     /// Enumerate connected devices of the requested transport types.
+    ///
+    /// Combine layers with `|`, for example
+    /// `TransportLayer::GIGE | TransportLayer::USB`. Returned device metadata
+    /// is copied into Rust-owned snapshots and remains inspectable after a
+    /// later enumeration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an SDK lifecycle error after shutdown, or the vendor error from
+    /// device enumeration.
     pub fn enumerate_devices(&self, layers: TransportLayer) -> MvsResult<DeviceList> {
         let _operation = self.operation()?;
         let _enumeration = self
@@ -416,6 +443,7 @@ mod tests {
         let runtime = ProcessRuntime::new();
         let sdk = Sdk::init_with(&runtime, || Ok((backend::Sdk::test_instance(), 1))).unwrap();
         let mut camera = sdk.begin_camera_open().opened();
+        let callback = sdk.resources.enter_callback();
         let finalizations = AtomicUsize::new(0);
 
         let blocked = sdk.shutdown_with(&runtime, || {
@@ -426,6 +454,19 @@ mod tests {
         assert_eq!(finalizations.load(Ordering::SeqCst), 0);
 
         camera.settle(true);
+        let blocked = sdk.shutdown_with(&runtime, || {
+            finalizations.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        });
+        assert!(matches!(
+            blocked,
+            Err(ShutdownError::InUse {
+                live_cameras: 0,
+                active_callbacks: 1
+            })
+        ));
+        drop(callback);
+
         sdk.shutdown_with(&runtime, || {
             finalizations.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -434,6 +475,12 @@ mod tests {
         sdk.shutdown_with(&runtime, || panic!("Finalize must not be called twice"))
             .unwrap();
         assert_eq!(finalizations.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            Sdk::init_with(&runtime, || panic!(
+                "finalized SDK must not initialize again"
+            )),
+            Err(MvsError::SdkFinalized)
+        ));
     }
 
     #[test]

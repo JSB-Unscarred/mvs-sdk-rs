@@ -32,58 +32,74 @@ impl FrameInfo {
         Self(*metadata)
     }
 
+    /// Image width in pixels.
     pub fn width(&self) -> u32 {
         self.0.width
     }
 
+    /// Image height in pixels.
     pub fn height(&self) -> u32 {
         self.0.height
     }
 
+    /// Pixel format reported by the SDK.
     pub fn pixel_type(&self) -> PixelType {
         self.0.pixel_type
     }
 
+    /// Device frame sequence number.
     pub fn frame_num(&self) -> u32 {
         self.0.frame_num
     }
 
+    /// Number of valid bytes in the image buffer.
     pub fn frame_len(&self) -> u32 {
         self.0.frame_len
     }
 
+    /// Horizontal image-region offset in pixels.
     pub fn offset_x(&self) -> u32 {
         self.0.offset_x
     }
 
+    /// Vertical image-region offset in pixels.
     pub fn offset_y(&self) -> u32 {
         self.0.offset_y
     }
 
+    /// Gain recorded in the frame metadata.
     pub fn gain(&self) -> f32 {
         self.0.gain
     }
 
+    /// Exposure time recorded in the frame metadata.
     pub fn exposure_time(&self) -> f32 {
         self.0.exposure_time
     }
 
+    /// Trigger sequence index reported by the device.
     pub fn trigger_index(&self) -> u32 {
         self.0.trigger_index
     }
 
+    /// Number of lost packets reported for this frame.
     pub fn lost_packets(&self) -> u32 {
         self.0.lost_packets
     }
 
+    /// Device timestamp assembled from the SDK's high and low words.
     pub fn device_timestamp(&self) -> u64 {
         self.0.device_timestamp
     }
 
+    /// Raw signed host timestamp returned by the SDK.
     pub fn host_timestamp_raw(&self) -> i64 {
         self.0.host_timestamp_raw
     }
 
+    /// Host timestamp converted from 100 ns ticks to a [`Duration`].
+    ///
+    /// Negative values are clamped to zero and overflow saturates.
     pub fn host_timestamp(&self) -> Duration {
         let ticks = self.0.host_timestamp_raw.max(0) as u64;
         Duration::from_nanos(ticks.saturating_mul(100))
@@ -117,14 +133,17 @@ impl<'a> Frame<'a> {
         }
     }
 
+    /// Borrow the valid pixel bytes for this frame.
     pub fn data(&self) -> &[u8] {
         self.data
     }
 
+    /// Return a copy of this frame's metadata.
     pub fn info(&self) -> FrameInfo {
         self.info
     }
 
+    /// Copy the pixels and metadata into SDK-independent storage.
     pub fn to_owned(&self) -> OwnedFrame {
         OwnedFrame {
             data: self.data.to_vec(),
@@ -151,10 +170,12 @@ pub struct OwnedFrame {
 }
 
 impl OwnedFrame {
+    /// Return a copy of the owned frame's metadata.
     pub fn info(&self) -> FrameInfo {
         FrameInfo::from_metadata(&self.info)
     }
 
+    /// Borrow this owned allocation as a [`Frame`].
     pub fn as_frame(&self) -> Frame<'_> {
         Frame::from_parts(&self.data, &self.info)
     }
@@ -170,6 +191,11 @@ impl fmt::Debug for OwnedFrame {
 }
 
 /// RAII guard returned by [`Camera::get_image_buffer`](crate::Camera::get_image_buffer).
+///
+/// The guard keeps the camera borrowed and the SDK buffer valid. It is neither
+/// `Send` nor `Sync`; inspect, copy, and release it on the acquiring thread.
+/// Dropping the guard makes one best-effort release attempt and cannot report
+/// an error, so use [`FrameGuard::release`] when release failures matter.
 pub struct FrameGuard<'cam> {
     inner: backend::FrameGuard<'cam>,
 }
@@ -179,18 +205,25 @@ impl<'cam> FrameGuard<'cam> {
         Self { inner }
     }
 
+    /// Borrow the guarded SDK buffer as a frame.
     pub fn frame(&self) -> Frame<'_> {
         self.inner.frame()
     }
 
+    /// Return a copy of the guarded frame's metadata without borrowing pixels.
     pub fn info(&self) -> FrameInfo {
         self.inner.info()
     }
 
+    /// Copy the guarded frame into SDK-independent storage.
     pub fn to_owned(&self) -> OwnedFrame {
         self.frame().to_owned()
     }
 
+    /// Release the SDK buffer and report the vendor result.
+    ///
+    /// The guard is consumed. If the SDK returns an error, release is not
+    /// retried because native ownership is uncertain.
     pub fn release(mut self) -> MvsResult<()> {
         self.inner.release()
     }
@@ -206,15 +239,8 @@ impl Drop for FrameGuard<'_> {
 mod tests {
     use std::time::Duration;
 
-    use super::{FrameInfo, FrameMetadata, OwnedFrame};
+    use super::{FrameInfo, FrameMetadata};
     use crate::PixelType;
-
-    fn assert_send_sync<T: Send + Sync>() {}
-
-    #[test]
-    fn owned_frame_is_send_and_sync() {
-        assert_send_sync::<OwnedFrame>();
-    }
 
     #[test]
     fn frame_info_owns_its_metadata_snapshot() {

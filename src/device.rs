@@ -21,14 +21,17 @@ impl DeviceList {
         })
     }
 
+    /// Return the number of enumerated device snapshots.
     pub fn len(&self) -> usize {
         self.inner.len()
     }
 
+    /// Return whether enumeration produced no devices.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
+    /// Iterate over cloned, owned device snapshots.
     pub fn iter(&self) -> DeviceIter<'_> {
         DeviceIter {
             list: self,
@@ -36,6 +39,7 @@ impl DeviceList {
         }
     }
 
+    /// Clone the device snapshot at `index`, or return `None` if out of range.
     pub fn get(&self, index: usize) -> Option<DeviceInfo> {
         self.inner.get(index).map(|inner| DeviceInfo { inner })
     }
@@ -49,6 +53,7 @@ impl fmt::Debug for DeviceList {
     }
 }
 
+/// Iterator over the snapshots in a [`DeviceList`].
 pub struct DeviceIter<'a> {
     list: &'a DeviceList,
     index: usize,
@@ -78,56 +83,79 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// Return the transport layer reported by the SDK.
     pub fn transport_layer(&self) -> TransportLayer {
         self.inner.transport_layer()
     }
 
+    /// Return whether this is a native, virtual, or GenTL GigE device.
     pub fn is_gige(&self) -> bool {
         self.inner.is_gige()
     }
 
+    /// Return whether this is a native or virtual USB device.
     pub fn is_usb(&self) -> bool {
         self.inner.is_usb()
     }
 
+    /// Return the manufacturer name, decoded lossily as UTF-8.
     pub fn manufacturer(&self) -> String {
         self.inner.manufacturer()
     }
 
+    /// Return the model name, decoded lossily as UTF-8.
     pub fn model(&self) -> String {
         self.inner.model()
     }
 
+    /// Return the serial number, decoded lossily as UTF-8.
     pub fn serial(&self) -> String {
         self.inner.serial()
     }
 
+    /// Return the user-defined device name, decoded lossily as UTF-8.
     pub fn user_defined_name(&self) -> String {
         self.inner.user_defined_name()
     }
 
+    /// Return the current device IP for GigE devices.
+    ///
+    /// Other transport layers return `None`.
     pub fn ip(&self) -> Option<Ipv4Addr> {
         self.inner.ip()
     }
 
+    /// Return the host NIC IP used by a GigE device.
+    ///
+    /// Other transport layers return `None`.
     pub fn host_nic_ip(&self) -> Option<Ipv4Addr> {
         self.inner.host_nic_ip()
     }
 
+    /// Query whether the device can currently be opened in `mode`.
+    ///
+    /// This requires an active process-wide [`Sdk`].
     pub fn is_accessible(&self, mode: AccessMode) -> MvsResult<bool> {
         let _active = Sdk::active()?;
         Ok(self.inner.is_accessible(mode))
     }
 
+    /// Open this device with the requested access mode.
+    ///
+    /// This requires an active process-wide [`Sdk`]. If opening fails after a
+    /// native handle was created and rollback also fails, the error is
+    /// [`MvsError::OpenRollback`](crate::MvsError::OpenRollback).
     pub fn open(&self, mode: AccessMode) -> MvsResult<Camera> {
         let active = Sdk::active()?;
         Camera::open(self.inner.clone(), active.sdk(), mode)
     }
 
+    /// Open this device with [`AccessMode::Exclusive`].
     pub fn open_exclusive(&self) -> MvsResult<Camera> {
         self.open(AccessMode::Exclusive)
     }
 
+    /// Open this device with [`AccessMode::Control`].
     pub fn open_control(&self) -> MvsResult<Camera> {
         self.open(AccessMode::Control)
     }
@@ -137,6 +165,7 @@ impl DeviceInfo {
     /// The address remains valid while this value or one of its clones keeps
     /// the snapshot alive. After [`Sdk::shutdown`], the pointer remains valid
     /// as Rust-owned memory but must not be passed back to the native SDK.
+    /// Do not mutate or free the pointed-to record.
     pub fn as_raw(&self) -> *const c_void {
         self.inner.as_raw()
     }

@@ -372,8 +372,9 @@ mod tests {
     }
 
     #[test]
-    fn slot_address_is_stable_across_replacement_and_deactivation() {
+    fn slot_lifecycle_keeps_its_address_and_silences_late_calls() {
         let drops = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
         let slot = NativeSlot::<ExceptionCallbackFn>::new();
         let user = slot.user_data();
 
@@ -386,9 +387,11 @@ mod tests {
         );
 
         let second_probe = DropProbe(Arc::clone(&drops));
+        let callback_calls = Arc::clone(&calls);
         let previous = slot
             .activate(Box::new(move |_| {
                 let _ = &second_probe;
+                callback_calls.fetch_add(1, Ordering::Relaxed);
             }))
             .expect("replacement returns the old closure");
         drop_callback_safely(previous);
@@ -398,20 +401,6 @@ mod tests {
         drop_callback_safely(slot.deactivate().expect("active callback"));
         assert_eq!(drops.load(Ordering::Relaxed), 2);
         assert_eq!(slot.user_data(), user);
-    }
-
-    #[test]
-    fn disabled_slot_ignores_late_native_invocations() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let slot = NativeSlot::<ExceptionCallbackFn>::new();
-        let callback_calls = Arc::clone(&calls);
-        assert!(
-            slot.activate(Box::new(move |_| {
-                callback_calls.fetch_add(1, Ordering::Relaxed);
-            }))
-            .is_none()
-        );
-        drop_callback_safely(slot.deactivate().expect("active callback"));
 
         // SAFETY: user points to the still-live slot of the matching type.
         unsafe { exception_trampoline(1, slot.user_data()) };
@@ -469,31 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn same_slot_synchronous_reentry_is_rejected() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let address = Arc::new(AtomicUsize::new(0));
-        let slot = NativeSlot::<ExceptionCallbackFn>::new();
-        let callback_calls = Arc::clone(&calls);
-        let callback_address = Arc::clone(&address);
-        assert!(
-            slot.activate(Box::new(move |_| {
-                callback_calls.fetch_add(1, Ordering::Relaxed);
-                let user = callback_address.load(Ordering::Relaxed) as *mut c_void;
-                // SAFETY: the test stores the live matching slot address.
-                unsafe { exception_trampoline(2, user) };
-            }))
-            .is_none()
-        );
-        address.store(slot.user_data() as usize, Ordering::Relaxed);
-
-        // SAFETY: user points to the live matching slot.
-        unsafe { exception_trampoline(1, slot.user_data()) };
-        assert_eq!(calls.load(Ordering::Relaxed), 1);
-        drop_callback_safely(slot.deactivate().expect("active callback"));
-    }
-
-    #[test]
-    fn different_slots_may_nest_on_one_thread() {
+    fn reentry_is_rejected_per_slot_but_other_slots_may_nest() {
         let outer_calls = Arc::new(AtomicUsize::new(0));
         let inner_calls = Arc::new(AtomicUsize::new(0));
         let inner = NativeSlot::<ExceptionCallbackFn>::new();
@@ -505,19 +470,25 @@ mod tests {
                 }))
                 .is_none()
         );
-
-        let outer = NativeSlot::<ExceptionCallbackFn>::new();
-        let counted_outer = Arc::clone(&outer_calls);
         let inner_user = inner.user_data() as usize;
+
+        let address = Arc::new(AtomicUsize::new(0));
+        let outer = NativeSlot::<ExceptionCallbackFn>::new();
+        let callback_calls = Arc::clone(&outer_calls);
+        let callback_address = Arc::clone(&address);
         assert!(
             outer
                 .activate(Box::new(move |_| {
-                    counted_outer.fetch_add(1, Ordering::Relaxed);
-                    // SAFETY: inner_user points to the live matching slot.
-                    unsafe { exception_trampoline(2, inner_user as *mut c_void) };
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
+                    let user = callback_address.load(Ordering::Relaxed) as *mut c_void;
+                    // SAFETY: the test stores the live matching slot address.
+                    unsafe { exception_trampoline(2, user) };
+                    // SAFETY: inner_user points to the other live slot.
+                    unsafe { exception_trampoline(3, inner_user as *mut c_void) };
                 }))
                 .is_none()
         );
+        address.store(outer.user_data() as usize, Ordering::Relaxed);
 
         // SAFETY: user points to the live matching slot.
         unsafe { exception_trampoline(1, outer.user_data()) };
@@ -528,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_panic_is_contained_and_slot_remains_usable() {
+    fn callback_and_destructor_panics_are_contained() {
         let calls = Arc::new(AtomicUsize::new(0));
         let callback_calls = Arc::clone(&calls);
         let slot = NativeSlot::<ExceptionCallbackFn>::new();
@@ -547,17 +518,11 @@ mod tests {
         unsafe { exception_trampoline(2, slot.user_data()) };
         assert_eq!(calls.load(Ordering::Relaxed), 2);
         drop_callback_safely(slot.deactivate().expect("active callback"));
-    }
 
-    #[test]
-    fn callback_panic_payload_is_dropped_when_safe() {
         let drops = Arc::new(AtomicUsize::new(0));
         log_callback_panic("Test", Box::new(DropProbe(Arc::clone(&drops))));
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-    }
 
-    #[test]
-    fn panicking_user_destructors_are_contained() {
         let payload_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             log_callback_panic("Test", Box::new(PanicOnDrop));
         }));

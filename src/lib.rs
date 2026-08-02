@@ -1,8 +1,37 @@
 //! Safe Rust wrapper for the Hikvision **MVS** machine-vision camera SDK.
 //!
 //! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate. This
-//! crate exposes one platform-independent safe API backed by the native SDK on
-//! Windows x86_64 and an unsupported-platform backend elsewhere.
+//! crate exposes one platform-independent API backed by the native SDK on
+//! Windows x86_64. On other targets, [`Sdk::init`] returns
+//! [`MvsError::UnsupportedPlatform`]. Windows applications need the MVS SDK,
+//! `MVCAM_COMMON_RUNENV`, and the SDK DLL directory on `PATH` at runtime.
+//!
+//! # Workflow
+//!
+//! Initialize [`Sdk`], enumerate the desired [`TransportLayer`] values, open a
+//! [`DeviceInfo`], configure GenICam nodes through [`Camera`], then choose one
+//! acquisition mode:
+//!
+//! - Register an image callback before [`Camera::start_grabbing`] for callback
+//!   mode. The SDK invokes it on a streaming thread and each [`Frame`] is
+//!   borrowed only for that invocation.
+//! - Start without an image callback for polling mode, then call
+//!   [`Camera::get_image_buffer`]. Its [`FrameGuard`] releases the native buffer
+//!   on drop; call [`FrameGuard::release`] to observe release errors.
+//!
+//! Stop acquisition before changing the image callback. To keep pixels beyond
+//! a callback or guard lifetime, copy them with [`Frame::to_owned`].
+//!
+//! # Lifetimes and shutdown
+//!
+//! [`Camera`] is `Send` but not `Sync`; synchronize shared access externally.
+//! Prefer [`Camera::close`] over relying on `Drop`, because explicit close
+//! reports every cleanup failure. After all cameras are closed and callbacks
+//! have returned, [`Sdk::shutdown`] can explicitly finalize the process-wide
+//! runtime. Successful shutdown is terminal for the process.
+//!
+//! See the repository's `examples/callback.rs` and `examples/polling.rs` for
+//! complete acquisition workflows.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // Public functions must not expose types that downstream crates cannot name.

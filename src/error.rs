@@ -1,8 +1,8 @@
 //! Error type for the MVS SDK.
 //!
 //! [`MvsError`] covers every code defined in `MvErrorDefine.h` plus Rust-side
-//! conditions (interior NUL bytes, UTF-8 failures). Unknown codes are
-//! preserved via [`MvsError::Unknown`] so nothing is lost.
+//! marshalling and lifecycle failures. Unknown codes are preserved via
+//! [`MvsError::Unknown`] so nothing is lost.
 
 use std::ffi::NulError;
 use std::fmt;
@@ -22,7 +22,7 @@ pub enum ShutdownError {
     InUse {
         /// Cameras that have not completed handle destruction.
         live_cameras: usize,
-        /// Native callbacks whose trampolines have not returned yet.
+        /// Callbacks that are still executing.
         active_callbacks: usize,
     },
     /// A native handle could not be destroyed safely, so finalization is
@@ -194,158 +194,225 @@ impl fmt::Display for CleanupError {
 
 impl std::error::Error for CleanupError {}
 
-/// Error returned by any MVS SDK call, plus Rust-side failures that arise
-/// while marshalling arguments.
+/// Error returned by any MVS SDK call, plus Rust-side marshalling, lifecycle,
+/// and open-rollback failures.
 #[derive(thiserror::Error, Debug)]
 pub enum MvsError {
     // ---- Generic SDK errors (0x80000000 - 0x800000FF) ----
+    /// The native camera handle is invalid.
     #[error("invalid handle")]
     Handle,
+    /// The device or SDK does not support the requested operation.
     #[error("unsupported operation")]
     NotSupported,
+    /// A native buffer overflowed.
     #[error("buffer overflow")]
     BufferOverflow,
+    /// The operation is invalid in the camera's current state.
     #[error("incorrect call order")]
     CallOrder,
+    /// A parameter supplied to the SDK is invalid.
     #[error("invalid parameter")]
     Parameter,
+    /// The SDK could not allocate a required resource.
     #[error("resource allocation failed")]
     Resource,
+    /// No data is currently available.
     #[error("no data")]
     NoData,
+    /// A precondition failed or the device environment changed.
     #[error("precondition failed or environment changed")]
     Precondition,
+    /// The runtime and component versions are incompatible.
     #[error("version mismatch")]
     Version,
+    /// The SDK has insufficient memory for the operation.
     #[error("insufficient memory")]
     NotEnoughBuffer,
+    /// The image is abnormal, commonly because packets were lost.
     #[error("abnormal image (possibly incomplete due to packet loss)")]
     AbnormalImage,
+    /// A required native library could not be loaded.
     #[error("failed to load library")]
     LoadLibrary,
+    /// No output buffer is currently available.
     #[error("no available output buffer")]
     NoOutputBuffer,
+    /// The SDK reported an encryption failure.
     #[error("encryption error")]
     Encrypt,
+    /// The SDK could not open a required file.
     #[error("open file failed")]
     OpenFile,
+    /// The requested buffer is already in use.
     #[error("buffer already in use")]
     BufferInUse,
+    /// A buffer address is invalid.
     #[error("invalid buffer address")]
     BufferInvalid,
+    /// A buffer does not meet the SDK's alignment requirements.
     #[error("buffer alignment error")]
     NoAlignBuffer,
+    /// Too few buffers were configured for the operation.
     #[error("insufficient buffer count")]
     NotEnoughBufferNum,
+    /// The requested port is already in use.
     #[error("port in use")]
     PortInUse,
+    /// Image decoding failed.
     #[error("image decoding error")]
     ImageDecodec,
+    /// The image size exceeds the SDK's `u32` limit.
     #[error("image size exceeds u32 limit")]
     Uint32Limit,
+    /// The image height reported by the device is invalid.
     #[error("image height anomaly")]
     ImageHeight,
+    /// The device has insufficient DDR cache.
     #[error("insufficient DDR cache")]
     NotEnoughDdr,
+    /// No additional stream channel is available.
     #[error("insufficient stream channels")]
     NotEnoughStream,
+    /// The device did not respond.
     #[error("no response from device")]
     NoResponse,
+    /// The SDK returned an unspecified generic error.
     #[error("unknown generic error")]
     UnknownGeneric,
 
     // ---- GenICam errors (0x80000100 - 0x800001FF) ----
+    /// A general GenICam operation failed.
     #[error("GenICam: general error")]
     GcGeneric,
+    /// A GenICam argument is invalid.
     #[error("GenICam: illegal argument")]
     GcArgument,
+    /// A GenICam value is outside its accepted range.
     #[error("GenICam: value out of range")]
     GcRange,
+    /// A GenICam property operation failed.
     #[error("GenICam: property error")]
     GcProperty,
+    /// A GenICam runtime operation failed.
     #[error("GenICam: runtime error")]
     GcRuntime,
+    /// A GenICam logical condition failed.
     #[error("GenICam: logical error")]
     GcLogical,
+    /// The GenICam node is not accessible in its current state.
     #[error("GenICam: node access condition error")]
     GcAccess,
+    /// A GenICam operation timed out.
     #[error("GenICam: timeout")]
     GcTimeout,
+    /// A GenICam dynamic cast failed.
     #[error("GenICam: dynamic cast error")]
     GcDynamicCast,
+    /// The SDK returned an unspecified GenICam error.
     #[error("GenICam: unknown error")]
     GcUnknown,
 
     // ---- GigE errors (0x80000200 - 0x800002FF) ----
+    /// The GigE device does not implement the requested command.
     #[error("GigE: command not implemented by device")]
     NotImplemented,
+    /// A GigE address is invalid.
     #[error("GigE: invalid address")]
     InvalidAddress,
+    /// The addressed GigE register or property is write-protected.
     #[error("GigE: write protected")]
     WriteProtect,
+    /// Access to the GigE device was denied.
     #[error("GigE: access denied")]
     AccessDenied,
+    /// The GigE device is busy or disconnected from the network.
     #[error("GigE: device busy or network disconnected")]
     Busy,
+    /// A GigE network packet was invalid or lost.
     #[error("GigE: network packet error")]
     Packet,
+    /// A general GigE network operation failed.
     #[error("GigE: network error")]
     Net,
+    /// This GigE device does not support changing its IP address.
     #[error("GigE: modifying the device IP is not supported")]
     ModifyDeviceIpNotSupported,
+    /// GigE key verification failed.
     #[error("GigE: key verification failed")]
     KeyVerificationFailed,
+    /// The GigE device's IP address conflicts with another host.
     #[error("GigE: device IP conflict")]
     IpConflict,
 
     // ---- USB errors (0x80000300 - 0x800003FF) ----
+    /// Reading from the USB device failed.
     #[error("USB: read error")]
     UsbRead,
+    /// Writing to the USB device failed.
     #[error("USB: write error")]
     UsbWrite,
+    /// The USB device reported an exception.
     #[error("USB: device exception")]
     UsbDevice,
+    /// A USB GenICam operation failed.
     #[error("USB: GenICam error")]
     UsbGenicam,
+    /// The USB connection has insufficient bandwidth.
     #[error("USB: insufficient bandwidth")]
     UsbBandwidth,
+    /// The USB driver is missing or incompatible.
     #[error("USB: driver mismatch or missing")]
     UsbDriver,
+    /// The SDK returned an unspecified USB error.
     #[error("USB: unknown error")]
     UsbUnknown,
 
     // ---- Upgrade errors (0x80000400 - 0x800004FF) ----
+    /// The firmware file does not match the device.
     #[error("upgrade: firmware mismatch")]
     UpgFileMismatch,
+    /// The firmware language does not match the device.
     #[error("upgrade: firmware language mismatch")]
     UpgLanguageMismatch,
+    /// A firmware upgrade is already in progress or conflicts with this one.
     #[error("upgrade: conflict (already upgrading)")]
     UpgConflict,
+    /// The device reported an internal upgrade error.
     #[error("upgrade: internal device error")]
     UpgInnerErr,
+    /// The SDK returned an unspecified upgrade error.
     #[error("upgrade: unknown error")]
     UpgUnknown,
 
     // ---- Unknown SDK code ----
+    /// An unrecognized vendor error code, preserved without loss.
     #[error("unknown MVS error code: 0x{0:08X}")]
     Unknown(u32),
 
     // ---- Rust-side failures ----
+    /// A Rust string passed to the C API contains an interior NUL byte.
     #[error("string contains interior NUL byte: {0}")]
     Nul(#[from] NulError),
+    /// Native data required strict UTF-8 decoding but was invalid.
     #[error("SDK returned non-UTF-8 data: {0}")]
     Utf8(#[from] Utf8Error),
 
+    /// The native MVS SDK backend is unavailable on this target.
     #[error("MVS SDK is only available on Windows x86_64")]
     UnsupportedPlatform,
 
+    /// An SDK operation was requested before [`Sdk::init`](crate::Sdk::init).
     #[error("MVS SDK has not been initialized")]
     SdkNotInitialized,
+    /// The process-wide SDK has already been finalized.
     #[error("MVS SDK has already been shut down for this process")]
     SdkFinalized,
+    /// A failed finalization left the process-wide SDK state unknown.
     #[error("MVS SDK process state is unknown after finalization failed")]
     SdkStateUnknown,
 
+    /// Opening failed and destroying the partially created handle also failed.
     #[error("camera open failed ({open}); rollback handle destruction also failed ({destroy})")]
     OpenRollback {
         /// Error returned while opening the device.
