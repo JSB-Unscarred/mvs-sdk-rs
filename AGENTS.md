@@ -128,8 +128,9 @@ cargo test --features hardware-tests --test hardware_smoke -- --ignored --test-t
 
 ## Git 工作流
 
-- 主分支为 `main`。除非用户明确要求，不创建分支、不提交、不推送、不改写历史。
+- 主分支为 `main`。
 - 开始修改前检查 `git status`，保留用户已有改动；每个 commit 只处理一个清晰主题。
+- 要有分点的正文。
 - 提交标题采用 Conventional Commits 风格：
 
 ```text
@@ -148,8 +149,6 @@ cargo test --features hardware-tests --test hardware_smoke -- --ignored --test-t
 
 要求：
 
-- 冒号后留一个空格，摘要使用简洁中文，不加句号。
-- scope 可选，仅在能稳定指向模块时使用，如 `callback`、`camera`、`sys`。
 - 一个提交聚焦一个可审查主题，不混入无关重构。
 - breaking change 使用 `!`，并在正文说明影响和迁移方式。
 - FFI 安全、资源泄漏权衡或平台兼容改动应在正文说明原因、不变量和验证结果。
