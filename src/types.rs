@@ -29,16 +29,6 @@ pub enum AccessMode {
     Monitor,
 }
 
-impl AccessMode {
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    pub(crate) const fn switchover_key(self) -> u16 {
-        match self {
-            Self::ControlSwitchEnableWithKey(key) => key,
-            _ => 0,
-        }
-    }
-}
-
 /// Full integer-node information: current value plus its allowed range.
 #[derive(Copy, Clone, Debug)]
 pub struct IntNode {
@@ -164,6 +154,9 @@ impl fmt::Debug for TransportLayer {
 pub struct PixelType(u32);
 
 impl PixelType {
+    // The vendor's custom bit is orthogonal to the mono/color category bits.
+    const CATEGORY_MASK: u32 = 0x7F00_0000;
+
     /// Undefined or unknown pixel format.
     pub const UNDEFINED: Self = Self(0xFFFF_FFFF);
 
@@ -226,13 +219,13 @@ impl PixelType {
     /// Return whether the format descriptor identifies monochrome data.
     #[inline]
     pub const fn is_mono(self) -> bool {
-        (self.0 & 0xFF00_0000) == 0x0100_0000
+        (self.0 & Self::CATEGORY_MASK) == 0x0100_0000
     }
 
     /// Return whether the format descriptor identifies color data.
     #[inline]
     pub const fn is_color(self) -> bool {
-        (self.0 & 0xFF00_0000) == 0x0200_0000
+        (self.0 & Self::CATEGORY_MASK) == 0x0200_0000
     }
 
     /// Return whether the SDK's custom-format bit is set.
@@ -248,9 +241,9 @@ impl fmt::Debug for PixelType {
     }
 }
 
-#[cfg(all(test, target_os = "windows", target_arch = "x86_64"))]
+#[cfg(test)]
 mod tests {
-    use super::{AccessMode, TransportLayer};
+    use super::{PixelType, TransportLayer};
     use crate::sys;
 
     #[test]
@@ -287,11 +280,20 @@ mod tests {
     }
 
     #[test]
-    fn access_mode_preserves_the_requested_switchover_key() {
-        assert_eq!(AccessMode::Exclusive.switchover_key(), 0);
-        assert_eq!(
-            AccessMode::ControlSwitchEnableWithKey(0x1234).switchover_key(),
-            0x1234
-        );
+    fn custom_pixel_types_keep_their_mono_or_color_classification() {
+        let mono = PixelType::from_raw(sys::PixelType_Gvsp_HB_Mono8 as u32);
+        assert!(mono.is_mono());
+        assert!(!mono.is_color());
+        assert!(mono.is_custom());
+
+        let color = PixelType::from_raw(sys::PixelType_Gvsp_HB_RGB8_Packed as u32);
+        assert!(!color.is_mono());
+        assert!(color.is_color());
+        assert!(color.is_custom());
+
+        assert!(PixelType::MONO8.is_mono());
+        assert!(PixelType::RGB8_PACKED.is_color());
+        assert!(!PixelType::UNDEFINED.is_mono());
+        assert!(!PixelType::UNDEFINED.is_color());
     }
 }

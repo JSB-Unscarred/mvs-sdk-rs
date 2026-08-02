@@ -188,7 +188,7 @@ impl Sdk {
     /// Returns an SDK lifecycle error after shutdown, or the vendor error from
     /// device enumeration.
     pub fn enumerate_devices(&self, layers: TransportLayer) -> MvsResult<DeviceList> {
-        let _operation = self.operation()?;
+        let _active = self.operation()?;
         let _enumeration = self
             .enumeration_lock
             .lock()
@@ -196,14 +196,12 @@ impl Sdk {
         DeviceList::enumerate(layers)
     }
 
-    pub(crate) fn operation(&self) -> MvsResult<OperationPermit> {
+    pub(crate) fn operation(&self) -> MvsResult<ActiveSdk> {
         let active = ActiveSdk::acquire()?;
-        if !std::ptr::eq(self, active.sdk.as_ref()) {
+        if !std::ptr::eq(self, active.sdk()) {
             return Err(MvsError::SdkFinalized);
         }
-        Ok(OperationPermit {
-            _state: active.state,
-        })
+        Ok(active)
     }
 
     pub(crate) fn active() -> MvsResult<ActiveSdk> {
@@ -212,7 +210,6 @@ impl Sdk {
 }
 
 pub(crate) struct ActiveSdk {
-    sdk: Arc<Sdk>,
     state: RwLockReadGuard<'static, ProcessState>,
 }
 
@@ -222,24 +219,25 @@ impl ActiveSdk {
             .state
             .read()
             .map_err(|_| MvsError::SdkStateUnknown)?;
-        let sdk = match &*state {
-            ProcessState::Active(sdk) => Arc::clone(sdk),
+        match &*state {
+            ProcessState::Active(_) => {}
             ProcessState::Uninitialized => return Err(MvsError::SdkNotInitialized),
             ProcessState::Finalized => return Err(MvsError::SdkFinalized),
             ProcessState::Poisoned { .. } => return Err(MvsError::SdkStateUnknown),
+        }
+        Ok(Self { state })
+    }
+
+    fn sdk(&self) -> &Sdk {
+        let ProcessState::Active(sdk) = &*self.state else {
+            unreachable!("ActiveSdk holds a read guard for the active state")
         };
-        Ok(Self { sdk, state })
+        sdk
     }
 
     pub(crate) fn begin_camera_open(&self) -> PendingCameraLease {
-        PendingCameraLease::new(Arc::clone(&self.sdk.resources))
+        PendingCameraLease::new(Arc::clone(&self.sdk().resources))
     }
-}
-
-/// Keeps the process lifecycle in `Active` while a short global FFI call is
-/// in progress.
-pub(crate) struct OperationPermit {
-    _state: RwLockReadGuard<'static, ProcessState>,
 }
 
 #[derive(Default)]
@@ -279,16 +277,14 @@ impl ResourceLedger {
     }
 
     #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
-    fn enter_callback(self: &Arc<Self>) -> CallbackGuard {
+    fn enter_callback(&self) -> CallbackGuard<'_> {
         self.active_callbacks.fetch_add(1, Ordering::AcqRel);
-        CallbackGuard {
-            ledger: Arc::clone(self),
-        }
+        CallbackGuard { ledger: self }
     }
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-pub(crate) fn enter_callback() -> CallbackGuard {
+pub(crate) fn enter_callback() -> CallbackGuard<'static> {
     process().resources.enter_callback()
 }
 
@@ -351,12 +347,12 @@ impl Drop for CameraLease {
 }
 
 #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
-pub(crate) struct CallbackGuard {
-    ledger: Arc<ResourceLedger>,
+pub(crate) struct CallbackGuard<'a> {
+    ledger: &'a ResourceLedger,
 }
 
 #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
-impl Drop for CallbackGuard {
+impl Drop for CallbackGuard<'_> {
     fn drop(&mut self) {
         let previous = self.ledger.active_callbacks.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(previous > 0, "callback activity count underflowed");

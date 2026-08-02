@@ -115,6 +115,15 @@ fn real_enumeration_nodes_buffers_callbacks_and_shutdown() -> Result<(), Box<dyn
     assert_eq!(owned.data().len(), owned.info().frame_len() as usize);
     camera.stop_grabbing()?;
     camera.unregister_image_callback()?;
+
+    // Confirm that native callback unregistration really restored polling
+    // mode, not only the wrapper's Rust-side state.
+    camera.start_grabbing()?;
+    let after_callback = camera.get_image_buffer(FRAME_TIMEOUT_MS)?;
+    assert!(!after_callback.frame().data().is_empty());
+    after_callback.release()?;
+    camera.stop_grabbing()?;
+
     camera.close()?;
     sdk.shutdown()?;
     Ok(())

@@ -154,8 +154,9 @@ impl DeviceInfo {
 
     /// Open this device with the requested access mode.
     ///
-    /// This requires an active process-wide [`Sdk`]. If opening fails after a
-    /// native handle was created and rollback also fails, the error is
+    /// This requires an active process-wide [`Sdk`]. If handle creation or
+    /// device opening fails after the SDK writes a non-null handle, and
+    /// rollback also fails, the error is
     /// [`MvsError::OpenRollback`](crate::MvsError::OpenRollback).
     pub fn open(&self, mode: AccessMode) -> MvsResult<Camera> {
         let active = Sdk::active()?;

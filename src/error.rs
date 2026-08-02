@@ -32,10 +32,10 @@ pub enum ShutdownError {
     },
     /// The vendor finalization call failed.
     Finalize(MvsError),
-    /// A previous finalization attempt left the vendor SDK in an unknown
-    /// process-wide state. The call is not retried.
+    /// The process-wide SDK state can no longer be trusted.
     StateUnknown {
-        /// Original vendor error code, when one was available.
+        /// Original finalization error code, when finalization caused the
+        /// unknown state and returned a vendor error.
         finalize_code: Option<u32>,
     },
 }
@@ -63,7 +63,7 @@ impl fmt::Display for ShutdownError {
             ),
             Self::StateUnknown {
                 finalize_code: None,
-            } => f.write_str("MVS SDK state is unknown after finalization failed"),
+            } => f.write_str("MVS SDK process state is unknown"),
         }
     }
 }
@@ -142,7 +142,7 @@ pub struct CleanupError {
 }
 
 impl CleanupError {
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
     pub(crate) fn new(failures: Vec<CleanupFailure>, native_handle_destroyed: bool) -> Self {
         debug_assert!(!failures.is_empty());
         Self {
@@ -190,10 +190,20 @@ impl fmt::Display for CleanupError {
     }
 }
 
-impl std::error::Error for CleanupError {}
+impl std::error::Error for CleanupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.failures
+            .first()
+            .map(|failure| &failure.error as &(dyn std::error::Error + 'static))
+    }
+}
 
 /// Error returned by any MVS SDK call, plus Rust-side marshalling, lifecycle,
 /// and open-rollback failures.
+///
+/// This enum is non-exhaustive so newer SDK releases and additional safe-layer
+/// validation errors can be represented without another source-breaking change.
+#[non_exhaustive]
 #[derive(thiserror::Error, Debug)]
 pub enum MvsError {
     // ---- Generic SDK errors (0x80000000 - 0x800000FF) ----
@@ -403,163 +413,129 @@ pub enum MvsError {
     /// The process-wide SDK has already been finalized.
     #[error("MVS SDK has already been shut down for this process")]
     SdkFinalized,
-    /// A failed finalization left the process-wide SDK state unknown.
-    #[error("MVS SDK process state is unknown after finalization failed")]
+    /// The process-wide SDK state can no longer be trusted.
+    #[error("MVS SDK process state is unknown")]
     SdkStateUnknown,
 
-    /// Opening failed and destroying the partially created handle also failed.
-    #[error("camera open failed ({open}); rollback handle destruction also failed ({destroy})")]
+    /// The SDK returned frame metadata that cannot describe a valid Rust
+    /// slice, such as a non-empty null buffer or an address-space-sized frame.
+    #[error("SDK returned an invalid frame buffer with reported length {frame_len}")]
+    InvalidFrameBuffer {
+        /// Effective length reported by the SDK's extended or legacy metadata.
+        frame_len: u64,
+    },
+
+    /// Handle creation or device opening failed, and destroying the non-null
+    /// partial handle also failed.
+    #[error(
+        "camera open sequence failed ({open}); rollback handle destruction also failed ({destroy})"
+    )]
     OpenRollback {
-        /// Error returned while opening the device.
+        /// Error returned while creating the handle or opening the device.
         open: Box<MvsError>,
         /// Error returned while rolling back the newly created handle.
         destroy: Box<MvsError>,
     },
 }
 
-impl MvsError {
-    /// Return the raw SDK return code, if this error originated from the SDK.
-    pub fn raw_code(&self) -> Option<u32> {
-        let code = match self {
-            Self::Handle => sys::MV_E_HANDLE,
-            Self::NotSupported => sys::MV_E_SUPPORT,
-            Self::BufferOverflow => sys::MV_E_BUFOVER,
-            Self::CallOrder => sys::MV_E_CALLORDER,
-            Self::Parameter => sys::MV_E_PARAMETER,
-            Self::Resource => sys::MV_E_RESOURCE,
-            Self::NoData => sys::MV_E_NODATA,
-            Self::Precondition => sys::MV_E_PRECONDITION,
-            Self::Version => sys::MV_E_VERSION,
-            Self::NotEnoughBuffer => sys::MV_E_NOENOUGH_BUF,
-            Self::AbnormalImage => sys::MV_E_ABNORMAL_IMAGE,
-            Self::LoadLibrary => sys::MV_E_LOAD_LIBRARY,
-            Self::NoOutputBuffer => sys::MV_E_NOOUTBUF,
-            Self::Encrypt => sys::MV_E_ENCRYPT,
-            Self::OpenFile => sys::MV_E_OPENFILE,
-            Self::BufferInUse => sys::MV_E_BUF_IN_USE,
-            Self::BufferInvalid => sys::MV_E_BUF_INVALID,
-            Self::NoAlignBuffer => sys::MV_E_NOALIGN_BUF,
-            Self::NotEnoughBufferNum => sys::MV_E_NOENOUGH_BUF_NUM,
-            Self::PortInUse => sys::MV_E_PORT_IN_USE,
-            Self::ImageDecodec => sys::MV_E_IMAGE_DECODEC,
-            Self::Uint32Limit => sys::MV_E_UINT32_LIMIT,
-            Self::ImageHeight => sys::MV_E_IMAGE_HEIGHT,
-            Self::NotEnoughDdr => sys::MV_E_NOENOUGH_DDR,
-            Self::NotEnoughStream => sys::MV_E_NOENOUGH_STREAM,
-            Self::NoResponse => sys::MV_E_NORESPONSE,
-            Self::UnknownGeneric => sys::MV_E_UNKNOW,
-            Self::GcGeneric => sys::MV_E_GC_GENERIC,
-            Self::GcArgument => sys::MV_E_GC_ARGUMENT,
-            Self::GcRange => sys::MV_E_GC_RANGE,
-            Self::GcProperty => sys::MV_E_GC_PROPERTY,
-            Self::GcRuntime => sys::MV_E_GC_RUNTIME,
-            Self::GcLogical => sys::MV_E_GC_LOGICAL,
-            Self::GcAccess => sys::MV_E_GC_ACCESS,
-            Self::GcTimeout => sys::MV_E_GC_TIMEOUT,
-            Self::GcDynamicCast => sys::MV_E_GC_DYNAMICCAST,
-            Self::GcUnknown => sys::MV_E_GC_UNKNOW,
-            Self::NotImplemented => sys::MV_E_NOT_IMPLEMENTED,
-            Self::InvalidAddress => sys::MV_E_INVALID_ADDRESS,
-            Self::WriteProtect => sys::MV_E_WRITE_PROTECT,
-            Self::AccessDenied => sys::MV_E_ACCESS_DENIED,
-            Self::Busy => sys::MV_E_BUSY,
-            Self::Packet => sys::MV_E_PACKET,
-            Self::Net => sys::MV_E_NETER,
-            Self::ModifyDeviceIpNotSupported => sys::MV_E_SUPPORT_MODIFY_DEVICE_IP,
-            Self::KeyVerificationFailed => sys::MV_E_KEY_VERIFICATION,
-            Self::IpConflict => sys::MV_E_IP_CONFLICT,
-            Self::UsbRead => sys::MV_E_USB_READ,
-            Self::UsbWrite => sys::MV_E_USB_WRITE,
-            Self::UsbDevice => sys::MV_E_USB_DEVICE,
-            Self::UsbGenicam => sys::MV_E_USB_GENICAM,
-            Self::UsbBandwidth => sys::MV_E_USB_BANDWIDTH,
-            Self::UsbDriver => sys::MV_E_USB_DRIVER,
-            Self::UsbUnknown => sys::MV_E_USB_UNKNOW,
-            Self::UpgFileMismatch => sys::MV_E_UPG_FILE_MISMATCH,
-            Self::UpgLanguageMismatch => sys::MV_E_UPG_LANGUSGE_MISMATCH,
-            Self::UpgConflict => sys::MV_E_UPG_CONFLICT,
-            Self::UpgInnerErr => sys::MV_E_UPG_INNER_ERR,
-            Self::UpgUnknown => sys::MV_E_UPG_UNKNOW,
-            Self::Unknown(c) => *c,
-            Self::Nul(_)
-            | Self::UnsupportedPlatform
-            | Self::SdkNotInitialized
-            | Self::SdkFinalized
-            | Self::SdkStateUnknown
-            | Self::OpenRollback { .. } => return None,
-        };
-        Some(code)
-    }
+// Keep the bidirectional mapping and its round-trip test data in one place.
+// The public enum remains explicit above so each variant keeps readable
+// rustdoc and this internal table stays focused on code conversion only.
+macro_rules! define_sdk_error_codes {
+    ($($variant:ident => $code:path),+ $(,)?) => {
+        impl MvsError {
+            /// Return the raw SDK return code, if this error originated from the SDK.
+            pub fn raw_code(&self) -> Option<u32> {
+                match self {
+                    $(Self::$variant => Some($code),)+
+                    Self::Unknown(code) => Some(*code),
+                    Self::Nul(_)
+                    | Self::UnsupportedPlatform
+                    | Self::SdkNotInitialized
+                    | Self::SdkFinalized
+                    | Self::SdkStateUnknown
+                    | Self::InvalidFrameBuffer { .. }
+                    | Self::OpenRollback { .. } => None,
+                }
+            }
+        }
+
+        impl From<c_int> for MvsError {
+            fn from(code: c_int) -> Self {
+                // Error constants come from bindgen as u32 (values above
+                // i32::MAX). Compare the return value's matching bit pattern.
+                match code as u32 {
+                    $($code => Self::$variant,)+
+                    other => Self::Unknown(other),
+                }
+            }
+        }
+
+        #[cfg(test)]
+        const KNOWN_SDK_ERROR_CODES: &[u32] = &[$($code),+];
+    };
 }
 
-impl From<c_int> for MvsError {
-    fn from(code: c_int) -> Self {
-        // Error constants come from bindgen as u32 (values > 0x7FFFFFFF).
-        // SDK function returns are c_int (i32). Compare with matching bit
-        // pattern via u32.
-        match code as u32 {
-            sys::MV_E_HANDLE => Self::Handle,
-            sys::MV_E_SUPPORT => Self::NotSupported,
-            sys::MV_E_BUFOVER => Self::BufferOverflow,
-            sys::MV_E_CALLORDER => Self::CallOrder,
-            sys::MV_E_PARAMETER => Self::Parameter,
-            sys::MV_E_RESOURCE => Self::Resource,
-            sys::MV_E_NODATA => Self::NoData,
-            sys::MV_E_PRECONDITION => Self::Precondition,
-            sys::MV_E_VERSION => Self::Version,
-            sys::MV_E_NOENOUGH_BUF => Self::NotEnoughBuffer,
-            sys::MV_E_ABNORMAL_IMAGE => Self::AbnormalImage,
-            sys::MV_E_LOAD_LIBRARY => Self::LoadLibrary,
-            sys::MV_E_NOOUTBUF => Self::NoOutputBuffer,
-            sys::MV_E_ENCRYPT => Self::Encrypt,
-            sys::MV_E_OPENFILE => Self::OpenFile,
-            sys::MV_E_BUF_IN_USE => Self::BufferInUse,
-            sys::MV_E_BUF_INVALID => Self::BufferInvalid,
-            sys::MV_E_NOALIGN_BUF => Self::NoAlignBuffer,
-            sys::MV_E_NOENOUGH_BUF_NUM => Self::NotEnoughBufferNum,
-            sys::MV_E_PORT_IN_USE => Self::PortInUse,
-            sys::MV_E_IMAGE_DECODEC => Self::ImageDecodec,
-            sys::MV_E_UINT32_LIMIT => Self::Uint32Limit,
-            sys::MV_E_IMAGE_HEIGHT => Self::ImageHeight,
-            sys::MV_E_NOENOUGH_DDR => Self::NotEnoughDdr,
-            sys::MV_E_NOENOUGH_STREAM => Self::NotEnoughStream,
-            sys::MV_E_NORESPONSE => Self::NoResponse,
-            sys::MV_E_UNKNOW => Self::UnknownGeneric,
-            sys::MV_E_GC_GENERIC => Self::GcGeneric,
-            sys::MV_E_GC_ARGUMENT => Self::GcArgument,
-            sys::MV_E_GC_RANGE => Self::GcRange,
-            sys::MV_E_GC_PROPERTY => Self::GcProperty,
-            sys::MV_E_GC_RUNTIME => Self::GcRuntime,
-            sys::MV_E_GC_LOGICAL => Self::GcLogical,
-            sys::MV_E_GC_ACCESS => Self::GcAccess,
-            sys::MV_E_GC_TIMEOUT => Self::GcTimeout,
-            sys::MV_E_GC_DYNAMICCAST => Self::GcDynamicCast,
-            sys::MV_E_GC_UNKNOW => Self::GcUnknown,
-            sys::MV_E_NOT_IMPLEMENTED => Self::NotImplemented,
-            sys::MV_E_INVALID_ADDRESS => Self::InvalidAddress,
-            sys::MV_E_WRITE_PROTECT => Self::WriteProtect,
-            sys::MV_E_ACCESS_DENIED => Self::AccessDenied,
-            sys::MV_E_BUSY => Self::Busy,
-            sys::MV_E_PACKET => Self::Packet,
-            sys::MV_E_NETER => Self::Net,
-            sys::MV_E_SUPPORT_MODIFY_DEVICE_IP => Self::ModifyDeviceIpNotSupported,
-            sys::MV_E_KEY_VERIFICATION => Self::KeyVerificationFailed,
-            sys::MV_E_IP_CONFLICT => Self::IpConflict,
-            sys::MV_E_USB_READ => Self::UsbRead,
-            sys::MV_E_USB_WRITE => Self::UsbWrite,
-            sys::MV_E_USB_DEVICE => Self::UsbDevice,
-            sys::MV_E_USB_GENICAM => Self::UsbGenicam,
-            sys::MV_E_USB_BANDWIDTH => Self::UsbBandwidth,
-            sys::MV_E_USB_DRIVER => Self::UsbDriver,
-            sys::MV_E_USB_UNKNOW => Self::UsbUnknown,
-            sys::MV_E_UPG_FILE_MISMATCH => Self::UpgFileMismatch,
-            sys::MV_E_UPG_LANGUSGE_MISMATCH => Self::UpgLanguageMismatch,
-            sys::MV_E_UPG_CONFLICT => Self::UpgConflict,
-            sys::MV_E_UPG_INNER_ERR => Self::UpgInnerErr,
-            sys::MV_E_UPG_UNKNOW => Self::UpgUnknown,
-            other => Self::Unknown(other),
-        }
-    }
+define_sdk_error_codes! {
+    Handle => sys::MV_E_HANDLE,
+    NotSupported => sys::MV_E_SUPPORT,
+    BufferOverflow => sys::MV_E_BUFOVER,
+    CallOrder => sys::MV_E_CALLORDER,
+    Parameter => sys::MV_E_PARAMETER,
+    Resource => sys::MV_E_RESOURCE,
+    NoData => sys::MV_E_NODATA,
+    Precondition => sys::MV_E_PRECONDITION,
+    Version => sys::MV_E_VERSION,
+    NotEnoughBuffer => sys::MV_E_NOENOUGH_BUF,
+    AbnormalImage => sys::MV_E_ABNORMAL_IMAGE,
+    LoadLibrary => sys::MV_E_LOAD_LIBRARY,
+    NoOutputBuffer => sys::MV_E_NOOUTBUF,
+    Encrypt => sys::MV_E_ENCRYPT,
+    OpenFile => sys::MV_E_OPENFILE,
+    BufferInUse => sys::MV_E_BUF_IN_USE,
+    BufferInvalid => sys::MV_E_BUF_INVALID,
+    NoAlignBuffer => sys::MV_E_NOALIGN_BUF,
+    NotEnoughBufferNum => sys::MV_E_NOENOUGH_BUF_NUM,
+    PortInUse => sys::MV_E_PORT_IN_USE,
+    ImageDecodec => sys::MV_E_IMAGE_DECODEC,
+    Uint32Limit => sys::MV_E_UINT32_LIMIT,
+    ImageHeight => sys::MV_E_IMAGE_HEIGHT,
+    NotEnoughDdr => sys::MV_E_NOENOUGH_DDR,
+    NotEnoughStream => sys::MV_E_NOENOUGH_STREAM,
+    NoResponse => sys::MV_E_NORESPONSE,
+    UnknownGeneric => sys::MV_E_UNKNOW,
+    GcGeneric => sys::MV_E_GC_GENERIC,
+    GcArgument => sys::MV_E_GC_ARGUMENT,
+    GcRange => sys::MV_E_GC_RANGE,
+    GcProperty => sys::MV_E_GC_PROPERTY,
+    GcRuntime => sys::MV_E_GC_RUNTIME,
+    GcLogical => sys::MV_E_GC_LOGICAL,
+    GcAccess => sys::MV_E_GC_ACCESS,
+    GcTimeout => sys::MV_E_GC_TIMEOUT,
+    GcDynamicCast => sys::MV_E_GC_DYNAMICCAST,
+    GcUnknown => sys::MV_E_GC_UNKNOW,
+    NotImplemented => sys::MV_E_NOT_IMPLEMENTED,
+    InvalidAddress => sys::MV_E_INVALID_ADDRESS,
+    WriteProtect => sys::MV_E_WRITE_PROTECT,
+    AccessDenied => sys::MV_E_ACCESS_DENIED,
+    Busy => sys::MV_E_BUSY,
+    Packet => sys::MV_E_PACKET,
+    Net => sys::MV_E_NETER,
+    ModifyDeviceIpNotSupported => sys::MV_E_SUPPORT_MODIFY_DEVICE_IP,
+    KeyVerificationFailed => sys::MV_E_KEY_VERIFICATION,
+    IpConflict => sys::MV_E_IP_CONFLICT,
+    UsbRead => sys::MV_E_USB_READ,
+    UsbWrite => sys::MV_E_USB_WRITE,
+    UsbDevice => sys::MV_E_USB_DEVICE,
+    UsbGenicam => sys::MV_E_USB_GENICAM,
+    UsbBandwidth => sys::MV_E_USB_BANDWIDTH,
+    UsbDriver => sys::MV_E_USB_DRIVER,
+    UsbUnknown => sys::MV_E_USB_UNKNOW,
+    UpgFileMismatch => sys::MV_E_UPG_FILE_MISMATCH,
+    UpgLanguageMismatch => sys::MV_E_UPG_LANGUSGE_MISMATCH,
+    UpgConflict => sys::MV_E_UPG_CONFLICT,
+    UpgInnerErr => sys::MV_E_UPG_INNER_ERR,
+    UpgUnknown => sys::MV_E_UPG_UNKNOW,
 }
 
 impl From<u32> for MvsError {
@@ -580,76 +556,14 @@ pub(crate) fn check(code: c_int) -> MvsResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::MvsError;
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    use super::{CleanupError, CleanupFailure, CleanupStep};
+    use super::{
+        CleanupError, CleanupFailure, CleanupStep, KNOWN_SDK_ERROR_CODES, MvsError, ShutdownError,
+    };
     use crate::sys;
 
     #[test]
     fn every_known_sdk_error_round_trips() {
-        let codes = [
-            sys::MV_E_HANDLE,
-            sys::MV_E_SUPPORT,
-            sys::MV_E_BUFOVER,
-            sys::MV_E_CALLORDER,
-            sys::MV_E_PARAMETER,
-            sys::MV_E_RESOURCE,
-            sys::MV_E_NODATA,
-            sys::MV_E_PRECONDITION,
-            sys::MV_E_VERSION,
-            sys::MV_E_NOENOUGH_BUF,
-            sys::MV_E_ABNORMAL_IMAGE,
-            sys::MV_E_LOAD_LIBRARY,
-            sys::MV_E_NOOUTBUF,
-            sys::MV_E_ENCRYPT,
-            sys::MV_E_OPENFILE,
-            sys::MV_E_BUF_IN_USE,
-            sys::MV_E_BUF_INVALID,
-            sys::MV_E_NOALIGN_BUF,
-            sys::MV_E_NOENOUGH_BUF_NUM,
-            sys::MV_E_PORT_IN_USE,
-            sys::MV_E_IMAGE_DECODEC,
-            sys::MV_E_UINT32_LIMIT,
-            sys::MV_E_IMAGE_HEIGHT,
-            sys::MV_E_NOENOUGH_DDR,
-            sys::MV_E_NOENOUGH_STREAM,
-            sys::MV_E_NORESPONSE,
-            sys::MV_E_UNKNOW,
-            sys::MV_E_GC_GENERIC,
-            sys::MV_E_GC_ARGUMENT,
-            sys::MV_E_GC_RANGE,
-            sys::MV_E_GC_PROPERTY,
-            sys::MV_E_GC_RUNTIME,
-            sys::MV_E_GC_LOGICAL,
-            sys::MV_E_GC_ACCESS,
-            sys::MV_E_GC_TIMEOUT,
-            sys::MV_E_GC_DYNAMICCAST,
-            sys::MV_E_GC_UNKNOW,
-            sys::MV_E_NOT_IMPLEMENTED,
-            sys::MV_E_INVALID_ADDRESS,
-            sys::MV_E_WRITE_PROTECT,
-            sys::MV_E_ACCESS_DENIED,
-            sys::MV_E_BUSY,
-            sys::MV_E_PACKET,
-            sys::MV_E_NETER,
-            sys::MV_E_SUPPORT_MODIFY_DEVICE_IP,
-            sys::MV_E_KEY_VERIFICATION,
-            sys::MV_E_IP_CONFLICT,
-            sys::MV_E_USB_READ,
-            sys::MV_E_USB_WRITE,
-            sys::MV_E_USB_DEVICE,
-            sys::MV_E_USB_GENICAM,
-            sys::MV_E_USB_BANDWIDTH,
-            sys::MV_E_USB_DRIVER,
-            sys::MV_E_USB_UNKNOW,
-            sys::MV_E_UPG_FILE_MISMATCH,
-            sys::MV_E_UPG_LANGUSGE_MISMATCH,
-            sys::MV_E_UPG_CONFLICT,
-            sys::MV_E_UPG_INNER_ERR,
-            sys::MV_E_UPG_UNKNOW,
-        ];
-
-        for code in codes {
+        for &code in KNOWN_SDK_ERROR_CODES {
             let error = MvsError::from(code);
             assert!(
                 !matches!(&error, MvsError::Unknown(_)),
@@ -664,9 +578,34 @@ mod tests {
         let code = 0xDEAD_BEEF;
         assert_eq!(MvsError::from(code).raw_code(), Some(code));
         assert_eq!(MvsError::UnsupportedPlatform.raw_code(), None);
+        assert_eq!(
+            MvsError::InvalidFrameBuffer { frame_len: 1 }.raw_code(),
+            None
+        );
     }
 
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn shutdown_unknown_state_describes_available_evidence() {
+        assert_eq!(
+            MvsError::SdkStateUnknown.to_string(),
+            "MVS SDK process state is unknown"
+        );
+        assert_eq!(
+            ShutdownError::StateUnknown {
+                finalize_code: None
+            }
+            .to_string(),
+            "MVS SDK process state is unknown"
+        );
+        assert_eq!(
+            ShutdownError::StateUnknown {
+                finalize_code: Some(sys::MV_E_RESOURCE)
+            }
+            .to_string(),
+            "MVS SDK state is unknown after finalization failed with 0x80000006"
+        );
+    }
+
     #[test]
     fn cleanup_error_preserves_order_and_selects_the_first_error() {
         let error = CleanupError::new(
@@ -688,6 +627,13 @@ mod tests {
             [Some(sys::MV_E_RESOURCE), Some(sys::MV_E_CALLORDER)]
         );
         assert!(error.native_handle_destroyed());
+        let source = std::error::Error::source(&error).expect("cleanup error has a source");
+        assert_eq!(
+            source
+                .downcast_ref::<MvsError>()
+                .and_then(MvsError::raw_code),
+            Some(sys::MV_E_RESOURCE)
+        );
         assert_eq!(
             error.into_first_error().raw_code(),
             Some(sys::MV_E_RESOURCE)

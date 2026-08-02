@@ -38,6 +38,7 @@ fn sdk_shutdown_contract(sdk: &Sdk) {
 // A guard supports a detached copy before its consuming, fallible release.
 fn frame_guard_ownership_contract(guard: FrameGuard<'_>) -> MvsResult<()> {
     let _: Frame<'_> = guard.frame();
+    let _: u64 = guard.info().frame_len();
     let _: OwnedFrame = guard.to_owned();
     guard.release()
 }

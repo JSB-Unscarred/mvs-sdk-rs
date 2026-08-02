@@ -3,14 +3,13 @@
 //! A [`Camera`] owns an SDK handle and all registered closure-based callbacks.
 //! Dropping it stops grabbing, closes the device, and destroys the handle
 //! (in that order). Parameter access uses the SDK's native string-keyed API
-//! verbatim: `cam.set_int("ExposureTime", 10000)?`.
+//! verbatim: `cam.set_int("Width", 640)?`.
 
 use std::ffi::CString;
 use std::os::raw::{c_char, c_float, c_int, c_void};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
-use crate::backend::AcquisitionState;
 use crate::camera::{
     EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
     ImageCallback as ImageCallbackFn,
@@ -23,6 +22,37 @@ use super::callback::{
     CallbackSlot, drop_callback_safely, event_trampoline, exception_trampoline, image_trampoline,
 };
 use super::{DeviceInfo, FrameGuard};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AcquisitionState {
+    Stopped,
+    Callback,
+    Polling,
+    Unknown,
+}
+
+impl AcquisitionState {
+    fn requires_stop(self) -> bool {
+        !matches!(self, Self::Stopped)
+    }
+
+    fn mode_name(self) -> Option<&'static str> {
+        match self {
+            Self::Callback => Some("Callback"),
+            Self::Polling => Some("Polling"),
+            Self::Stopped | Self::Unknown => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Stopped => "Stopped",
+            Self::Callback => "Callback",
+            Self::Polling => "Polling",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AccessMode
@@ -38,6 +68,13 @@ impl AccessMode {
             Self::ControlSwitchEnable => sys::MV_ACCESS_ControlSwitchEnable,
             Self::ControlSwitchEnableWithKey(_) => sys::MV_ACCESS_ControlSwitchEnableWithKey,
             Self::Monitor => sys::MV_ACCESS_Monitor,
+        }
+    }
+
+    pub(crate) const fn switchover_key(self) -> u16 {
+        match self {
+            Self::ControlSwitchEnableWithKey(key) => key,
+            _ => 0,
         }
     }
 }
@@ -63,6 +100,12 @@ struct CallbackRecord<C> {
     slot: Arc<CallbackSlot<C>>,
     native_slot: NativeCallbackSlot<C>,
     registration: RegistrationState,
+}
+
+#[derive(Clone, Copy)]
+enum CallbackDrain {
+    Blocking,
+    NonBlocking,
 }
 
 struct NativeCallbackSlot<C>(NonNull<CallbackSlot<C>>);
@@ -154,6 +197,17 @@ impl<C> CallbackRecord<C> {
             RegistrationState::Unknown
         };
         result
+    }
+}
+
+fn drain_callback<C>(record: &CallbackRecord<C>, mode: CallbackDrain) {
+    let callback = match mode {
+        CallbackDrain::Blocking if record.slot.is_current() => None,
+        CallbackDrain::Blocking => record.slot.take_callback(),
+        CallbackDrain::NonBlocking => record.slot.deactivate_nonblocking(),
+    };
+    if let Some(callback) = callback {
+        drop_callback_safely(callback);
     }
 }
 
@@ -265,8 +319,10 @@ fn native_open_device(
 }
 
 fn native_open_rollback_destroy_handle(_: &mut (), handle: *mut c_void) -> c_int {
-    // SAFETY: the caller supplies a handle returned by CreateHandle whose
-    // OpenDevice operation failed.
+    // SAFETY: open_with calls this only for a non-null value written by
+    // CreateHandle that has neither been transferred into Camera nor already
+    // destroyed. Official samples likewise destroy a non-null failure output,
+    // whether CreateHandle itself or the subsequent OpenDevice call failed.
     unsafe { sys::MV_CC_DestroyHandle(handle) }
 }
 
@@ -410,6 +466,21 @@ impl Camera {
         Self::open_with(device.raw(), mode, &OpenFns::NATIVE, &mut ())
     }
 
+    fn rollback_open<C>(
+        error: MvsError,
+        handle: NativeHandle,
+        fns: &OpenFns<C>,
+        context: &mut C,
+    ) -> MvsError {
+        match check((fns.destroy_handle)(context, handle.as_ptr())) {
+            Ok(()) => error,
+            Err(destroy) => MvsError::OpenRollback {
+                open: Box::new(error),
+                destroy: Box::new(destroy),
+            },
+        }
+    }
+
     fn open_with<C>(
         device: &sys::MV_CC_DEVICE_INFO,
         mode: AccessMode,
@@ -418,19 +489,19 @@ impl Camera {
     ) -> MvsResult<Self> {
         let mut handle: *mut c_void = std::ptr::null_mut();
 
-        let code = (fns.create_handle)(context, &mut handle, device);
-        check(code)?;
-        let handle = NativeHandle::new(handle).ok_or(MvsError::Handle)?;
+        let create_result = check((fns.create_handle)(context, &mut handle, device));
+        let handle = NativeHandle::new(handle);
+        if let Err(error) = create_result {
+            return Err(match handle {
+                Some(handle) => Self::rollback_open(error, handle, fns, context),
+                None => error,
+            });
+        }
+        let handle = handle.ok_or(MvsError::Handle)?;
 
         let code = (fns.open_device)(context, handle.as_ptr(), mode.raw(), mode.switchover_key());
         if let Err(error) = check(code) {
-            return match check((fns.destroy_handle)(context, handle.as_ptr())) {
-                Ok(()) => Err(error),
-                Err(destroy) => Err(MvsError::OpenRollback {
-                    open: Box::new(error),
-                    destroy: Box::new(destroy),
-                }),
-            };
+            return Err(Self::rollback_open(error, handle, fns, context));
         }
 
         Ok(Self {
@@ -569,7 +640,7 @@ impl Camera {
         // SAFETY: raw is zero-initialized and will be populated by the SDK.
         let code = unsafe { sys::MV_CC_GetImageBuffer(handle, &mut raw, timeout_ms) };
         check(code)?;
-        Ok(FrameGuard::new(handle, raw))
+        FrameGuard::new(handle, raw)
     }
 
     // ---- Callback registration ----
@@ -952,14 +1023,10 @@ impl Camera {
         // This prevents a busy callback from allowing another callback to
         // enter while cleanup is already under way.
         self.stop_accepting_callbacks();
-        if from_exception_callback {
-            // The current exception trampoline owns the closure mutex and a
-            // temporary Arc reference. Drain every other slot now; it will
-            // remove this closure and release the last Arc after it returns.
-            self.drain_callbacks_except_current_exception();
-        } else {
-            self.drain_callbacks();
-        }
+        // A current exception trampoline owns its closure mutex and a
+        // temporary Arc reference. The blocking drain skips that one slot;
+        // the trampoline removes its closure after it returns.
+        self.drain_callbacks(CallbackDrain::Blocking);
 
         let mut failures = Vec::new();
         let handle = self.handle.take().expect("handle checked above").as_ptr();
@@ -1045,64 +1112,21 @@ impl Camera {
         }
     }
 
-    fn drain_callbacks(&self) {
-        if let Some(record) = &self.image_cb
-            && let Some(callback) = record.slot.take_callback()
-        {
-            drop_callback_safely(callback);
+    fn drain_callbacks(&self, mode: CallbackDrain) {
+        if let Some(record) = &self.image_cb {
+            drain_callback(record, mode);
         }
-        if let Some(record) = &self.exception_cb
-            && let Some(callback) = record.slot.take_callback()
-        {
-            drop_callback_safely(callback);
+        if let Some(record) = &self.exception_cb {
+            drain_callback(record, mode);
         }
         for record in &self.event_cbs {
-            if let Some(callback) = record.callback.slot.take_callback() {
-                drop_callback_safely(callback);
-            }
-        }
-    }
-
-    fn drain_callbacks_except_current_exception(&self) {
-        if let Some(record) = &self.image_cb
-            && let Some(callback) = record.slot.take_callback()
-        {
-            drop_callback_safely(callback);
-        }
-        if let Some(record) = &self.exception_cb
-            && !record.slot.is_current()
-            && let Some(callback) = record.slot.take_callback()
-        {
-            drop_callback_safely(callback);
-        }
-        for record in &self.event_cbs {
-            if let Some(callback) = record.callback.slot.take_callback() {
-                drop_callback_safely(callback);
-            }
-        }
-    }
-
-    fn try_drain_callbacks(&self) {
-        if let Some(record) = &self.image_cb
-            && let Some(callback) = record.slot.deactivate_nonblocking()
-        {
-            drop_callback_safely(callback);
-        }
-        if let Some(record) = &self.exception_cb
-            && let Some(callback) = record.slot.deactivate_nonblocking()
-        {
-            drop_callback_safely(callback);
-        }
-        for record in &self.event_cbs {
-            if let Some(callback) = record.callback.slot.deactivate_nonblocking() {
-                drop_callback_safely(callback);
-            }
+            drain_callback(&record.callback, mode);
         }
     }
 
     fn abandon_from_restricted_callback_context(&mut self) -> Result<(), CleanupError> {
         self.stop_accepting_callbacks();
-        self.try_drain_callbacks();
+        self.drain_callbacks(CallbackDrain::NonBlocking);
 
         // Native teardown is not documented as safe from image/event callback
         // contexts. Leave the handle and every native-referenced allocation
@@ -1140,7 +1164,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use crate::backend::AcquisitionState;
     use crate::camera::{
         EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
         ImageCallback as ImageCallbackFn,
@@ -1149,9 +1172,10 @@ mod tests {
     use crate::{AccessMode, Frame, MvsError, sys};
 
     use super::{
-        AcquisitionFns, CallbackFns, CallbackRecord, CallbackSlot, Camera, CleanupFns, EventRecord,
-        NativeHandle, OpenFns, RegistrationState, bool_from_raw, drop_callback_safely,
-        enum_node_from_raw, float_node_from_raw, int_node_from_raw, string_from_raw,
+        AcquisitionFns, AcquisitionState, CallbackFns, CallbackRecord, CallbackSlot, Camera,
+        CleanupFns, EventRecord, NativeHandle, OpenFns, RegistrationState, bool_from_raw,
+        drop_callback_safely, enum_node_from_raw, float_node_from_raw, int_node_from_raw,
+        string_from_raw,
     };
 
     const FULL_CLEANUP_STEPS: [CleanupStep; 7] = [
@@ -1176,6 +1200,7 @@ mod tests {
         open_arguments: Vec<(u32, u16)>,
         results: VecDeque<c_int>,
         handle: *mut c_void,
+        write_handle_on_create_failure: bool,
     }
 
     impl FakeOpen {
@@ -1185,6 +1210,7 @@ mod tests {
                 open_arguments: Vec::new(),
                 results: results.into_iter().map(|result| result as c_int).collect(),
                 handle: ptr::NonNull::<u8>::dangling().as_ptr().cast(),
+                write_handle_on_create_failure: false,
             }
         }
 
@@ -1210,7 +1236,7 @@ mod tests {
         assert!(!handle.is_null());
         assert!(!device.is_null());
         let code = context.call(OpenCall::CreateHandle);
-        if code as u32 == sys::MV_OK {
+        if code as u32 == sys::MV_OK || context.write_handle_on_create_failure {
             // SAFETY: open_with passes writable local handle storage.
             unsafe { *handle = context.handle };
         }
@@ -1650,10 +1676,12 @@ mod tests {
             expected_calls: &'a [OpenCall],
             open_code: u32,
             rollback_code: Option<u32>,
+            write_handle_on_create_failure: bool,
         }
 
         let device = sys::MV_CC_DEVICE_INFO::default();
         let create = [OpenCall::CreateHandle];
+        let create_then_destroy = [OpenCall::CreateHandle, OpenCall::DestroyHandle];
         let open_then_destroy = [
             OpenCall::CreateHandle,
             OpenCall::OpenDevice,
@@ -1665,23 +1693,41 @@ mod tests {
                 expected_calls: &create,
                 open_code: sys::MV_E_RESOURCE,
                 rollback_code: None,
+                write_handle_on_create_failure: false,
+            },
+            Case {
+                results: &[sys::MV_E_RESOURCE, sys::MV_OK],
+                expected_calls: &create_then_destroy,
+                open_code: sys::MV_E_RESOURCE,
+                rollback_code: None,
+                write_handle_on_create_failure: true,
+            },
+            Case {
+                results: &[sys::MV_E_RESOURCE, sys::MV_E_HANDLE],
+                expected_calls: &create_then_destroy,
+                open_code: sys::MV_E_RESOURCE,
+                rollback_code: Some(sys::MV_E_HANDLE),
+                write_handle_on_create_failure: true,
             },
             Case {
                 results: &[sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_OK],
                 expected_calls: &open_then_destroy,
                 open_code: sys::MV_E_ACCESS_DENIED,
                 rollback_code: None,
+                write_handle_on_create_failure: false,
             },
             Case {
                 results: &[sys::MV_OK, sys::MV_E_ACCESS_DENIED, sys::MV_E_RESOURCE],
                 expected_calls: &open_then_destroy,
                 open_code: sys::MV_E_ACCESS_DENIED,
                 rollback_code: Some(sys::MV_E_RESOURCE),
+                write_handle_on_create_failure: false,
             },
         ];
 
         for case in cases {
             let mut context = FakeOpen::with_results(case.results.iter().copied());
+            context.write_handle_on_create_failure = case.write_handle_on_create_failure;
             let error =
                 Camera::open_with(&device, AccessMode::Exclusive, &FAKE_OPEN_FNS, &mut context)
                     .err()

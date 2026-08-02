@@ -1,6 +1,8 @@
 //! Platform-independent image frame views and ownership types.
 
 use std::fmt;
+use std::marker::PhantomData;
+use std::rc::Rc;
 
 use crate::backend;
 use crate::{MvsResult, PixelType};
@@ -12,7 +14,7 @@ pub struct FrameInfo {
     pub(crate) height: u32,
     pub(crate) pixel_type: PixelType,
     pub(crate) frame_num: u32,
-    pub(crate) frame_len: u32,
+    pub(crate) frame_len: u64,
     pub(crate) offset_x: u32,
     pub(crate) offset_y: u32,
     pub(crate) gain: f32,
@@ -45,7 +47,9 @@ impl FrameInfo {
     }
 
     /// Number of valid bytes in the image buffer.
-    pub fn frame_len(&self) -> u32 {
+    ///
+    /// Native frames use the SDK's extended 64-bit length when available.
+    pub fn frame_len(&self) -> u64 {
         self.frame_len
     }
 
@@ -130,8 +134,7 @@ impl<'a> Frame<'a> {
     /// Copy the pixels and metadata into SDK-independent storage.
     pub fn to_owned(&self) -> OwnedFrame {
         let mut info = self.info;
-        info.frame_len = u32::try_from(self.data.len())
-            .expect("frame data length originates from an SDK u32 field");
+        info.frame_len = self.data.len() as u64;
         OwnedFrame {
             data: self.data.to_vec(),
             info,
@@ -200,11 +203,15 @@ impl fmt::Debug for OwnedFrame {
 /// an error, so use [`FrameGuard::release`] when release failures matter.
 pub struct FrameGuard<'cam> {
     inner: backend::FrameGuard<'cam>,
+    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl<'cam> FrameGuard<'cam> {
     pub(crate) fn new(inner: backend::FrameGuard<'cam>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            _not_send_sync: PhantomData,
+        }
     }
 
     /// Borrow the guarded SDK buffer as a frame.
@@ -228,12 +235,6 @@ impl<'cam> FrameGuard<'cam> {
     /// retried because native ownership is uncertain.
     pub fn release(mut self) -> MvsResult<()> {
         self.inner.release()
-    }
-}
-
-impl Drop for FrameGuard<'_> {
-    fn drop(&mut self) {
-        let _ = self.inner.release();
     }
 }
 

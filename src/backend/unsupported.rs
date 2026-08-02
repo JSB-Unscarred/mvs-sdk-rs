@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 use std::net::Ipv4Addr;
 use std::os::raw::c_void;
-use std::rc::Rc;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
 use crate::error::CleanupError;
@@ -49,7 +48,7 @@ impl DeviceList {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub(crate) struct DeviceInfo;
 
 impl DeviceInfo {
@@ -236,7 +235,6 @@ impl Camera {
 pub(crate) struct FrameGuard<'cam> {
     info: FrameInfo,
     _marker: PhantomData<&'cam ()>,
-    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl FrameGuard<'_> {

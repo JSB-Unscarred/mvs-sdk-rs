@@ -3,8 +3,9 @@
 //! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate. This
 //! crate exposes one platform-independent API backed by the native SDK on
 //! Windows x86_64. On other targets, [`Sdk::init`] returns
-//! [`MvsError::UnsupportedPlatform`]. Windows applications need the MVS SDK,
-//! `MVCAM_COMMON_RUNENV`, and the SDK DLL directory on `PATH` at runtime.
+//! [`MvsError::UnsupportedPlatform`]. Building and linking Windows applications
+//! requires the MVS SDK and `MVCAM_COMMON_RUNENV`; at runtime, the SDK DLL
+//! directory must be discoverable by the Windows loader, typically via `PATH`.
 //!
 //! # Workflow
 //!

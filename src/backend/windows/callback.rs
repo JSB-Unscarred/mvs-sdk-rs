@@ -12,7 +12,7 @@ use crate::camera::{
 use crate::frame::Frame;
 use crate::sys;
 
-use super::frame::info_from_raw;
+use super::frame::{data_len_from_raw, info_from_raw};
 
 thread_local! {
     static ACTIVE_CALLBACK_SLOTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
@@ -156,10 +156,15 @@ pub(super) unsafe extern "C" fn image_trampoline(
             // slot has admitted this invocation under its mutex.
             let raw_info = &*info;
             let info = info_from_raw(raw_info);
-            let len = raw_info.nFrameLen as usize;
-            let bytes = if data.is_null() || len == 0 {
+            let Some(len) = data_len_from_raw(data, raw_info) else {
+                return;
+            };
+            let bytes = if len == 0 {
                 &[]
             } else {
+                // SAFETY: the SDK owns the image buffer for this callback.
+                // The shared validator rejected null, oversized, and wrapping
+                // ranges before constructing this borrowed slice.
                 slice::from_raw_parts(data, len)
             };
             let frame = Frame::from_parts(bytes, info);
@@ -320,14 +325,20 @@ fn catch_and_forget_panic(f: impl FnOnce()) {
 #[cfg(test)]
 mod tests {
     use std::os::raw::c_void;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use crate::camera::ExceptionCallback as ExceptionCallbackFn;
+    use crate::camera::{
+        ExceptionCallback as ExceptionCallbackFn, ImageCallback as ImageCallbackFn,
+    };
+    use crate::{PixelType, sys};
 
-    use super::{CallbackSlot, drop_callback_safely, exception_trampoline, log_callback_panic};
+    use super::{
+        CallbackSlot, drop_callback_safely, exception_trampoline, image_trampoline,
+        log_callback_panic,
+    };
 
     struct DropProbe(Arc<AtomicUsize>);
 
@@ -370,6 +381,80 @@ mod tests {
         fn deref(&self) -> &Self::Target {
             &self.slot
         }
+    }
+
+    #[test]
+    fn image_trampoline_uses_extended_frame_shape_and_length() {
+        let observed = Arc::new(Mutex::new(None));
+        let callback_observed = Arc::clone(&observed);
+        let slot = NativeSlot::<ImageCallbackFn>::new();
+        assert!(
+            slot.activate(Box::new(move |frame| {
+                let info = frame.info();
+                *callback_observed.lock().unwrap() = Some((
+                    frame.data().len(),
+                    info.width(),
+                    info.height(),
+                    info.frame_len(),
+                ));
+            }))
+            .is_none()
+        );
+
+        let mut data = [1_u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut info = sys::MV_FRAME_OUT_INFO_EX {
+            nWidth: 1,
+            nHeight: 1,
+            nFrameLen: 1,
+            nExtendWidth: 4,
+            nExtendHeight: 2,
+            nFrameLenEx: data.len() as u64,
+            enPixelType: PixelType::MONO8.raw() as i32,
+            ..Default::default()
+        };
+
+        // SAFETY: data, metadata, and the matching callback slot all remain
+        // live for the complete synchronous trampoline invocation.
+        unsafe { image_trampoline(data.as_mut_ptr(), &mut info, slot.user_data()) };
+
+        assert_eq!(*observed.lock().unwrap(), Some((8, 4, 2, 8)));
+        drop_callback_safely(slot.deactivate().expect("active callback"));
+    }
+
+    #[test]
+    fn image_trampoline_ignores_invalid_frame_buffers() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let slot = NativeSlot::<ImageCallbackFn>::new();
+        assert!(
+            slot.activate(Box::new(move |_| {
+                callback_calls.fetch_add(1, Ordering::Relaxed);
+            }))
+            .is_none()
+        );
+
+        let mut data = [0_u8; 1];
+        let mut info = sys::MV_FRAME_OUT_INFO_EX {
+            nFrameLenEx: 1,
+            ..Default::default()
+        };
+
+        // SAFETY: metadata and the callback slot remain live; the invalid data
+        // pointers exercise checks that run before any slice is constructed.
+        unsafe { image_trampoline(std::ptr::null_mut(), &mut info, slot.user_data()) };
+
+        info.nFrameLenEx = isize::MAX as u64 + 1;
+        // SAFETY: data, metadata, and the callback slot remain live; the
+        // oversized range is rejected before the data pointer is dereferenced.
+        unsafe { image_trampoline(data.as_mut_ptr(), &mut info, slot.user_data()) };
+
+        info.nFrameLenEx = 1;
+        // SAFETY: metadata and the callback slot remain live; the wrapping
+        // range is rejected before the synthetic data pointer is dereferenced.
+        unsafe { image_trampoline(usize::MAX as *mut u8, &mut info, slot.user_data()) };
+
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        drop_callback_safely(slot.deactivate().expect("active callback"));
     }
 
     #[test]

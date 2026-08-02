@@ -12,7 +12,7 @@ From the root of a repository checkout, maintainers can regenerate the Windows
 x64 bindings with the explicit maintenance script:
 
 ```powershell
-cargo install bindgen-cli --locked
+cargo install bindgen-cli --version 0.72.1 --locked
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\generate-bindings-windows-x64.ps1
 ```
 
@@ -20,4 +20,6 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\generate-binding
 system or user execution policy. The script requires Windows x64,
 LLVM/libclang, and the MVS SDK. It reads the SDK development directory from
 `MVCAM_COMMON_RUNENV` by default; pass `-SdkRoot <path>` to override it. The
-directory must contain `Includes/MvCameraControl.h`.
+directory must contain `Includes/MvCameraControl.h`. The pinned CLI version
+matches the generator recorded at the top of the committed bindings and avoids
+unrelated output churn during SDK updates.

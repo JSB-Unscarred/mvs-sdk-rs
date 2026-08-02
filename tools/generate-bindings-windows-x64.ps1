@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ExpectedBindgenVersion = "bindgen 0.72.1"
 
 if ($env:OS -ne "Windows_NT") {
     throw "This script only generates bindings for Windows x64."
@@ -34,13 +35,19 @@ $BindgenCommand = Get-Command bindgen -CommandType Application -ErrorAction Sile
 if ($null -eq $BindgenCommand) {
     throw @"
 bindgen was not found on PATH.
-Install the latest CLI with: cargo install bindgen-cli --locked
+Install the pinned CLI with: cargo install bindgen-cli --version 0.72.1 --locked
 "@
 }
 
 $BindgenVersion = (& $BindgenCommand.Source --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to query the bindgen version."
+}
+if ($BindgenVersion -ne $ExpectedBindgenVersion) {
+    throw @"
+Expected $ExpectedBindgenVersion, but found $BindgenVersion.
+Install the pinned CLI with: cargo install bindgen-cli --version 0.72.1 --locked
+"@
 }
 
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
