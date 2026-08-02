@@ -64,6 +64,13 @@ pub(crate) struct DeviceInfo {
     raw: Arc<sys::MV_CC_DEVICE_INFO>,
 }
 
+struct DeviceMetadata<'a> {
+    manufacturer: &'a [u8],
+    model: &'a [u8],
+    serial: &'a [u8],
+    user_defined_name: &'a [u8],
+}
+
 impl DeviceInfo {
     pub(crate) fn raw(&self) -> &sys::MV_CC_DEVICE_INFO {
         self.raw.as_ref()
@@ -83,52 +90,107 @@ impl DeviceInfo {
         self.raw.nTLayerType == sys::MV_USB_DEVICE || self.raw.nTLayerType == sys::MV_VIR_USB_DEVICE
     }
 
-    pub(crate) fn manufacturer(&self) -> String {
-        if self.is_gige() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stGigEInfo.chManufacturerName })
-        } else if self.is_usb() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stUsb3VInfo.chManufacturerName })
-        } else {
-            String::new()
+    fn metadata(&self) -> Option<DeviceMetadata<'_>> {
+        match self.raw.nTLayerType {
+            sys::MV_GIGE_DEVICE | sys::MV_VIR_GIGE_DEVICE | sys::MV_GENTL_GIGE_DEVICE => {
+                // SAFETY: these transport values select the GigE union arm.
+                let info = unsafe { &self.raw.SpecialInfo.stGigEInfo };
+                Some(DeviceMetadata {
+                    manufacturer: &info.chManufacturerName,
+                    model: &info.chModelName,
+                    serial: &info.chSerialNumber,
+                    user_defined_name: &info.chUserDefinedName,
+                })
+            }
+            sys::MV_USB_DEVICE | sys::MV_VIR_USB_DEVICE => {
+                // SAFETY: these transport values select the USB3 union arm.
+                let info = unsafe { &self.raw.SpecialInfo.stUsb3VInfo };
+                Some(DeviceMetadata {
+                    manufacturer: &info.chManufacturerName,
+                    model: &info.chModelName,
+                    serial: &info.chSerialNumber,
+                    user_defined_name: &info.chUserDefinedName,
+                })
+            }
+            sys::MV_CAMERALINK_DEVICE => {
+                // SAFETY: this transport value selects the native Camera Link
+                // union arm, which does not define a user-defined name.
+                let info = unsafe { &self.raw.SpecialInfo.stCamLInfo };
+                Some(DeviceMetadata {
+                    manufacturer: &info.chManufacturerName,
+                    model: &info.chModelName,
+                    serial: &info.chSerialNumber,
+                    user_defined_name: &[],
+                })
+            }
+            sys::MV_GENTL_CAMERALINK_DEVICE => {
+                // SAFETY: this transport value selects the GenTL Camera Link
+                // union arm.
+                let info = unsafe { &self.raw.SpecialInfo.stCMLInfo };
+                Some(DeviceMetadata {
+                    manufacturer: &info.chVendorName,
+                    model: &info.chModelName,
+                    serial: &info.chSerialNumber,
+                    user_defined_name: &info.chUserDefinedName,
+                })
+            }
+            sys::MV_GENTL_CXP_DEVICE => {
+                // SAFETY: this transport value selects the CoaXPress union arm.
+                let info = unsafe { &self.raw.SpecialInfo.stCXPInfo };
+                Some(DeviceMetadata {
+                    manufacturer: &info.chVendorName,
+                    model: &info.chModelName,
+                    serial: &info.chSerialNumber,
+                    user_defined_name: &info.chUserDefinedName,
+                })
+            }
+            sys::MV_GENTL_XOF_DEVICE => {
+                // SAFETY: this transport value selects the XoF union arm.
+                let info = unsafe { &self.raw.SpecialInfo.stXoFInfo };
+                Some(DeviceMetadata {
+                    manufacturer: &info.chVendorName,
+                    model: &info.chModelName,
+                    serial: &info.chSerialNumber,
+                    user_defined_name: &info.chUserDefinedName,
+                })
+            }
+            sys::MV_GENTL_VIR_DEVICE => {
+                // SAFETY: this transport value selects the GenTL virtual union
+                // arm.
+                let info = unsafe { &self.raw.SpecialInfo.stVirInfo };
+                Some(DeviceMetadata {
+                    manufacturer: &info.chVendorName,
+                    model: &info.chModelName,
+                    serial: &info.chSerialNumber,
+                    user_defined_name: &info.chUserDefinedName,
+                })
+            }
+            _ => None,
         }
+    }
+
+    pub(crate) fn manufacturer(&self) -> String {
+        self.metadata()
+            .map(|metadata| cstr_array_to_string(metadata.manufacturer))
+            .unwrap_or_default()
     }
 
     pub(crate) fn model(&self) -> String {
-        if self.is_gige() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stGigEInfo.chModelName })
-        } else if self.is_usb() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stUsb3VInfo.chModelName })
-        } else {
-            String::new()
-        }
+        self.metadata()
+            .map(|metadata| cstr_array_to_string(metadata.model))
+            .unwrap_or_default()
     }
 
     pub(crate) fn serial(&self) -> String {
-        if self.is_gige() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stGigEInfo.chSerialNumber })
-        } else if self.is_usb() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stUsb3VInfo.chSerialNumber })
-        } else {
-            String::new()
-        }
+        self.metadata()
+            .map(|metadata| cstr_array_to_string(metadata.serial))
+            .unwrap_or_default()
     }
 
     pub(crate) fn user_defined_name(&self) -> String {
-        if self.is_gige() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stGigEInfo.chUserDefinedName })
-        } else if self.is_usb() {
-            // SAFETY: the union arm is selected by nTLayerType.
-            cstr_array_to_string(unsafe { &self.raw.SpecialInfo.stUsb3VInfo.chUserDefinedName })
-        } else {
-            String::new()
-        }
+        self.metadata()
+            .map(|metadata| cstr_array_to_string(metadata.user_defined_name))
+            .unwrap_or_default()
     }
 
     pub(crate) fn ip(&self) -> Option<Ipv4Addr> {
@@ -177,6 +239,26 @@ mod tests {
 
     use super::{DeviceInfo, DeviceList, with_raw_device_list};
     use crate::{TransportLayer, sys};
+
+    fn c_string<const N: usize>(value: &str) -> [u8; N] {
+        assert!(value.len() < N);
+        let mut bytes = [0; N];
+        bytes[..value.len()].copy_from_slice(value.as_bytes());
+        bytes
+    }
+
+    fn assert_metadata(
+        info: &DeviceInfo,
+        manufacturer: &str,
+        model: &str,
+        serial: &str,
+        user_defined_name: &str,
+    ) {
+        assert_eq!(info.manufacturer(), manufacturer);
+        assert_eq!(info.model(), model);
+        assert_eq!(info.serial(), serial);
+        assert_eq!(info.user_defined_name(), user_defined_name);
+    }
 
     #[test]
     fn device_records_are_snapshotted_from_the_raw_list() {
@@ -227,13 +309,6 @@ mod tests {
 
     #[test]
     fn device_metadata_decodes_gige_and_usb_union_records() {
-        fn c_string<const N: usize>(value: &str) -> [u8; N] {
-            assert!(value.len() < N);
-            let mut bytes = [0; N];
-            bytes[..value.len()].copy_from_slice(value.as_bytes());
-            bytes
-        }
-
         let mut gige_record = sys::MV_CC_DEVICE_INFO {
             nTLayerType: sys::MV_GIGE_DEVICE,
             ..Default::default()
@@ -269,6 +344,14 @@ mod tests {
                 Some(Ipv4Addr::new(192, 168, 1, 10)),
             )
         );
+        for layer in [sys::MV_VIR_GIGE_DEVICE, sys::MV_GENTL_GIGE_DEVICE] {
+            let mut alias_record = gige_record;
+            alias_record.nTLayerType = layer;
+            let alias = DeviceInfo {
+                raw: Arc::new(alias_record),
+            };
+            assert_metadata(&alias, "Hikrobot", "GigE-42", "GE-0001", "line-a");
+        }
 
         let mut usb_record = sys::MV_CC_DEVICE_INFO {
             nTLayerType: sys::MV_USB_DEVICE,
@@ -303,5 +386,76 @@ mod tests {
                 None,
             )
         );
+        let mut virtual_usb_record = usb_record;
+        virtual_usb_record.nTLayerType = sys::MV_VIR_USB_DEVICE;
+        let virtual_usb = DeviceInfo {
+            raw: Arc::new(virtual_usb_record),
+        };
+        assert_metadata(&virtual_usb, "Vision USB", "USB-7", "USB-0002", "bench");
+    }
+
+    #[test]
+    fn device_metadata_decodes_camera_link_and_gentl_union_records() {
+        let mut camera_link_record = sys::MV_CC_DEVICE_INFO {
+            nTLayerType: sys::MV_CAMERALINK_DEVICE,
+            ..Default::default()
+        };
+        camera_link_record.SpecialInfo.stCamLInfo = sys::MV_CamL_DEV_INFO {
+            chManufacturerName: c_string("Camera Link Vendor"),
+            chModelName: c_string("CL-1"),
+            chSerialNumber: c_string("CL-0001"),
+            ..Default::default()
+        };
+        let camera_link = DeviceInfo {
+            raw: Arc::new(camera_link_record),
+        };
+        assert_metadata(&camera_link, "Camera Link Vendor", "CL-1", "CL-0001", "");
+
+        macro_rules! assert_gentl_metadata {
+            ($layer:expr, $field:ident, $info:ident) => {{
+                let mut record = sys::MV_CC_DEVICE_INFO {
+                    nTLayerType: $layer,
+                    ..Default::default()
+                };
+                record.SpecialInfo.$field = sys::$info {
+                    chVendorName: c_string("GenTL Vendor"),
+                    chModelName: c_string("GenTL Model"),
+                    chSerialNumber: c_string("GenTL Serial"),
+                    chUserDefinedName: c_string("GenTL User"),
+                    ..Default::default()
+                };
+                let info = DeviceInfo {
+                    raw: Arc::new(record),
+                };
+                assert_metadata(
+                    &info,
+                    "GenTL Vendor",
+                    "GenTL Model",
+                    "GenTL Serial",
+                    "GenTL User",
+                );
+            }};
+        }
+
+        assert_gentl_metadata!(
+            sys::MV_GENTL_CAMERALINK_DEVICE,
+            stCMLInfo,
+            MV_CML_DEVICE_INFO
+        );
+        assert_gentl_metadata!(sys::MV_GENTL_CXP_DEVICE, stCXPInfo, MV_CXP_DEVICE_INFO);
+        assert_gentl_metadata!(sys::MV_GENTL_XOF_DEVICE, stXoFInfo, MV_XOF_DEVICE_INFO);
+        assert_gentl_metadata!(
+            sys::MV_GENTL_VIR_DEVICE,
+            stVirInfo,
+            MV_GENTL_VIR_DEVICE_INFO
+        );
+
+        let ieee_1394 = DeviceInfo {
+            raw: Arc::new(sys::MV_CC_DEVICE_INFO {
+                nTLayerType: sys::MV_1394_DEVICE,
+                ..Default::default()
+            }),
+        };
+        assert_metadata(&ieee_1394, "", "", "", "");
     }
 }

@@ -11,7 +11,14 @@ license = "MIT"
 readme = "README.md"
 repository = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
 homepage = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
-exclude = ["tools/"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/examples/**",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+]
 
 keywords = ["mvs", "hikvision", "camera", "machine-vision", "ffi"]
 categories = ["api-bindings", "hardware-support"]

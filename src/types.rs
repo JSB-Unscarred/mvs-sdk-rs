@@ -4,6 +4,13 @@ use std::fmt;
 use std::ops::{BitOr, BitOrAssign};
 
 /// Device access mode passed to [`DeviceInfo::open`](crate::DeviceInfo::open).
+///
+/// The vendor SDK applies these modes differently by transport. The mode and
+/// switchover key are meaningful for native GigE devices, although current
+/// firmware may restrict the switchover variants. GenTL GigE devices accept
+/// only exclusive, control, or monitor access. USB3, Camera Link, CoaXPress,
+/// XoF, virtual GigE, and virtual USB devices ignore both parameters and open
+/// with control access.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum AccessMode {
     /// Exclusive control of the device.
@@ -74,6 +81,8 @@ impl TransportLayer {
     pub const UNKNOWN: Self = Self(0);
     /// GigE Vision devices.
     pub const GIGE: Self = Self(1);
+    /// IEEE 1394-a/b devices.
+    pub const IEEE_1394: Self = Self(2);
     /// USB3 Vision devices.
     pub const USB: Self = Self(4);
     /// Camera Link devices.
@@ -93,8 +102,21 @@ impl TransportLayer {
     /// Virtual devices exposed through GenTL.
     pub const GENTL_VIR: Self = Self(0x800);
 
-    /// Enumerate every type the SDK knows about.
-    pub const ALL: Self = Self(0xFFFF_FFFF);
+    /// Every transport-layer bit defined by the SDK header version used to
+    /// generate these bindings.
+    pub const ALL: Self = Self(
+        Self::GIGE.0
+            | Self::IEEE_1394.0
+            | Self::USB.0
+            | Self::CAMERALINK.0
+            | Self::VIR_GIGE.0
+            | Self::VIR_USB.0
+            | Self::GENTL_GIGE.0
+            | Self::GENTL_CAMERALINK.0
+            | Self::GENTL_CXP.0
+            | Self::GENTL_XOF.0
+            | Self::GENTL_VIR.0,
+    );
 
     /// Construct a transport-layer bit set from the SDK's raw mask.
     #[inline]
@@ -235,6 +257,7 @@ mod tests {
     fn transport_layer_values_match_the_native_sdk() {
         assert_eq!(TransportLayer::UNKNOWN.raw(), sys::MV_UNKNOW_DEVICE);
         assert_eq!(TransportLayer::GIGE.raw(), sys::MV_GIGE_DEVICE);
+        assert_eq!(TransportLayer::IEEE_1394.raw(), sys::MV_1394_DEVICE);
         assert_eq!(TransportLayer::USB.raw(), sys::MV_USB_DEVICE);
         assert_eq!(TransportLayer::CAMERALINK.raw(), sys::MV_CAMERALINK_DEVICE);
         assert_eq!(TransportLayer::VIR_GIGE.raw(), sys::MV_VIR_GIGE_DEVICE);
@@ -247,6 +270,20 @@ mod tests {
         assert_eq!(TransportLayer::GENTL_CXP.raw(), sys::MV_GENTL_CXP_DEVICE);
         assert_eq!(TransportLayer::GENTL_XOF.raw(), sys::MV_GENTL_XOF_DEVICE);
         assert_eq!(TransportLayer::GENTL_VIR.raw(), sys::MV_GENTL_VIR_DEVICE);
+        assert_eq!(
+            TransportLayer::ALL.raw(),
+            sys::MV_GIGE_DEVICE
+                | sys::MV_1394_DEVICE
+                | sys::MV_USB_DEVICE
+                | sys::MV_CAMERALINK_DEVICE
+                | sys::MV_VIR_GIGE_DEVICE
+                | sys::MV_VIR_USB_DEVICE
+                | sys::MV_GENTL_GIGE_DEVICE
+                | sys::MV_GENTL_CAMERALINK_DEVICE
+                | sys::MV_GENTL_CXP_DEVICE
+                | sys::MV_GENTL_XOF_DEVICE
+                | sys::MV_GENTL_VIR_DEVICE
+        );
     }
 
     #[test]

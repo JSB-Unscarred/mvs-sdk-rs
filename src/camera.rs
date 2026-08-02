@@ -28,6 +28,8 @@ pub(crate) type EventCallback = Box<dyn FnMut(&EventInfo<'_>) + Send + 'static>;
 /// external synchronization. Dropping it performs best-effort cleanup and
 /// discards cleanup failures. Prefer [`Camera::close`] to observe a failure,
 /// or [`Camera::close_detailed`] to inspect every failure.
+/// Callbacks in different slots may overlap and must not synchronously wait for
+/// one another; unregister and cleanup drain in-flight callbacks.
 ///
 pub struct Camera {
     inner: backend::Camera,
@@ -87,10 +89,12 @@ impl Camera {
 
     /// Start image acquisition in callback or polling mode.
     ///
-    /// An active image callback selects callback mode; otherwise polling mode
-    /// is selected. The mode remains fixed until [`Camera::stop_grabbing`]
-    /// succeeds. If start or stop fails, retry stop to reconcile the uncertain
-    /// acquisition state.
+    /// An active, natively registered image callback selects callback mode. If
+    /// no image callback is registered, polling mode is selected. A callback
+    /// disabled by panic must first be replaced or unregistered; otherwise this
+    /// method returns [`MvsError::CallOrder`]. The mode remains fixed until
+    /// [`Camera::stop_grabbing`] succeeds. If start or stop fails, retry stop to
+    /// reconcile the uncertain acquisition state.
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }

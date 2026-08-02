@@ -491,10 +491,17 @@ impl Camera {
     fn begin_grabbing(&self) -> MvsResult<(*mut c_void, AcquisitionState)> {
         self.reject_callback_context()?;
         let handle = self.handle_in_acquisition(AcquisitionState::Stopped)?;
-        let target = match self.image_cb.as_ref().map(|record| record.registration) {
-            Some(RegistrationState::Registered) => AcquisitionState::Callback,
-            Some(RegistrationState::Unknown) => return Err(MvsError::CallOrder),
-            Some(RegistrationState::Unregistered) | None => AcquisitionState::Polling,
+        let target = match self.image_cb.as_ref() {
+            Some(record)
+                if record.registration == RegistrationState::Registered && record.is_active() =>
+            {
+                AcquisitionState::Callback
+            }
+            Some(record) if record.registration == RegistrationState::Unregistered => {
+                AcquisitionState::Polling
+            }
+            Some(_) => return Err(MvsError::CallOrder),
+            None => AcquisitionState::Polling,
         };
         Ok((handle, target))
     }
@@ -1143,8 +1150,8 @@ mod tests {
 
     use super::{
         AcquisitionFns, CallbackFns, CallbackRecord, CallbackSlot, Camera, CleanupFns, EventRecord,
-        NativeHandle, OpenFns, RegistrationState, bool_from_raw, enum_node_from_raw,
-        float_node_from_raw, int_node_from_raw, string_from_raw,
+        NativeHandle, OpenFns, RegistrationState, bool_from_raw, drop_callback_safely,
+        enum_node_from_raw, float_node_from_raw, int_node_from_raw, string_from_raw,
     };
 
     const FULL_CLEANUP_STEPS: [CleanupStep; 7] = [
@@ -1797,6 +1804,29 @@ mod tests {
             Err(MvsError::CallOrder)
         ));
         assert_eq!(callbacks.image_calls.len(), 1);
+    }
+
+    #[test]
+    fn registered_but_disabled_image_callback_must_be_reconciled_before_restart() {
+        let mut camera = camera_with_handle(AcquisitionState::Stopped);
+        let mut callbacks = FakeCallbacks::default();
+        camera
+            .register_image_callback_with(image_callback(), &FAKE_CALLBACK_FNS, &mut callbacks)
+            .unwrap();
+
+        let record = camera.image_cb.as_ref().unwrap();
+        drop_callback_safely(record.slot.deactivate().unwrap());
+        assert_eq!(record.registration, RegistrationState::Registered);
+        assert!(!record.is_active());
+        assert!(matches!(camera.begin_grabbing(), Err(MvsError::CallOrder)));
+
+        camera
+            .register_image_callback_with(image_callback(), &FAKE_CALLBACK_FNS, &mut callbacks)
+            .unwrap();
+        assert_eq!(
+            camera.begin_grabbing().unwrap().1,
+            AcquisitionState::Callback
+        );
     }
 
     #[test]

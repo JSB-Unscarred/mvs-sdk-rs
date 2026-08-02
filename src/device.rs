@@ -99,21 +99,33 @@ impl DeviceInfo {
     }
 
     /// Return the manufacturer name, decoded lossily as UTF-8.
+    ///
+    /// Returns an empty string when the SDK's transport record does not expose
+    /// this field.
     pub fn manufacturer(&self) -> String {
         self.inner.manufacturer()
     }
 
     /// Return the model name, decoded lossily as UTF-8.
+    ///
+    /// Returns an empty string when the SDK's transport record does not expose
+    /// this field.
     pub fn model(&self) -> String {
         self.inner.model()
     }
 
     /// Return the serial number, decoded lossily as UTF-8.
+    ///
+    /// Returns an empty string when the SDK's transport record does not expose
+    /// this field.
     pub fn serial(&self) -> String {
         self.inner.serial()
     }
 
     /// Return the user-defined device name, decoded lossily as UTF-8.
+    ///
+    /// Returns an empty string when the SDK's transport record does not expose
+    /// this field, including native Camera Link device records.
     pub fn user_defined_name(&self) -> String {
         self.inner.user_defined_name()
     }
@@ -151,11 +163,15 @@ impl DeviceInfo {
     }
 
     /// Open this device with [`AccessMode::Exclusive`].
+    ///
+    /// See [`AccessMode`] for transport-specific behavior.
     pub fn open_exclusive(&self) -> MvsResult<Camera> {
         self.open(AccessMode::Exclusive)
     }
 
     /// Open this device with [`AccessMode::Control`].
+    ///
+    /// See [`AccessMode`] for transport-specific behavior.
     pub fn open_control(&self) -> MvsResult<Camera> {
         self.open(AccessMode::Control)
     }
