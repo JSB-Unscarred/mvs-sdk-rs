@@ -76,10 +76,10 @@ sdk.shutdown()?;
 
 ## 生命周期与安全语义
 
-- 图像 callback 模式与轮询模式互斥。切换模式时先停止采集，再注册、替换或注销图像回调，最后重新开始。
-- callback 由 SDK 线程调用，应尽快返回。`Frame` 和 `EventInfo` 只在当前调用中有效；跨线程或跨调用保存图像请先 `to_owned`。
+- 图像 callback 模式与轮询模式互斥。首次注册、注销或切换模式前需停止采集；callback 模式采集中可直接替换已注册的 Rust closure，不会再次调用 SDK。
+- callback 由 SDK 线程调用，应尽快返回。首次 panic 会被截获并停用该 closure，重新注册后恢复。`Frame` 和 `EventInfo` 只在当前调用中有效；跨线程或跨调用保存图像请先 `to_owned`。
 - 可同时持有的 `FrameGuard` 数量受 SDK 图像节点数限制。guard 存活时相机保持借用，不能停止或关闭。
-- 正常路径优先显式 `Camera::close`，以取得全部清理错误；`Drop` 只做忽略错误的兜底清理。
+- 正常路径优先显式 `Camera::close`；它返回首个清理错误，`close_detailed` 可取得完整报告，`Drop` 只做忽略错误的兜底清理。
 - 不要从同一相机的 image/event callback 内调用 `close`。断连 exception callback 的受支持重连路径见 `Camera::close` rustdoc。
 - `event_notification_off` 只关闭设备端通知；移除 Rust closure 仍需 `unregister_event_callback`。
 - `Camera` 是 `Send` 但不是 `Sync`；同一实例的并发访问需要外部同步。`FrameGuard` 既不是 `Send` 也不是 `Sync`。

@@ -4,10 +4,9 @@ use std::os::raw::c_void;
 use std::rc::Rc;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
+use crate::error::CleanupError;
 use crate::frame::{Frame, FrameInfo, FrameMetadata};
-use crate::{
-    AccessMode, CleanupError, EnumNode, FloatNode, IntNode, MvsError, MvsResult, TransportLayer,
-};
+use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult, TransportLayer};
 
 fn unsupported<T>() -> MvsResult<T> {
     Err(MvsError::UnsupportedPlatform)

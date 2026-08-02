@@ -260,6 +260,7 @@ unsafe fn invoke_slot<C>(user: *mut c_void, callback_name: &str, invoke: impl Fn
     // that payload may itself own and drop this Camera.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| invoke(function)));
     if let Err(panic_info) = result {
+        slot.stop_accepting();
         log_callback_panic(callback_name, panic_info);
     }
 
@@ -501,22 +502,40 @@ mod tests {
     #[test]
     fn callback_and_destructor_panics_are_contained() {
         let calls = Arc::new(AtomicUsize::new(0));
+        let callback_drops = Arc::new(AtomicUsize::new(0));
         let callback_calls = Arc::clone(&calls);
+        let callback_probe = DropProbe(Arc::clone(&callback_drops));
         let slot = NativeSlot::<ExceptionCallbackFn>::new();
         assert!(
             slot.activate(Box::new(move |_| {
-                if callback_calls.fetch_add(1, Ordering::Relaxed) == 0 {
-                    panic!("first call panics");
-                }
+                let _ = &callback_probe;
+                callback_calls.fetch_add(1, Ordering::Relaxed);
+                panic!("first call panics");
             }))
             .is_none()
         );
 
         // SAFETY: user points to the live matching slot.
         unsafe { exception_trampoline(1, slot.user_data()) };
-        // SAFETY: the first panic was contained and the slot is still live.
+        // SAFETY: the slot backing remains live, but the panicking closure has
+        // been disabled and removed.
         unsafe { exception_trampoline(2, slot.user_data()) };
-        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert_eq!(callback_drops.load(Ordering::Relaxed), 1);
+        assert!(!slot.is_active());
+        assert!(slot.deactivate().is_none());
+
+        let recovered_calls = Arc::new(AtomicUsize::new(0));
+        let recovered_callback_calls = Arc::clone(&recovered_calls);
+        assert!(
+            slot.activate(Box::new(move |_| {
+                recovered_callback_calls.fetch_add(1, Ordering::Relaxed);
+            }))
+            .is_none()
+        );
+        // SAFETY: reactivation installed a new closure in the same live slot.
+        unsafe { exception_trampoline(3, slot.user_data()) };
+        assert_eq!(recovered_calls.load(Ordering::Relaxed), 1);
         drop_callback_safely(slot.deactivate().expect("active callback"));
 
         let drops = Arc::new(AtomicUsize::new(0));

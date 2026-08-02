@@ -7,7 +7,6 @@
 use std::ffi::NulError;
 use std::fmt;
 use std::os::raw::c_int;
-use std::str::Utf8Error;
 
 use crate::sys;
 
@@ -78,10 +77,10 @@ impl std::error::Error for ShutdownError {
     }
 }
 
-/// One operation attempted while closing a camera.
+/// One internal operation attempted while closing a camera.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CleanupStep {
+pub(crate) enum CleanupStep {
     /// Drain Rust callbacks before native teardown.
     DrainCallbacks,
     /// Stop image acquisition when it may still be active.
@@ -112,14 +111,14 @@ impl fmt::Display for CleanupStep {
     }
 }
 
-/// One failed operation from a camera cleanup attempt.
+/// One failed internal operation from a camera cleanup attempt.
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct CleanupFailure {
+pub(crate) struct CleanupFailure {
     /// The cleanup operation that failed.
-    pub step: CleanupStep,
+    pub(crate) step: CleanupStep,
     /// The error returned by that operation.
-    pub error: MvsError,
+    pub(crate) error: MvsError,
 }
 
 impl fmt::Display for CleanupFailure {
@@ -134,16 +133,12 @@ impl std::error::Error for CleanupFailure {
     }
 }
 
-/// All failures observed while closing one camera.
+/// Errors returned by [`Camera::close_detailed`](crate::Camera::close_detailed).
 ///
 /// Cleanup normally continues after each failure so that handle destruction
-/// is attempted, and failures are retained in call order. An error therefore
-/// does not imply that the handle is still alive: destruction may have
-/// succeeded after an earlier step failed. Cleanup requested from within the
-/// same camera's image or event callback is the exception: it reports
-/// [`CleanupStep::DrainCallbacks`] and deliberately skips native teardown to
-/// avoid releasing data still borrowed by that callback. Exception callbacks
-/// use the SDK-supported `CloseDevice`/`DestroyHandle` reconnect path instead.
+/// is attempted, and errors are retained in call order. An error therefore
+/// does not imply that the native handle is still alive; use
+/// [`CleanupError::native_handle_destroyed`] when that distinction matters.
 #[derive(Debug)]
 pub struct CleanupError {
     failures: Vec<CleanupFailure>,
@@ -156,14 +151,22 @@ impl CleanupError {
         Self { failures }
     }
 
-    /// Return cleanup failures in the order the operations were attempted.
-    pub fn failures(&self) -> &[CleanupFailure] {
+    #[cfg(all(test, target_os = "windows", target_arch = "x86_64"))]
+    pub(crate) fn failures(&self) -> &[CleanupFailure] {
         &self.failures
     }
 
-    /// Consume this error and return its ordered failures.
-    pub fn into_failures(self) -> Vec<CleanupFailure> {
+    /// Return the non-empty cleanup errors in attempted call order.
+    pub fn errors(&self) -> impl ExactSizeIterator<Item = &MvsError> {
+        self.failures.iter().map(|failure| &failure.error)
+    }
+
+    pub(crate) fn into_first_error(self) -> MvsError {
         self.failures
+            .into_iter()
+            .next()
+            .expect("cleanup errors are never empty")
+            .error
     }
 
     /// Whether native handle destruction was confirmed despite the reported
@@ -394,9 +397,6 @@ pub enum MvsError {
     /// A Rust string passed to the C API contains an interior NUL byte.
     #[error("string contains interior NUL byte: {0}")]
     Nul(#[from] NulError),
-    /// Native data required strict UTF-8 decoding but was invalid.
-    #[error("SDK returned non-UTF-8 data: {0}")]
-    Utf8(#[from] Utf8Error),
 
     /// The native MVS SDK backend is unavailable on this target.
     #[error("MVS SDK is only available on Windows x86_64")]
@@ -487,7 +487,6 @@ impl MvsError {
             Self::UpgUnknown => sys::MV_E_UPG_UNKNOW,
             Self::Unknown(c) => *c,
             Self::Nul(_)
-            | Self::Utf8(_)
             | Self::UnsupportedPlatform
             | Self::SdkNotInitialized
             | Self::SdkFinalized
@@ -587,6 +586,8 @@ pub(crate) fn check(code: c_int) -> MvsResult<()> {
 #[cfg(test)]
 mod tests {
     use super::MvsError;
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    use super::{CleanupError, CleanupFailure, CleanupStep};
     use crate::sys;
 
     #[test]
@@ -668,5 +669,36 @@ mod tests {
         let code = 0xDEAD_BEEF;
         assert_eq!(MvsError::from(code).raw_code(), Some(code));
         assert_eq!(MvsError::UnsupportedPlatform.raw_code(), None);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn cleanup_error_preserves_order_and_selects_the_first_error() {
+        let error = CleanupError::new(vec![
+            CleanupFailure {
+                step: CleanupStep::StopGrabbing,
+                error: MvsError::Resource,
+            },
+            CleanupFailure {
+                step: CleanupStep::CloseDevice,
+                error: MvsError::CallOrder,
+            },
+        ]);
+
+        assert_eq!(
+            error.errors().map(MvsError::raw_code).collect::<Vec<_>>(),
+            [Some(sys::MV_E_RESOURCE), Some(sys::MV_E_CALLORDER)]
+        );
+        assert!(error.native_handle_destroyed());
+        assert_eq!(
+            error.into_first_error().raw_code(),
+            Some(sys::MV_E_RESOURCE)
+        );
+
+        let destroy_error = CleanupError::new(vec![CleanupFailure {
+            step: CleanupStep::DestroyHandle,
+            error: MvsError::Resource,
+        }]);
+        assert!(!destroy_error.native_handle_destroyed());
     }
 }

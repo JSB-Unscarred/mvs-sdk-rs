@@ -8,9 +8,8 @@
 
 use std::cell::Cell;
 
-use mvs_sdk_rs::{
-    Camera, CleanupError, EventInfo, Frame, FrameGuard, MvsResult, OwnedFrame, Sdk, ShutdownError,
-};
+use mvs_sdk_rs::error::CleanupError;
+use mvs_sdk_rs::{Camera, EventInfo, Frame, FrameGuard, MvsResult, OwnedFrame, Sdk, ShutdownError};
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 
 // SDK state may be shared, while a camera needs external synchronization.
@@ -23,9 +22,11 @@ assert_not_impl_any!(Camera: Sync);
 assert_not_impl_any!(FrameGuard<'static>: Send, Sync);
 assert_impl_all!(OwnedFrame: Send, Sync);
 
-// Explicit shutdown preserves cleanup failures that Drop cannot report.
+// Explicit close reports a simple error by default and preserves full cleanup
+// diagnostics through the opt-in API.
 fn camera_close_contract() {
-    let _: fn(Camera) -> Result<(), CleanupError> = Camera::close;
+    let _: fn(Camera) -> MvsResult<()> = Camera::close;
+    let _: fn(Camera) -> Result<(), CleanupError> = Camera::close_detailed;
 }
 
 fn sdk_shutdown_contract(sdk: &Sdk) {

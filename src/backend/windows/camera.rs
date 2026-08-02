@@ -14,12 +14,9 @@ use crate::camera::{
     EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
     ImageCallback as ImageCallbackFn,
 };
-use crate::error::check;
+use crate::error::{CleanupError, CleanupFailure, CleanupStep, check};
 use crate::sys;
-use crate::{
-    AccessMode, CleanupError, CleanupFailure, CleanupStep, EnumNode, FloatNode, IntNode, MvsError,
-    MvsResult,
-};
+use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult};
 
 use super::callback::{
     CallbackSlot, drop_callback_safely, event_trampoline, exception_trampoline, image_trampoline,
@@ -522,7 +519,16 @@ impl Camera {
         context: &mut C,
     ) -> MvsResult<()> {
         self.reject_callback_context()?;
-        let handle = self.handle_in_acquisition(AcquisitionState::Stopped)?;
+        let handle = self.normal_handle()?;
+        let replaces_registered = self
+            .image_cb
+            .as_ref()
+            .is_some_and(|record| record.registration == RegistrationState::Registered);
+        if self.acquisition != AcquisitionState::Stopped
+            && !(self.acquisition == AcquisitionState::Callback && replaces_registered)
+        {
+            return Err(MvsError::CallOrder);
+        }
 
         let record = self.image_cb.get_or_insert_with(CallbackRecord::new);
         if record.registration == RegistrationState::Unknown {
@@ -1019,11 +1025,7 @@ impl Camera {
             self.drain_callbacks();
         }
 
-        // Reserve before consuming the handle so recording an error cannot
-        // allocate between native calls. Normal cleanup has at most five
-        // non-event attempts, one uncertain event, and one attempt per active
-        // event; exception-context cleanup uses only two of these slots.
-        let mut failures = Vec::with_capacity(self.event_cbs.len().saturating_add(6));
+        let mut failures = Vec::new();
         let handle = self.handle.take().expect("handle checked above");
 
         // Normal cleanup tears down in reverse of open(). Inside an exception
@@ -1210,7 +1212,8 @@ mod tests {
         EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
         ImageCallback as ImageCallbackFn,
     };
-    use crate::{AccessMode, CleanupStep, Frame, MvsError, sys};
+    use crate::error::CleanupStep;
+    use crate::{AccessMode, Frame, MvsError, sys};
 
     use super::{
         AcquisitionFns, CallbackFns, CallbackRecord, CallbackSlot, Camera, CleanupFns, EventRecord,
@@ -1763,7 +1766,7 @@ mod tests {
     }
 
     #[test]
-    fn image_registration_selects_mode_and_is_immutable_while_grabbing() {
+    fn registered_image_callback_can_replace_closure_while_callback_grabbing() {
         let mut callbacks = FakeCallbacks::default();
         let old_drops = Arc::new(AtomicUsize::new(0));
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
@@ -1773,7 +1776,13 @@ mod tests {
             (handle, AcquisitionState::Polling)
         );
 
-        camera.image_cb = Some(active_record(probed_image_callback(Arc::clone(&old_drops))));
+        camera
+            .register_image_callback_with(
+                probed_image_callback(Arc::clone(&old_drops)),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            )
+            .unwrap();
         let old_user = camera.image_cb.as_ref().unwrap().user_data();
         assert_eq!(
             camera.begin_grabbing().unwrap(),
@@ -1784,14 +1793,22 @@ mod tests {
         camera.image_cb.as_mut().unwrap().registration = RegistrationState::Registered;
         camera.acquisition = AcquisitionState::Callback;
 
-        assert!(matches!(
-            camera.register_image_callback_with(
-                image_callback(),
+        let current_calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&current_calls);
+        camera
+            .register_image_callback_with(
+                Box::new(move |_| {
+                    callback_calls.fetch_add(1, Ordering::SeqCst);
+                }),
                 &FAKE_CALLBACK_FNS,
-                &mut callbacks
-            ),
-            Err(MvsError::CallOrder)
-        ));
+                &mut callbacks,
+            )
+            .unwrap();
+        assert_eq!(old_drops.load(Ordering::SeqCst), 1);
+        assert_eq!(callbacks.image_calls.len(), 1);
+        callbacks.invoke_image(0);
+        assert_eq!(current_calls.load(Ordering::SeqCst), 1);
+
         assert!(matches!(
             camera.unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks),
             Err(MvsError::CallOrder)
@@ -1799,10 +1816,36 @@ mod tests {
         let record = camera.image_cb.as_ref().unwrap();
         assert_eq!(record.user_data(), old_user);
         assert!(record.is_active());
-        assert_eq!(old_drops.load(Ordering::SeqCst), 0);
-        assert!(callbacks.image_calls.is_empty());
+        assert_eq!(callbacks.image_calls.len(), 1);
 
+        for acquisition in [AcquisitionState::Polling, AcquisitionState::Unknown] {
+            camera.acquisition = acquisition;
+            assert!(matches!(
+                camera.register_image_callback_with(
+                    image_callback(),
+                    &FAKE_CALLBACK_FNS,
+                    &mut callbacks,
+                ),
+                Err(MvsError::CallOrder)
+            ));
+            assert!(matches!(
+                camera.unregister_image_callback_with(&FAKE_CALLBACK_FNS, &mut callbacks),
+                Err(MvsError::CallOrder)
+            ));
+        }
+        assert_eq!(callbacks.image_calls.len(), 1);
+
+        camera.acquisition = AcquisitionState::Callback;
         camera.handle = None;
+        assert!(matches!(
+            camera.register_image_callback_with(
+                image_callback(),
+                &FAKE_CALLBACK_FNS,
+                &mut callbacks,
+            ),
+            Err(MvsError::CallOrder)
+        ));
+        assert_eq!(callbacks.image_calls.len(), 1);
     }
 
     #[test]
