@@ -5,7 +5,7 @@
 //!   2. Locate the MVS SDK via `MVCAM_COMMON_RUNENV` and emit link directives.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
@@ -36,10 +36,6 @@ fn main() {
         }
     };
 
-    configure_link(&mvcam, &target_arch);
-}
-
-fn configure_link(mvcam: &Path, _target_arch: &str) {
     let lib_dir = mvcam.join("Libraries").join("win64");
 
     if !lib_dir.exists() {

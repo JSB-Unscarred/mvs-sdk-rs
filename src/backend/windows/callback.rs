@@ -12,7 +12,7 @@ use crate::camera::{
 use crate::frame::Frame;
 use crate::sys;
 
-use super::frame::metadata_from_raw;
+use super::frame::info_from_raw;
 
 thread_local! {
     static ACTIVE_CALLBACK_SLOTS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
@@ -155,14 +155,14 @@ pub(super) unsafe extern "C" fn image_trampoline(
             // Native frame pointers are intentionally not read until the
             // slot has admitted this invocation under its mutex.
             let raw_info = &*info;
-            let metadata = metadata_from_raw(raw_info);
+            let info = info_from_raw(raw_info);
             let len = raw_info.nFrameLen as usize;
             let bytes = if data.is_null() || len == 0 {
                 &[]
             } else {
                 slice::from_raw_parts(data, len)
             };
-            let frame = Frame::from_parts(bytes, &metadata);
+            let frame = Frame::from_parts(bytes, info);
             (function)(&frame);
         });
     }

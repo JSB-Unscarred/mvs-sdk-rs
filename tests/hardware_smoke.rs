@@ -82,6 +82,8 @@ fn real_enumeration_nodes_buffers_callbacks_and_shutdown() -> Result<(), Box<dyn
 
     // This is a per-handle stream-buffer setting used only to establish the
     // two-buffer precondition. The safe acquisition API remains under test.
+    // SAFETY: `camera` owns a live handle, acquisition is stopped, and this
+    // call only configures that handle's stream-buffer count for the test.
     let code = unsafe { mvs_sdk_sys::MV_CC_SetImageNodeNum(camera.as_raw_handle(), 2) };
     check_native(code)?;
 
@@ -109,8 +111,8 @@ fn real_enumeration_nodes_buffers_callbacks_and_shutdown() -> Result<(), Box<dyn
     })?;
     camera.start_grabbing()?;
     let owned = frame_rx.recv_timeout(Duration::from_secs(3))?;
-    assert!(!owned.data.is_empty());
-    assert_eq!(owned.data.len(), owned.info().frame_len() as usize);
+    assert!(!owned.data().is_empty());
+    assert_eq!(owned.data().len(), owned.info().frame_len() as usize);
     camera.stop_grabbing()?;
     camera.unregister_image_callback()?;
     camera.close()?;

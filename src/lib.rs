@@ -57,7 +57,7 @@ mod types;
 pub use callback::EventInfo;
 pub use camera::Camera;
 pub use device::{DeviceInfo, DeviceIter, DeviceList};
-pub use error::{MvsError, MvsResult, ShutdownError};
+pub use error::{CleanupError, MvsError, MvsResult, ShutdownError};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
 pub use types::{AccessMode, EnumNode, FloatNode, IntNode, PixelType, TransportLayer};

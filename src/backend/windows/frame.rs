@@ -3,24 +3,24 @@ use std::os::raw::c_void;
 use std::slice;
 
 use crate::error::check;
-use crate::frame::{Frame, FrameInfo, FrameMetadata};
+use crate::frame::{Frame, FrameInfo};
 use crate::sys;
 use crate::{MvsResult, PixelType};
 
 pub(crate) struct FrameGuard<'cam> {
     raw: sys::MV_FRAME_OUT,
     handle: *mut c_void,
-    metadata: FrameMetadata,
+    info: FrameInfo,
     _marker: PhantomData<&'cam ()>,
 }
 
 impl<'cam> FrameGuard<'cam> {
     pub(crate) fn new(handle: *mut c_void, raw: sys::MV_FRAME_OUT) -> Self {
-        let metadata = metadata_from_raw(&raw.stFrameInfo);
+        let info = info_from_raw(&raw.stFrameInfo);
         Self {
             raw,
             handle,
-            metadata,
+            info,
             _marker: PhantomData,
         }
     }
@@ -33,11 +33,11 @@ impl<'cam> FrameGuard<'cam> {
             // SAFETY: the SDK buffer remains valid until this guard releases it.
             unsafe { slice::from_raw_parts(self.raw.pBufAddr, len) }
         };
-        Frame::from_parts(data, &self.metadata)
+        Frame::from_parts(data, self.info)
     }
 
     pub(crate) fn info(&self) -> FrameInfo {
-        FrameInfo::from_metadata(&self.metadata)
+        self.info
     }
 
     pub(crate) fn release(&mut self) -> MvsResult<()> {
@@ -63,8 +63,8 @@ impl<'cam> FrameGuard<'cam> {
     }
 }
 
-pub(super) fn metadata_from_raw(raw: &sys::MV_FRAME_OUT_INFO_EX) -> FrameMetadata {
-    FrameMetadata {
+pub(super) fn info_from_raw(raw: &sys::MV_FRAME_OUT_INFO_EX) -> FrameInfo {
+    FrameInfo {
         width: raw.nWidth as u32,
         height: raw.nHeight as u32,
         pixel_type: PixelType::from_raw(raw.enPixelType as u32),
@@ -90,23 +90,27 @@ mod tests {
     use super::FrameGuard;
 
     fn raw_frame(data: &mut [u8], frame_num: u32) -> sys::MV_FRAME_OUT {
-        let mut raw = sys::MV_FRAME_OUT::default();
-        raw.pBufAddr = data.as_mut_ptr();
-        raw.stFrameInfo.nWidth = 4;
-        raw.stFrameInfo.nHeight = 2;
-        raw.stFrameInfo.enPixelType = PixelType::MONO8.raw() as i32;
-        raw.stFrameInfo.nFrameNum = frame_num;
-        raw.stFrameInfo.nFrameLen = data.len() as u32;
-        raw.stFrameInfo.nOffsetX = 3;
-        raw.stFrameInfo.nOffsetY = 5;
-        raw.stFrameInfo.fGain = 1.25;
-        raw.stFrameInfo.fExposureTime = 200.5;
-        raw.stFrameInfo.nTriggerIndex = 7;
-        raw.stFrameInfo.nLostPacket = 9;
-        raw.stFrameInfo.nDevTimeStampHigh = 0x0123_4567;
-        raw.stFrameInfo.nDevTimeStampLow = 0x89AB_CDEF;
-        raw.stFrameInfo.nHostTimeStamp = 42;
-        raw
+        sys::MV_FRAME_OUT {
+            pBufAddr: data.as_mut_ptr(),
+            stFrameInfo: sys::MV_FRAME_OUT_INFO_EX {
+                nWidth: 4,
+                nHeight: 2,
+                enPixelType: PixelType::MONO8.raw() as i32,
+                nFrameNum: frame_num,
+                nFrameLen: data.len() as u32,
+                nOffsetX: 3,
+                nOffsetY: 5,
+                fGain: 1.25,
+                fExposureTime: 200.5,
+                nTriggerIndex: 7,
+                nLostPacket: 9,
+                nDevTimeStampHigh: 0x0123_4567,
+                nDevTimeStampLow: 0x89AB_CDEF,
+                nHostTimeStamp: 42,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
     }
 
     #[test]

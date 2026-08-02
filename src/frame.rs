@@ -1,13 +1,13 @@
 //! Platform-independent image frame views and ownership types.
 
 use std::fmt;
-use std::time::Duration;
 
 use crate::backend;
 use crate::{MvsResult, PixelType};
 
+/// Metadata for an image frame.
 #[derive(Copy, Clone)]
-pub(crate) struct FrameMetadata {
+pub struct FrameInfo {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) pixel_type: PixelType,
@@ -23,86 +23,73 @@ pub(crate) struct FrameMetadata {
     pub(crate) host_timestamp_raw: i64,
 }
 
-/// Metadata for an image frame.
-#[derive(Copy, Clone)]
-pub struct FrameInfo(FrameMetadata);
-
 impl FrameInfo {
-    pub(crate) fn from_metadata(metadata: &FrameMetadata) -> Self {
-        Self(*metadata)
-    }
-
     /// Image width in pixels.
     pub fn width(&self) -> u32 {
-        self.0.width
+        self.width
     }
 
     /// Image height in pixels.
     pub fn height(&self) -> u32 {
-        self.0.height
+        self.height
     }
 
     /// Pixel format reported by the SDK.
     pub fn pixel_type(&self) -> PixelType {
-        self.0.pixel_type
+        self.pixel_type
     }
 
     /// Device frame sequence number.
     pub fn frame_num(&self) -> u32 {
-        self.0.frame_num
+        self.frame_num
     }
 
     /// Number of valid bytes in the image buffer.
     pub fn frame_len(&self) -> u32 {
-        self.0.frame_len
+        self.frame_len
     }
 
     /// Horizontal image-region offset in pixels.
     pub fn offset_x(&self) -> u32 {
-        self.0.offset_x
+        self.offset_x
     }
 
     /// Vertical image-region offset in pixels.
     pub fn offset_y(&self) -> u32 {
-        self.0.offset_y
+        self.offset_y
     }
 
     /// Gain recorded in the frame metadata.
     pub fn gain(&self) -> f32 {
-        self.0.gain
+        self.gain
     }
 
     /// Exposure time recorded in the frame metadata.
     pub fn exposure_time(&self) -> f32 {
-        self.0.exposure_time
+        self.exposure_time
     }
 
     /// Trigger sequence index reported by the device.
     pub fn trigger_index(&self) -> u32 {
-        self.0.trigger_index
+        self.trigger_index
     }
 
     /// Number of lost packets reported for this frame.
     pub fn lost_packets(&self) -> u32 {
-        self.0.lost_packets
+        self.lost_packets
     }
 
     /// Device timestamp assembled from the SDK's high and low words.
     pub fn device_timestamp(&self) -> u64 {
-        self.0.device_timestamp
+        self.device_timestamp
     }
 
     /// Raw signed host timestamp returned by the SDK.
-    pub fn host_timestamp_raw(&self) -> i64 {
-        self.0.host_timestamp_raw
-    }
-
-    /// Host timestamp converted from 100 ns ticks to a [`Duration`].
     ///
-    /// Negative values are clamped to zero and overflow saturates.
-    pub fn host_timestamp(&self) -> Duration {
-        let ticks = self.0.host_timestamp_raw.max(0) as u64;
-        Duration::from_nanos(ticks.saturating_mul(100))
+    /// The installed SDK headers do not define this value's unit, so the
+    /// wrapper intentionally leaves interpretation to the application.
+    pub fn host_timestamp_raw(&self) -> i64 {
+        self.host_timestamp_raw
     }
 }
 
@@ -126,11 +113,8 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    pub(crate) fn from_parts(data: &'a [u8], metadata: &FrameMetadata) -> Self {
-        Self {
-            data,
-            info: FrameInfo::from_metadata(metadata),
-        }
+    pub(crate) fn from_parts(data: &'a [u8], info: FrameInfo) -> Self {
+        Self { data, info }
     }
 
     /// Borrow the valid pixel bytes for this frame.
@@ -145,9 +129,12 @@ impl<'a> Frame<'a> {
 
     /// Copy the pixels and metadata into SDK-independent storage.
     pub fn to_owned(&self) -> OwnedFrame {
+        let mut info = self.info;
+        info.frame_len = u32::try_from(self.data.len())
+            .expect("frame data length originates from an SDK u32 field");
         OwnedFrame {
             data: self.data.to_vec(),
-            info: self.info.0,
+            info,
         }
     }
 }
@@ -164,20 +151,35 @@ impl fmt::Debug for Frame<'_> {
 /// An owned image frame, independent of any SDK buffer.
 #[derive(Clone)]
 pub struct OwnedFrame {
-    /// Raw pixel bytes in the format indicated by [`FrameInfo::pixel_type`].
-    pub data: Vec<u8>,
-    info: FrameMetadata,
+    data: Vec<u8>,
+    info: FrameInfo,
 }
 
 impl OwnedFrame {
+    /// Borrow the owned pixel bytes in the format indicated by
+    /// [`FrameInfo::pixel_type`].
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Mutably borrow the owned pixel bytes without changing their length.
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+
+    /// Consume the frame and return its pixel allocation.
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
+    }
+
     /// Return a copy of the owned frame's metadata.
     pub fn info(&self) -> FrameInfo {
-        FrameInfo::from_metadata(&self.info)
+        self.info
     }
 
     /// Borrow this owned allocation as a [`Frame`].
     pub fn as_frame(&self) -> Frame<'_> {
-        Frame::from_parts(&self.data, &self.info)
+        Frame::from_parts(&self.data, self.info)
     }
 }
 
@@ -237,36 +239,56 @@ impl Drop for FrameGuard<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use super::{FrameInfo, FrameMetadata};
+    use super::{Frame, FrameInfo};
     use crate::PixelType;
 
     #[test]
     fn frame_info_owns_its_metadata_snapshot() {
-        let info = {
-            let metadata = FrameMetadata {
-                width: 640,
-                height: 480,
-                pixel_type: PixelType::MONO8,
-                frame_num: 42,
-                frame_len: 307_200,
-                offset_x: 3,
-                offset_y: 4,
-                gain: 1.5,
-                exposure_time: 250.0,
-                trigger_index: 7,
-                lost_packets: 2,
-                device_timestamp: 99,
-                host_timestamp_raw: 123,
-            };
-            FrameInfo::from_metadata(&metadata)
+        let info = FrameInfo {
+            width: 640,
+            height: 480,
+            pixel_type: PixelType::MONO8,
+            frame_num: 42,
+            frame_len: 307_200,
+            offset_x: 3,
+            offset_y: 4,
+            gain: 1.5,
+            exposure_time: 250.0,
+            trigger_index: 7,
+            lost_packets: 2,
+            device_timestamp: 99,
+            host_timestamp_raw: 123,
         };
 
         assert_eq!(info.width(), 640);
         assert_eq!(info.height(), 480);
         assert_eq!(info.pixel_type(), PixelType::MONO8);
         assert_eq!(info.frame_num(), 42);
-        assert_eq!(info.host_timestamp(), Duration::from_nanos(12_300));
+        assert_eq!(info.host_timestamp_raw(), 123);
+    }
+
+    #[test]
+    fn owned_frame_keeps_data_length_and_metadata_consistent() {
+        let info = FrameInfo {
+            width: 2,
+            height: 1,
+            pixel_type: PixelType::MONO8,
+            frame_num: 1,
+            frame_len: 99,
+            offset_x: 0,
+            offset_y: 0,
+            gain: 0.0,
+            exposure_time: 0.0,
+            trigger_index: 0,
+            lost_packets: 0,
+            device_timestamp: 0,
+            host_timestamp_raw: 0,
+        };
+
+        let mut owned = Frame::from_parts(&[1, 2], info).to_owned();
+        assert_eq!(owned.info().frame_len(), 2);
+        owned.data_mut()[1] = 3;
+        assert_eq!(owned.as_frame().data(), [1, 3]);
+        assert_eq!(owned.into_data(), [1, 3]);
     }
 }

@@ -1,5 +1,6 @@
 //! SDK lifetime, process-wide initialization, and native-resource tracking.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard};
 
 use crate::backend;
@@ -14,14 +15,14 @@ fn process() -> &'static ProcessRuntime {
 
 struct ProcessRuntime {
     state: RwLock<ProcessState>,
-    resources: OnceLock<Arc<ResourceLedger>>,
+    resources: Arc<ResourceLedger>,
 }
 
 impl ProcessRuntime {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             state: RwLock::new(ProcessState::Uninitialized),
-            resources: OnceLock::new(),
+            resources: Arc::new(ResourceLedger::default()),
         }
     }
 }
@@ -81,11 +82,7 @@ impl Sdk {
             ProcessState::Uninitialized => {}
         }
 
-        let resources = Arc::clone(
-            runtime
-                .resources
-                .get_or_init(|| Arc::new(ResourceLedger::default())),
-        );
+        let resources = Arc::clone(&runtime.resources);
         let (inner, sdk_version) = initialize()?;
         let sdk = Arc::new(Self {
             inner,
@@ -152,14 +149,9 @@ impl Sdk {
                 orphaned_handles: resources.orphaned_handles,
             });
         }
-        if resources.opening_cameras != 0
-            || resources.live_cameras != 0
-            || resources.active_callbacks != 0
-        {
+        if resources.live_cameras != 0 || resources.active_callbacks != 0 {
             return Err(ShutdownError::InUse {
-                live_cameras: resources
-                    .live_cameras
-                    .saturating_add(resources.opening_cameras),
+                live_cameras: resources.live_cameras,
                 active_callbacks: resources.active_callbacks,
             });
         }
@@ -217,10 +209,6 @@ impl Sdk {
     pub(crate) fn active() -> MvsResult<ActiveSdk> {
         ActiveSdk::acquire()
     }
-
-    pub(crate) fn begin_camera_open(&self) -> PendingCameraLease {
-        PendingCameraLease::new(Arc::clone(&self.resources))
-    }
 }
 
 pub(crate) struct ActiveSdk {
@@ -243,8 +231,8 @@ impl ActiveSdk {
         Ok(Self { sdk, state })
     }
 
-    pub(crate) fn sdk(&self) -> &Arc<Sdk> {
-        &self.sdk
+    pub(crate) fn begin_camera_open(&self) -> PendingCameraLease {
+        PendingCameraLease::new(Arc::clone(&self.sdk.resources))
     }
 }
 
@@ -257,19 +245,17 @@ pub(crate) struct OperationPermit {
 #[derive(Default)]
 pub(crate) struct ResourceLedger {
     counts: Mutex<ResourceCounts>,
+    active_callbacks: AtomicUsize,
 }
 
 #[derive(Default)]
 struct ResourceCounts {
-    opening_cameras: usize,
     live_cameras: usize,
-    active_callbacks: usize,
     orphaned_handles: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ResourceSnapshot {
-    pub(crate) opening_cameras: usize,
     pub(crate) live_cameras: usize,
     pub(crate) active_callbacks: usize,
     pub(crate) orphaned_handles: usize,
@@ -286,16 +272,15 @@ impl ResourceLedger {
 
     fn snapshot(&self) -> ResourceSnapshot {
         self.with_counts(|counts| ResourceSnapshot {
-            opening_cameras: counts.opening_cameras,
             live_cameras: counts.live_cameras,
-            active_callbacks: counts.active_callbacks,
+            active_callbacks: self.active_callbacks.load(Ordering::Acquire),
             orphaned_handles: counts.orphaned_handles,
         })
     }
 
     #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
     fn enter_callback(self: &Arc<Self>) -> CallbackGuard {
-        self.with_counts(|counts| counts.active_callbacks += 1);
+        self.active_callbacks.fetch_add(1, Ordering::AcqRel);
         CallbackGuard {
             ledger: Arc::clone(self),
         }
@@ -303,11 +288,8 @@ impl ResourceLedger {
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-pub(crate) fn enter_callback() -> Option<CallbackGuard> {
-    process()
-        .resources
-        .get()
-        .map(ResourceLedger::enter_callback)
+pub(crate) fn enter_callback() -> CallbackGuard {
+    process().resources.enter_callback()
 }
 
 pub(crate) struct PendingCameraLease {
@@ -316,7 +298,6 @@ pub(crate) struct PendingCameraLease {
 
 impl PendingCameraLease {
     fn new(ledger: Arc<ResourceLedger>) -> Self {
-        ledger.with_counts(|counts| counts.opening_cameras += 1);
         Self {
             ledger: Some(ledger),
         }
@@ -324,10 +305,7 @@ impl PendingCameraLease {
 
     pub(crate) fn opened(mut self) -> CameraLease {
         let ledger = self.ledger.take().expect("pending lease already settled");
-        ledger.with_counts(|counts| {
-            counts.opening_cameras = counts.opening_cameras.saturating_sub(1);
-            counts.live_cameras += 1;
-        });
+        ledger.with_counts(|counts| counts.live_cameras += 1);
         CameraLease {
             ledger: Some(ledger),
         }
@@ -335,22 +313,16 @@ impl PendingCameraLease {
 
     pub(crate) fn failed(mut self, orphaned: bool) {
         let ledger = self.ledger.take().expect("pending lease already settled");
-        ledger.with_counts(|counts| {
-            counts.opening_cameras = counts.opening_cameras.saturating_sub(1);
-            if orphaned {
-                counts.orphaned_handles += 1;
-            }
-        });
+        if orphaned {
+            ledger.with_counts(|counts| counts.orphaned_handles += 1);
+        }
     }
 }
 
 impl Drop for PendingCameraLease {
     fn drop(&mut self) {
         if let Some(ledger) = self.ledger.take() {
-            ledger.with_counts(|counts| {
-                counts.opening_cameras = counts.opening_cameras.saturating_sub(1);
-                counts.orphaned_handles += 1;
-            });
+            ledger.with_counts(|counts| counts.orphaned_handles += 1);
         }
     }
 }
@@ -386,9 +358,8 @@ pub(crate) struct CallbackGuard {
 #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
 impl Drop for CallbackGuard {
     fn drop(&mut self) {
-        self.ledger.with_counts(|counts| {
-            counts.active_callbacks = counts.active_callbacks.saturating_sub(1);
-        });
+        let previous = self.ledger.active_callbacks.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "callback activity count underflowed");
     }
 }
 
@@ -403,7 +374,7 @@ mod tests {
     fn camera_and_callback_leases_update_one_shared_ledger() {
         let ledger = Arc::new(ResourceLedger::default());
         let pending = super::PendingCameraLease::new(Arc::clone(&ledger));
-        assert_eq!(ledger.snapshot().opening_cameras, 1);
+        assert_eq!(ledger.snapshot(), Default::default());
 
         let mut camera = pending.opened();
         let callback = ledger.enter_callback();
@@ -420,6 +391,14 @@ mod tests {
         let ledger = Arc::new(ResourceLedger::default());
         let camera = super::PendingCameraLease::new(Arc::clone(&ledger)).opened();
         drop(camera);
+        assert_eq!(ledger.snapshot().orphaned_handles, 1);
+    }
+
+    #[test]
+    fn abandoned_camera_open_becomes_an_orphan() {
+        let ledger = Arc::new(ResourceLedger::default());
+        let pending = super::PendingCameraLease::new(Arc::clone(&ledger));
+        drop(pending);
         assert_eq!(ledger.snapshot().orphaned_handles, 1);
     }
 
@@ -442,7 +421,7 @@ mod tests {
     fn live_camera_blocks_shutdown_then_shutdown_is_idempotent() {
         let runtime = ProcessRuntime::new();
         let sdk = Sdk::init_with(&runtime, || Ok((backend::Sdk::test_instance(), 1))).unwrap();
-        let mut camera = sdk.begin_camera_open().opened();
+        let mut camera = super::PendingCameraLease::new(Arc::clone(&sdk.resources)).opened();
         let callback = sdk.resources.enter_callback();
         let finalizations = AtomicUsize::new(0);
 

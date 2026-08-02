@@ -16,10 +16,20 @@ pub enum AccessMode {
     ControlWithSwitch,
     /// Enable control-owner switching without a key.
     ControlSwitchEnable,
-    /// Enable control-owner switching with a key configured by the SDK.
-    ControlSwitchEnableWithKey,
+    /// Enable control-owner switching with the supplied GigE switchover key.
+    ControlSwitchEnableWithKey(u16),
     /// Read-only monitoring access.
     Monitor,
+}
+
+impl AccessMode {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub(crate) const fn switchover_key(self) -> u16 {
+        match self {
+            Self::ControlSwitchEnableWithKey(key) => key,
+            _ => 0,
+        }
+    }
 }
 
 /// Full integer-node information: current value plus its allowed range.
@@ -218,7 +228,7 @@ impl fmt::Debug for PixelType {
 
 #[cfg(all(test, target_os = "windows", target_arch = "x86_64"))]
 mod tests {
-    use super::TransportLayer;
+    use super::{AccessMode, TransportLayer};
     use crate::sys;
 
     #[test]
@@ -237,5 +247,14 @@ mod tests {
         assert_eq!(TransportLayer::GENTL_CXP.raw(), sys::MV_GENTL_CXP_DEVICE);
         assert_eq!(TransportLayer::GENTL_XOF.raw(), sys::MV_GENTL_XOF_DEVICE);
         assert_eq!(TransportLayer::GENTL_VIR.raw(), sys::MV_GENTL_VIR_DEVICE);
+    }
+
+    #[test]
+    fn access_mode_preserves_the_requested_switchover_key() {
+        assert_eq!(AccessMode::Exclusive.switchover_key(), 0);
+        assert_eq!(
+            AccessMode::ControlSwitchEnableWithKey(0x1234).switchover_key(),
+            0x1234
+        );
     }
 }

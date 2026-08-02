@@ -78,8 +78,11 @@ impl std::error::Error for ShutdownError {
 }
 
 /// One internal operation attempted while closing a camera.
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    not(all(target_os = "windows", target_arch = "x86_64")),
+    allow(dead_code)
+)]
 pub(crate) enum CleanupStep {
     /// Drain Rust callbacks before native teardown.
     DrainCallbacks,
@@ -112,7 +115,6 @@ impl fmt::Display for CleanupStep {
 }
 
 /// One failed internal operation from a camera cleanup attempt.
-#[non_exhaustive]
 #[derive(Debug)]
 pub(crate) struct CleanupFailure {
     /// The cleanup operation that failed.
@@ -127,12 +129,6 @@ impl fmt::Display for CleanupFailure {
     }
 }
 
-impl std::error::Error for CleanupFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.error)
-    }
-}
-
 /// Errors returned by [`Camera::close_detailed`](crate::Camera::close_detailed).
 ///
 /// Cleanup normally continues after each failure so that handle destruction
@@ -142,13 +138,17 @@ impl std::error::Error for CleanupFailure {
 #[derive(Debug)]
 pub struct CleanupError {
     failures: Vec<CleanupFailure>,
+    native_handle_destroyed: bool,
 }
 
 impl CleanupError {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    pub(crate) fn new(failures: Vec<CleanupFailure>) -> Self {
+    pub(crate) fn new(failures: Vec<CleanupFailure>, native_handle_destroyed: bool) -> Self {
         debug_assert!(!failures.is_empty());
-        Self { failures }
+        Self {
+            failures,
+            native_handle_destroyed,
+        }
     }
 
     #[cfg(all(test, target_os = "windows", target_arch = "x86_64"))]
@@ -172,12 +172,7 @@ impl CleanupError {
     /// Whether native handle destruction was confirmed despite the reported
     /// cleanup failures.
     pub fn native_handle_destroyed(&self) -> bool {
-        !self.failures.iter().any(|failure| {
-            matches!(
-                failure.step,
-                CleanupStep::DrainCallbacks | CleanupStep::DestroyHandle
-            )
-        })
+        self.native_handle_destroyed
     }
 }
 
@@ -674,16 +669,19 @@ mod tests {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     #[test]
     fn cleanup_error_preserves_order_and_selects_the_first_error() {
-        let error = CleanupError::new(vec![
-            CleanupFailure {
-                step: CleanupStep::StopGrabbing,
-                error: MvsError::Resource,
-            },
-            CleanupFailure {
-                step: CleanupStep::CloseDevice,
-                error: MvsError::CallOrder,
-            },
-        ]);
+        let error = CleanupError::new(
+            vec![
+                CleanupFailure {
+                    step: CleanupStep::StopGrabbing,
+                    error: MvsError::Resource,
+                },
+                CleanupFailure {
+                    step: CleanupStep::CloseDevice,
+                    error: MvsError::CallOrder,
+                },
+            ],
+            true,
+        );
 
         assert_eq!(
             error.errors().map(MvsError::raw_code).collect::<Vec<_>>(),
@@ -695,10 +693,13 @@ mod tests {
             Some(sys::MV_E_RESOURCE)
         );
 
-        let destroy_error = CleanupError::new(vec![CleanupFailure {
-            step: CleanupStep::DestroyHandle,
-            error: MvsError::Resource,
-        }]);
+        let destroy_error = CleanupError::new(
+            vec![CleanupFailure {
+                step: CleanupStep::DestroyHandle,
+                error: MvsError::Resource,
+            }],
+            false,
+        );
         assert!(!destroy_error.native_handle_destroyed());
     }
 }

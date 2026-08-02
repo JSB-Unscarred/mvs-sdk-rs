@@ -4,13 +4,12 @@ use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::os::raw::c_void;
-use std::sync::Arc;
 
 use crate::backend;
 use crate::callback::EventInfo;
 use crate::error::CleanupError;
 use crate::frame::{Frame, FrameGuard};
-use crate::library::{CameraLease, Sdk};
+use crate::library::{ActiveSdk, CameraLease};
 use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult};
 
 pub(crate) type ImageCallback = Box<dyn FnMut(&Frame<'_>) + Send + 'static>;
@@ -36,49 +35,35 @@ pub struct Camera {
     _not_sync: PhantomData<Cell<()>>,
 }
 
-// SAFETY: the native SDK permits moving a handle between threads. Operations
-// that mutate Rust-managed state require `&mut self`, and `Cell` keeps !Sync.
-unsafe impl Send for Camera {}
-
 impl Camera {
     pub(crate) fn open(
         device: backend::DeviceInfo,
-        library: &Arc<Sdk>,
+        active: &ActiveSdk,
         mode: AccessMode,
     ) -> MvsResult<Self> {
-        let pending = library.begin_camera_open();
+        let pending = active.begin_camera_open();
         match backend::Camera::open(device, mode) {
             Ok(inner) => Ok(Self {
                 inner,
                 lease: pending.opened(),
                 _not_sync: PhantomData,
             }),
-            Err(failure) => {
-                let backend::OpenFailure {
-                    error,
-                    rollback_error,
-                    disposition,
-                } = failure;
-                let orphaned = matches!(disposition, Some(backend::HandleDisposition::Orphaned));
+            Err(error) => {
+                let orphaned = matches!(&error, MvsError::OpenRollback { .. });
                 pending.failed(orphaned);
-                match rollback_error {
-                    Some(destroy) => Err(MvsError::OpenRollback {
-                        open: Box::new(error),
-                        destroy: Box::new(destroy),
-                    }),
-                    None => Err(error),
-                }
+                Err(error)
             }
         }
     }
 
     fn cleanup(&mut self) -> Result<(), CleanupError> {
-        let report = self.inner.cleanup();
-        if let Some(disposition) = report.disposition {
-            self.lease
-                .settle(disposition == backend::HandleDisposition::Destroyed);
-        }
-        report.result
+        let result = self.inner.cleanup();
+        let destroyed = match &result {
+            Ok(()) => true,
+            Err(error) => error.native_handle_destroyed(),
+        };
+        self.lease.settle(destroyed);
+        result
     }
 
     /// Borrow the opaque native camera handle for advanced interoperability.

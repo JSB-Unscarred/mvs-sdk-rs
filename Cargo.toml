@@ -16,10 +16,6 @@ exclude = ["tools/"]
 keywords = ["mvs", "hikvision", "camera", "machine-vision", "ffi"]
 categories = ["api-bindings", "hardware-support"]
 
-[lib]
-name = "mvs_sdk_rs"
-path = "src/lib.rs"
-
 [features]
 # Enables the explicitly-invoked tests that link the native SDK and require a
 # dedicated camera. It is intentionally off for normal builds and CI.
@@ -27,17 +23,14 @@ hardware-tests = []
 
 [[test]]
 name = "hardware_smoke"
-path = "tests/hardware_smoke.rs"
 required-features = ["hardware-tests"]
 
 [[example]]
 name = "callback"
-path = "examples/callback.rs"
 required-features = ["hardware-tests"]
 
 [[example]]
 name = "polling"
-path = "examples/polling.rs"
 required-features = ["hardware-tests"]
 
 [dependencies]

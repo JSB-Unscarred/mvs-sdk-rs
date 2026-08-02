@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
 use crate::error::CleanupError;
-use crate::frame::{Frame, FrameInfo, FrameMetadata};
+use crate::frame::{Frame, FrameInfo};
 use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult, TransportLayer};
 
 fn unsupported<T>() -> MvsResult<T> {
@@ -100,32 +100,9 @@ impl DeviceInfo {
 
 pub(crate) struct Camera;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)]
-pub(crate) enum HandleDisposition {
-    Destroyed,
-    Orphaned,
-}
-
-#[derive(Debug)]
-pub(crate) struct OpenFailure {
-    pub(crate) error: MvsError,
-    pub(crate) rollback_error: Option<MvsError>,
-    pub(crate) disposition: Option<HandleDisposition>,
-}
-
-pub(crate) struct CleanupReport {
-    pub(crate) result: Result<(), CleanupError>,
-    pub(crate) disposition: Option<HandleDisposition>,
-}
-
 impl Camera {
-    pub(crate) fn open(_device: DeviceInfo, _mode: AccessMode) -> Result<Self, OpenFailure> {
-        Err(OpenFailure {
-            error: MvsError::UnsupportedPlatform,
-            rollback_error: None,
-            disposition: None,
-        })
+    pub(crate) fn open(_device: DeviceInfo, _mode: AccessMode) -> MvsResult<Self> {
+        unsupported()
     }
 
     pub(crate) fn as_raw_handle(&self) -> *mut c_void {
@@ -251,27 +228,24 @@ impl Camera {
         ("Closed", None, false, false, 0)
     }
 
-    pub(crate) fn cleanup(&mut self) -> CleanupReport {
-        CleanupReport {
-            result: Ok(()),
-            disposition: None,
-        }
+    pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
+        Ok(())
     }
 }
 
 pub(crate) struct FrameGuard<'cam> {
-    metadata: FrameMetadata,
+    info: FrameInfo,
     _marker: PhantomData<&'cam ()>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl FrameGuard<'_> {
     pub(crate) fn frame(&self) -> Frame<'_> {
-        Frame::from_parts(&[], &self.metadata)
+        Frame::from_parts(&[], self.info)
     }
 
     pub(crate) fn info(&self) -> FrameInfo {
-        FrameInfo::from_metadata(&self.metadata)
+        self.info
     }
 
     pub(crate) fn release(&mut self) -> MvsResult<()> {

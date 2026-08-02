@@ -147,7 +147,7 @@ impl DeviceInfo {
     /// [`MvsError::OpenRollback`](crate::MvsError::OpenRollback).
     pub fn open(&self, mode: AccessMode) -> MvsResult<Camera> {
         let active = Sdk::active()?;
-        Camera::open(self.inner.clone(), active.sdk(), mode)
+        Camera::open(self.inner.clone(), &active, mode)
     }
 
     /// Open this device with [`AccessMode::Exclusive`].

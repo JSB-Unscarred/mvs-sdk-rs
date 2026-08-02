@@ -64,7 +64,7 @@ println!("{:?}", frame.info());
 let owned = frame.to_owned();
 guard.release()?;
 
-println!("copied {} bytes", owned.data.len());
+println!("copied {} bytes", owned.data().len());
 camera.stop_grabbing()?;
 camera.close()?;
 sdk.shutdown()?;

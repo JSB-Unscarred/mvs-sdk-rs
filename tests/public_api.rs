@@ -8,8 +8,10 @@
 
 use std::cell::Cell;
 
-use mvs_sdk_rs::error::CleanupError;
-use mvs_sdk_rs::{Camera, EventInfo, Frame, FrameGuard, MvsResult, OwnedFrame, Sdk, ShutdownError};
+use mvs_sdk_rs::{
+    AccessMode, Camera, CleanupError, EventInfo, Frame, FrameGuard, MvsResult, OwnedFrame, Sdk,
+    ShutdownError,
+};
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 
 // SDK state may be shared, while a camera needs external synchronization.
@@ -38,6 +40,16 @@ fn frame_guard_ownership_contract(guard: FrameGuard<'_>) -> MvsResult<()> {
     let _: Frame<'_> = guard.frame();
     let _: OwnedFrame = guard.to_owned();
     guard.release()
+}
+
+fn owned_frame_data_contract(mut frame: OwnedFrame) {
+    let _: &[u8] = frame.data();
+    let _: &mut [u8] = frame.data_mut();
+    let _: Vec<u8> = frame.into_data();
+}
+
+fn keyed_access_mode_contract() {
+    let _: AccessMode = AccessMode::ControlSwitchEnableWithKey(0x1234);
 }
 
 fn callbacks_accept_fn_mut_send_but_not_sync(camera: &mut Camera) {

@@ -11,7 +11,3 @@ links = "MvCameraControl"
 
 keywords = ["mvs", "hikvision", "camera", "ffi", "bindings"]
 categories = ["api-bindings", "hardware-support"]
-
-[lib]
-name = "mvs_sdk_sys"
-path = "src/lib.rs"

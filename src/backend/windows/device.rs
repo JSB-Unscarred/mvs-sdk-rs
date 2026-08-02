@@ -193,7 +193,11 @@ mod tests {
                 raw.pDeviceInfo[0] = &mut device;
                 sys::MV_OK as i32
             },
-            |raw| vec![Arc::new(unsafe { *raw.pDeviceInfo[0] })],
+            |raw| {
+                // SAFETY: the fake enumerator above stored the live local
+                // `device` pointer in slot zero before this snapshot runs.
+                vec![Arc::new(unsafe { *raw.pDeviceInfo[0] })]
+            },
         )
         .unwrap();
 
