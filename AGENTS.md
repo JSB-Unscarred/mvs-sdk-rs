@@ -79,6 +79,7 @@ C:\Program Files (x86)\MVS\Development\
 - `FrameGuard` 是 `!Send + !Sync`，必须在取得它的线程使用；显式 `release()` 可报告错误，`Drop` 仅作兜底释放。
 - callback 保持 `FnMut + Send + 'static`，允许 `!Sync` closure；SDK 线程上的 callback 应尽快返回。
 - callback 地址必须稳定到原生 handle 确认销毁；同步重入必须被拒绝，closure 调用按 slot 串行化。
+- 项目将 `DestroyHandle(MV_OK)` 作为 callback 与 `pUser` 的静默边界，包括已派发但尚未进入 Rust trampoline 的调用；唯一例外是发起销毁的当前 exception callback，它由 trampoline 的临时 `Arc` 保活到返回。
 - closure、panic payload 和用户析构的 panic 都不能越过 `extern "C"` 边界；callback panic 后停用该 closure。
 - 不要从同一 Camera 的 image/event callback 中 close 或 drop Camera；exception callback 仅使用厂商明确支持的 close/destroy 路径。
 - 正常清理依次停止 callback 准入并 drain closure，再尽力执行 stop、注销 callback、CloseDevice 和 DestroyHandle；前一步失败不能阻止后续清理。

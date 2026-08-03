@@ -28,9 +28,11 @@ thread_local! {
 /// temporary strong reference on entry, so a supported teardown from an
 /// exception callback may release the camera's reference while the current
 /// invocation keeps the slot alive until it returns. A successful handle
-/// destruction is the quiescence boundary: the SDK must not subsequently
-/// start or retain a callback that can access this slot (or an event name
-/// passed alongside it). Register, unregister, stop, and close are not
+/// destruction is treated as the quiescence boundary: except for that current
+/// exception invocation, the SDK must not subsequently start, resume, or
+/// retain a callback that can access this slot, including one already
+/// dispatched but not yet executing its first Rust instruction (or an event
+/// name passed alongside it). Register, unregister, stop, and close are not
 /// otherwise assumed to drain callbacks, so admission can be revoked
 /// independently while the allocation stays put.
 pub(super) struct CallbackSlot<C> {
@@ -229,9 +231,11 @@ unsafe fn invoke_slot<C>(user: *mut c_void, callback_name: &str, invoke: impl Fn
     // CallbackSlot<C> registered for this exact trampoline type. The camera
     // retains the reconstructed associated strong reference until successful
     // handle destruction (or leaks it when destruction is uncertain), so the
-    // count is non-zero when the SDK is permitted to enter this callback. This
-    // temporary strong reference pins the slot if an exception callback
-    // destroys its camera.
+    // count is non-zero whenever the SDK is permitted to execute this
+    // instruction. This relies on successful destruction quiescing even an
+    // invocation already dispatched but not yet here. An exception callback
+    // that destroys its camera already owns the temporary reference acquired
+    // here.
     unsafe { Arc::increment_strong_count(slot_ptr) };
     // SAFETY: the increment above created the strong reference reconstructed
     // here. It is released on every return path when `slot` is dropped.

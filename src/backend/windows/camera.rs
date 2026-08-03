@@ -1080,6 +1080,9 @@ impl Camera {
         let destroyed = record_cleanup_result(&mut failures, CleanupStep::DestroyHandle, code);
 
         if destroyed {
+            // Treat MV_OK as the callback quiescence boundary documented by
+            // CallbackSlot. The current exception invocation, if any, already
+            // holds its own temporary Arc until the trampoline returns.
             self.image_cb = None;
             self.exception_cb = None;
             self.event_cbs.clear();
@@ -2174,6 +2177,28 @@ mod tests {
         assert!(camera.image_cb.is_none());
         assert!(camera.exception_cb.is_none());
         assert!(camera.event_cbs.is_empty());
+    }
+
+    #[test]
+    fn successful_destroy_releases_callback_backing_at_quiescence_boundary() {
+        let mut camera = camera_with_handle(AcquisitionState::Stopped);
+        camera.image_cb = Some(active_record(image_callback()));
+        let slot = Arc::downgrade(&camera.image_cb.as_ref().unwrap().slot);
+        let mut context = FakeCleanup::with_results([sys::MV_OK; 3]);
+
+        camera
+            .cleanup_with(&FAKE_CLEANUP_FNS, &mut context)
+            .unwrap();
+
+        assert_eq!(
+            context.calls,
+            [
+                CleanupStep::UnregisterImageCallback,
+                CleanupStep::CloseDevice,
+                CleanupStep::DestroyHandle,
+            ]
+        );
+        assert!(slot.upgrade().is_none());
     }
 
     type Shared<T> = Arc<Mutex<Option<T>>>;
