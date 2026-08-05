@@ -1,158 +1,113 @@
-# mvs_sdk_rs
+# mvs-sdk-rs
 
-海康威视机器人 **MVS** 工业相机 SDK 的安全 Rust 封装。workspace 包含面向应用的
-`mvs-sdk-rs` 和承载原始 FFI 的 `mvs-sdk-sys`；业务代码通常只需依赖前者。
+海康威视机器人 MVS 工业相机 SDK 的安全 Rust 封装。workspace 包含：
 
-真实相机访问目前仅支持 **Windows x86_64**。其它目标提供相同的公开 API，但
-`Sdk::init` 会返回 `MvsError::UnsupportedPlatform`。Windows 构建与链接需要：
+- `mvs-sdk-rs`：面向应用的安全接口；
+- `mvs-sdk-sys`：bindgen 生成的原始 FFI。
 
-- 已安装 MVS SDK；
-- `MVCAM_COMMON_RUNENV` 指向 SDK 的 `Development` 目录。
+真实相机访问支持 Windows x86_64。其它目标保留同形 API，`Sdk::init` 返回
+`MvsError::UnsupportedPlatform`。项目暂不发布到 Crates.io，请通过仓库源码或本地
+`path` 依赖使用。
 
-运行应用时，MVS DLL 所在目录还必须能由 Windows loader 找到，通常将其加入
-`PATH`。
+## 环境
 
-## 回调取流
+- 安装 MVS SDK；
+- `MVCAM_COMMON_RUNENV` 指向 SDK 的 `Development` 目录；
+- MVS DLL 目录加入运行时 `PATH`。
 
-常用流程是初始化 SDK、枚举并打开相机、配置节点、注册图像回调，然后开始采集：
+常用调用顺序：
 
-```rust
-use std::{
-    sync::mpsc::{self, RecvTimeoutError},
-    time::{Duration, Instant},
-};
-
-use mvs_sdk_rs::{Sdk, TransportLayer};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sdk = Sdk::init()?;
-    let devices = sdk.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB)?;
-    let Some(device) = devices.iter().next() else {
-        println!("No camera found");
-        sdk.shutdown()?;
-        return Ok(());
-    };
-
-    println!("Open {} {} SN={}", device.manufacturer(), device.model(), device.serial());
-    let mut camera = device.open_exclusive()?;
-    camera.set_enum("TriggerMode", "Off")?;
-    camera.set_float("ExposureTime", 5000.0)?;
-
-    let (frame_tx, frame_rx) = mpsc::sync_channel(8);
-    camera.register_image_callback(move |frame| {
-        let info = frame.info();
-        let _ = frame_tx.try_send((
-            info.frame_num(), info.width(), info.height(), frame.data().len()
-        ));
-    })?;
-
-    camera.start_grabbing()?;
-    let started = Instant::now();
-    while started.elapsed() < Duration::from_secs(3) {
-        match frame_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok((number, width, height, bytes)) => {
-                println!("frame={number} size={width}x{height} bytes={bytes}");
-            }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-    }
-    camera.stop_grabbing()?;
-    camera.close()?;
-    sdk.shutdown()?;
-    Ok(())
-}
+```text
+Sdk::init → enumerate_devices → open → 配置节点 → callback 或 polling
+          → stop_grabbing → Camera::close → Sdk::shutdown
 ```
 
-完整版本见 [`examples/callback.rs`](examples/callback.rs)。
+完整示例见 [`examples/callback.rs`](examples/callback.rs) 和
+[`examples/polling.rs`](examples/polling.rs)。运行示例需启用 `hardware-tests` feature。
 
-## 轮询取图
+## SDK 接口与安全 Rust 接口
 
-未注册图像回调时，`start_grabbing` 进入轮询模式。`FrameGuard` 借用 SDK buffer；
-显式 `release` 可以观察释放错误，直接 drop 则执行无法报告错误的兜底释放。
+本表只维护 safe crate 已覆盖的 MVS SDK 接口。
 
-```rust
-camera.start_grabbing()?;
+| MVS SDK 接口 | 安全 Rust 接口定义 | 关键约束 |
+| --- | --- | --- |
+| `MV_CC_Initialize` | `Sdk::init() -> MvsResult<Arc<Sdk>>` | 串行化进程级初始化并复用同一 `Sdk`。 |
+| `MV_CC_Finalize` | `Sdk::shutdown(&self) -> Result<(), ShutdownError>` | 相机和 callback 退出后终止；成功后进入进程终态。 |
+| `MV_CC_GetSDKVersion` | `Sdk::sdk_version(&self) -> u32` | 返回初始化时保存的版本。 |
+| `MV_CC_EnumDevices` | `Sdk::enumerate_devices(&self, TransportLayer) -> MvsResult<DeviceList>` | 串行枚举并复制设备记录。 |
+| `MV_CC_IsDeviceAccessible` | `DeviceInfo::is_accessible(&self, AccessMode) -> MvsResult<bool>` | 使用私有副本执行 C 查询。 |
+| `MV_CC_CreateHandle` + `MV_CC_OpenDevice` | `DeviceInfo::open(&self, AccessMode) -> MvsResult<Camera>` | 创建并打开 handle；失败时回滚销毁。另提供 `open_exclusive`、`open_control`。 |
+| `MV_CC_IsDeviceConnected` | `Camera::is_connected(&self) -> bool` | 返回调用时的连接状态快照。 |
+| `MV_CC_StartGrabbing` / `MV_CC_StopGrabbing` | `Camera::start_grabbing(&mut self)` / `stop_grabbing(&mut self) -> MvsResult<()>` | 检查采集状态并固定 callback 或 polling 模式。 |
+| `MV_CC_GetImageBuffer` + `MV_CC_FreeImageBuffer` | `Camera::get_image_buffer(&self, u32) -> MvsResult<FrameGuard<'_>>`；`FrameGuard::release(self) -> MvsResult<()>` | guard 借用相机并成对释放 buffer，`Drop` 负责兜底。 |
+| `MV_CC_RegisterImageCallBackEx` | `register_image_callback(FnMut(&Frame<'_>))` / `unregister_image_callback()` | `Frame` 仅在调用期间有效；注销等待在途 callback。 |
+| `MV_CC_RegisterExceptionCallBack` | `register_exception_callback(FnMut(u32))` / `unregister_exception_callback()` | closure panic 在 FFI 边界截获。 |
+| `MV_CC_RegisterEventCallBackEx` | `register_event_callback(&str, FnMut(&EventInfo<'_>))` / `unregister_event_callback(&str)` | 事件数据仅在调用期间借用；按名称管理注册。 |
+| `MV_CC_EventNotificationOn` / `MV_CC_EventNotificationOff` | `event_notification_on(&self, &str)` / `event_notification_off(&self, &str)` | 设备端通知与 Rust callback 注册独立。 |
+| `MV_CC_SetIntValueEx` / `MV_CC_GetIntValueEx` | `set_int`、`get_int`、`get_int_range` | 使用 `i64` 和 `IntNode`。 |
+| `MV_CC_SetFloatValue` / `MV_CC_GetFloatValue` | `set_float`、`get_float`、`get_float_range` | 使用 `f32` 和 `FloatNode`。 |
+| `MV_CC_SetBoolValue` / `MV_CC_GetBoolValue` | `set_bool`、`get_bool` | 转换 Rust `bool` 与 SDK `bool_`。 |
+| `MV_CC_SetEnumValueByString` / `MV_CC_SetEnumValue` / `MV_CC_GetEnumValue` | `set_enum`、`set_enum_value`、`get_enum`、`get_enum_info` | 符号名优先；`EnumNode` 最多保存 64 个候选值。 |
+| `MV_CC_SetStringValue` / `MV_CC_GetStringValue` | `set_string`、`get_string` | 检查内部 NUL，返回 owned `String`。 |
+| `MV_CC_SetCommandValue` | `Camera::exec_command(&self, &str) -> MvsResult<()>` | 执行 GenICam command 节点。 |
+| `MV_CC_CloseDevice` + `MV_CC_DestroyHandle` | `Camera::close(self)`；`close_detailed(self)` | 消费 `Camera` 并继续完整清理；分别返回首个或全部错误。 |
 
-let guard = camera.get_image_buffer(1000)?;
-let frame = guard.frame();
-println!("{:?}", frame.info());
-let owned = frame.to_owned();
-guard.release()?;
+## SDK 结构体与 Rust 结构体
 
-println!("copied {} bytes", owned.data().len());
-camera.stop_grabbing()?;
-camera.close()?;
-sdk.shutdown()?;
-```
+| MVS SDK 结构体 | Rust 定义 | 转换与生命周期 |
+| --- | --- | --- |
+| `MV_CC_DEVICE_INFO_LIST` | `DeviceList`、`DeviceIter<'_>` | 复制有效设备项；迭代器借用 Rust-owned 列表。 |
+| `MV_CC_DEVICE_INFO` 及 `SpecialInfo` | `DeviceInfo`、`TransportLayer` | 持有地址稳定的 owned snapshot，通过访问器读取 metadata。 |
+| `MV_FRAME_OUT` | `FrameGuard<'cam>`、`Frame<'_>` | guard 保存释放凭据并借用相机；`Frame` 借用像素区。 |
+| `MV_FRAME_OUT_INFO_EX` | `FrameInfo`、`PixelType` | 复制尺寸、编号、像素格式和时间戳等 metadata。 |
+| `MV_EVENT_OUT_INFO` | `EventInfo<'_>` | callback 期间借用事件名并复制数值字段。 |
+| `MVCC_INTVALUE_EX` | `IntNode` | 复制当前值、上下界和步长。 |
+| `MVCC_FLOATVALUE` | `FloatNode` | 复制当前值和上下界。 |
+| `MVCC_ENUMVALUE` | `EnumNode` | 复制当前值和候选值。 |
+| `MVCC_STRINGVALUE` | `String` | 按字段容量读取并生成 owned 字符串。 |
 
-完整版本见 [`examples/polling.rs`](examples/polling.rs)。
-运行示例时需启用 `hardware-tests` feature，例如
-`cargo run --features hardware-tests --example callback`。
+`OwnedFrame` 是 `Frame` 的 Rust-owned 像素副本，生命周期独立于 SDK buffer。
 
-## 生命周期与安全语义
+## 生命周期约束
 
-- 图像 callback 模式与轮询模式互斥。首次注册、注销或切换模式前需停止采集；callback 模式采集中可直接替换已注册的 Rust closure，不会再次调用 SDK。
-- callback 由 SDK 线程调用，应尽快返回。首次 panic 会被截获并停用该 closure，重新注册后恢复。`Frame` 和 `EventInfo` 只在当前调用中有效；跨线程或跨调用保存图像请先 `to_owned`。
-- 可同时持有的 `FrameGuard` 数量受 SDK 图像节点数限制。guard 存活时相机保持借用，不能停止或关闭。
-- 正常路径优先显式 `Camera::close`；它返回首个清理错误，`close_detailed` 可取得完整报告，`Drop` 只做忽略错误的兜底清理。
-- 不要从同一相机的 image/event callback 内调用 `close`。断连 exception callback 中官方示例使用的 close/destroy 子序列见 `Camera::close_detailed` rustdoc。
-- `event_notification_off` 只关闭设备端通知；移除 Rust closure 仍需 `unregister_event_callback`。
-- `Camera` 是 `Send` 但不是 `Sync`；同一实例的并发访问需要外部同步。`FrameGuard` 既不是 `Send` 也不是 `Sync`。
-- `as_raw_handle` 只借出由 `Camera` 拥有的指针。通过它调用 FFI 属于 unsafe 高级用法，不得绕过封装关闭 handle 或改变采集、回调状态。
-- `Sdk::shutdown` 只能在相机已关闭且 callback 已退出后调用；成功 shutdown 后，同一进程不能再次初始化 SDK。
-- `ShutdownError::InUse` 可在资源释放后重试；无法确认 handle 销毁或 Finalize 失败时，应记录错误并结束进程。
+详细时序见
+[`Callback取流`](时序图/Callback取流.md)、
+[`轮询取图与buffer归还`](时序图/轮询取图与buffer归还.md)、
+[`Camera显式关闭与Drop兜底`](时序图/Camera显式关闭与Drop兜底.md) 和
+[`Sdk shutdown的终态约束`](时序图/Sdk-shutdown的终态约束.md)。
 
-## API 文档
+- image callback 与 polling 互斥；首次注册、注销或切换模式前停止采集。
+- callback 应尽快返回；跨调用保存数据时先复制，image/event callback 内不关闭相机。
+- `Camera` 是 `Send + !Sync`；`FrameGuard` 是 `!Send + !Sync`。
+- 正常路径显式调用 `Camera::close`；`Drop` 只执行忽略错误的兜底清理。
+- `as_raw` 和 `as_raw_handle` 只借出指针，不得绕过封装改变生命周期状态。
+- 相机关闭且 callback 退出后调用 `Sdk::shutdown`；成功 shutdown 后进程内不再初始化。
 
-公开类型、方法、错误、节点值和像素格式以 rustdoc 为准，不在 README 重复维护：
+## 文档与验证
 
 ```console
 cargo doc --workspace --no-deps --open
-```
-
-发布版本也可查看 [docs.rs](https://docs.rs/mvs-sdk-rs)。原始 C API 位于
-`mvs-sdk_sys`；除非需要 safe crate 尚未覆盖的厂商能力，否则不建议直接依赖。
-
-## 测试
-
-不链接真实 SDK、也不需要相机的静态检查。最后一条会显式编译 feature-gated examples
-和 hardware smoke，但不会运行或链接它们：
-
-```console
 cargo fmt --all -- --check
 cargo check --workspace --all-targets
-cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu
-cargo check --workspace --all-targets --features hardware-tests
-```
-
-普通测试不访问相机，也不会构建需要真实 SDK 的 examples：
-
-```console
 cargo test --workspace
 ```
 
-真实 SDK 与专用相机 smoke test 是一条串行终态工作流：枚举、节点访问、双 buffer、
-callback、`Camera::close`、`Sdk::shutdown`。它需要 Windows x64、MVS SDK、正确的
-`MVCAM_COMMON_RUNENV` 和 DLL `PATH`、环境变量 `MVS_TEST_CAMERA_SERIAL`，并要求该
-专用相机的 `TriggerMode=Off`：
+真机 smoke test 需要 Windows x64、MVS SDK、专用相机和
+`MVS_TEST_CAMERA_SERIAL`：
 
 ```console
 cargo test --features hardware-tests --test hardware_smoke -- --ignored --test-threads=1
 ```
 
-## 维护 bindings
+## 更新 bindings
 
-`mvs-sdk-sys/src/bindings.rs` 已提交，普通构建不需要 libclang。升级 Windows x64
-MVS SDK 后，在安装 LLVM/libclang 与 `bindgen-cli` 的环境运行：
+升级 MVS SDK 后运行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\generate-bindings-windows-x64.ps1
 ```
 
-脚本默认从 `MVCAM_COMMON_RUNENV` 查找 SDK，也可通过 `-SdkRoot` 指定开发目录，并要求
-`bindgen-cli 0.72.1`（安装命令：`cargo install bindgen-cli --version 0.72.1 --locked`）。
-bindings 生成不会在普通 Cargo 构建中自动发生。
+脚本读取 `MVCAM_COMMON_RUNENV`，并要求 LLVM/libclang 与 `bindgen-cli 0.72.1`。
 
 ## License
 
