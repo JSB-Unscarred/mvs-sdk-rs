@@ -1,8 +1,7 @@
-//! Focused compile-time contracts for the safety-sensitive public API.
+//! 安全敏感 public API 的 compile-time contract。
 //!
-//! Cargo compiles integration tests as downstream crates. These functions are
-//! intentionally never run: compiling them verifies ownership and callback
-//! bounds without linking calls to the native MVS SDK.
+//! Cargo 将 integration test 作为 downstream crate 编译。这些函数无需执行；
+//! 编译本身验证 ownership 与 callback bounds，同时避免调用 native MVS SDK。
 
 #![allow(dead_code)]
 
@@ -14,28 +13,27 @@ use mvs_sdk_rs::{
 };
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 
-// SDK state may be shared, while a camera needs external synchronization.
+// 验证 SDK state 可共享，而 Camera 的可变状态需要调用方同步。
 assert_impl_all!(Sdk: Send, Sync);
 assert_impl_all!(Camera: Send);
 assert_not_impl_any!(Camera: Sync);
 
-// SDK buffers must be released on the acquiring thread. A copied frame is
-// detached from SDK-managed storage and can be transferred freely.
+// 验证 SDK buffer 仅在取图线程使用，OwnedFrame 与 SDK storage 解耦后可跨线程。
 assert_not_impl_any!(FrameGuard<'static>: Send, Sync);
 assert_impl_all!(OwnedFrame: Send, Sync);
 
-// Explicit close reports a simple error by default and preserves full cleanup
-// diagnostics through the opt-in API.
+// 验证 close 默认返回首个错误，close_detailed 可保留完整 cleanup diagnostics。
 fn camera_close_contract() {
     let _: fn(Camera) -> MvsResult<()> = Camera::close;
     let _: fn(Camera) -> Result<(), CleanupError> = Camera::close_detailed;
 }
 
+// 验证 SDK shutdown 暴露资源占用与终态错误。
 fn sdk_shutdown_contract(sdk: &Sdk) {
     let _: Result<(), ShutdownError> = sdk.shutdown();
 }
 
-// A guard supports a detached copy before its consuming, fallible release.
+// 验证 guard 可先复制 frame，再通过 consuming release 报告归还错误。
 fn frame_guard_ownership_contract(guard: FrameGuard<'_>) -> MvsResult<()> {
     let _: Frame<'_> = guard.frame();
     let _: u64 = guard.info().frame_len();
@@ -43,19 +41,21 @@ fn frame_guard_ownership_contract(guard: FrameGuard<'_>) -> MvsResult<()> {
     guard.release()
 }
 
+// 验证 OwnedFrame 提供只读、可变与 consuming data access。
 fn owned_frame_data_contract(mut frame: OwnedFrame) {
     let _: &[u8] = frame.data();
     let _: &mut [u8] = frame.data_mut();
     let _: Vec<u8> = frame.into_data();
 }
 
+// 验证 keyed access mode 的公开构造形式保持稳定。
 fn keyed_access_mode_contract() {
     let _: AccessMode = AccessMode::ControlSwitchEnableWithKey(0x1234);
 }
 
+// 验证 callback 接受 FnMut + Send closure，且不额外要求 Sync。
 fn callbacks_accept_fn_mut_send_but_not_sync(camera: &mut Camera) {
-    // Mutating the counter makes each closure FnMut-only. Capturing Cell keeps
-    // it Send but makes it !Sync, guarding against either bound being tightened.
+    // 修改 counter 使 closure 仅实现 FnMut；捕获 Cell 使其 Send + !Sync。
     let mut exception_calls = 0_u32;
     let exception_state = Cell::new(0_u32);
     let _: MvsResult<()> = camera.register_exception_callback(move |message_type| {

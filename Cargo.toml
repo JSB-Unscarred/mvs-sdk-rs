@@ -23,12 +23,32 @@ keywords = ["mvs", "hikvision", "camera", "machine-vision", "ffi"]
 categories = ["api-bindings", "hardware-support"]
 
 [features]
-# Enables the explicitly-invoked smoke test that links the native SDK and
-# requires a dedicated camera. It is intentionally off for normal builds and CI.
+# Enables explicitly-invoked hardware tests that link the native SDK and use a
+# dedicated camera. It is intentionally off for normal builds and CI.
 hardware-tests = []
 
 [[test]]
-name = "hardware_smoke"
+name = "hardware_enumeration"
+required-features = ["hardware-tests"]
+
+[[test]]
+name = "hardware_nodes"
+required-features = ["hardware-tests"]
+
+[[test]]
+name = "hardware_polling_release"
+required-features = ["hardware-tests"]
+
+[[test]]
+name = "hardware_polling_drop"
+required-features = ["hardware-tests"]
+
+[[test]]
+name = "hardware_callback"
+required-features = ["hardware-tests"]
+
+[[test]]
+name = "hardware_shutdown"
 required-features = ["hardware-tests"]
 
 [dependencies]

@@ -366,6 +366,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // 验证 camera 与 callback lease 共同更新 shutdown 使用的资源账本。
     #[test]
     fn camera_and_callback_leases_update_one_shared_ledger() {
         let ledger = Arc::new(ResourceLedger::default());
@@ -382,6 +383,7 @@ mod tests {
         assert_eq!(ledger.snapshot(), Default::default());
     }
 
+    // 验证已打开 camera 未 settle 即释放时记录一个 orphan handle。
     #[test]
     fn unresolved_camera_becomes_an_orphan() {
         let ledger = Arc::new(ResourceLedger::default());
@@ -390,6 +392,7 @@ mod tests {
         assert_eq!(ledger.snapshot().orphaned_handles, 1);
     }
 
+    // 验证 native open 可能写入 handle 的 pending 阶段同样受 orphan 约束。
     #[test]
     fn abandoned_camera_open_becomes_an_orphan() {
         let ledger = Arc::new(ResourceLedger::default());
@@ -398,6 +401,7 @@ mod tests {
         assert_eq!(ledger.snapshot().orphaned_handles, 1);
     }
 
+    // 验证失败初始化可重试，首次成功结果则由进程单例缓存。
     #[test]
     fn initialization_caches_only_success() {
         let runtime = ProcessRuntime::new();
@@ -413,6 +417,7 @@ mod tests {
         assert_eq!(sdk.sdk_version(), 0x01020304);
     }
 
+    // 验证 live resource 阻止 shutdown，成功 shutdown 保持幂等且成为终态。
     #[test]
     fn live_camera_blocks_shutdown_then_shutdown_is_idempotent() {
         let runtime = ProcessRuntime::new();
@@ -458,6 +463,7 @@ mod tests {
         ));
     }
 
+    // 验证 native finalize 失败后进程状态进入不可重试的 unknown 终态。
     #[test]
     fn finalize_failure_poisoning_is_terminal() {
         let runtime = ProcessRuntime::new();

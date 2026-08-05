@@ -7,6 +7,7 @@
 
 use mvs_sdk_rs::{MvsError, Sdk};
 
+// 验证 unsupported backend 明确返回平台错误，且不伪造 native code。
 #[test]
 fn sdk_init_reports_unsupported_platform_without_a_native_code() {
     // Unsupported targets must fail explicitly instead of constructing a fake

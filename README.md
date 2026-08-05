@@ -22,8 +22,9 @@ Sdk::init → enumerate_devices → open → 配置节点 → callback 或 polli
           → stop_grabbing → Camera::close → Sdk::shutdown
 ```
 
-真实设备的轮询、callback 与模式切换流程见
-[`tests/hardware_smoke.rs`](tests/hardware_smoke.rs)。运行测试需启用 `hardware-tests` feature。
+真实设备测试按枚举、节点、buffer release/Drop、callback 和 shutdown 拆分，入口见
+[`tests/hardware_enumeration.rs`](tests/hardware_enumeration.rs)。运行测试需启用
+`hardware-tests` feature；每个文件是独立进程，避免 SDK shutdown 终态互相影响。
 
 ## SDK 接口与安全 Rust 接口
 
@@ -92,11 +93,11 @@ cargo check --workspace --all-targets
 cargo test --workspace
 ```
 
-真机 smoke test 需要 Windows x64、MVS SDK、专用相机和
+真机测试需要 Windows x64、MVS SDK、专用相机和
 `MVS_TEST_CAMERA_SERIAL`：
 
 ```console
-cargo test --features hardware-tests --test hardware_smoke -- --ignored --test-threads=1
+cargo test --features hardware-tests --tests -- --ignored
 ```
 
 ## 更新 bindings

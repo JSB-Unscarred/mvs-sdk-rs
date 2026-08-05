@@ -243,31 +243,7 @@ mod tests {
     use super::{Frame, FrameInfo};
     use crate::PixelType;
 
-    #[test]
-    fn frame_info_owns_its_metadata_snapshot() {
-        let info = FrameInfo {
-            width: 640,
-            height: 480,
-            pixel_type: PixelType::MONO8,
-            frame_num: 42,
-            frame_len: 307_200,
-            offset_x: 3,
-            offset_y: 4,
-            gain: 1.5,
-            exposure_time: 250.0,
-            trigger_index: 7,
-            lost_packets: 2,
-            device_timestamp: 99,
-            host_timestamp_raw: 123,
-        };
-
-        assert_eq!(info.width(), 640);
-        assert_eq!(info.height(), 480);
-        assert_eq!(info.pixel_type(), PixelType::MONO8);
-        assert_eq!(info.frame_num(), 42);
-        assert_eq!(info.host_timestamp_raw(), 123);
-    }
-
+    // 验证 frame copy 会按实际 data 长度校正 metadata，并与 SDK buffer 解耦。
     #[test]
     fn owned_frame_keeps_data_length_and_metadata_consistent() {
         let info = FrameInfo {

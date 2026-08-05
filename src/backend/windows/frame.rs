@@ -175,6 +175,7 @@ mod tests {
         }
     }
 
+    // 验证 polling raw frame 的 data 与全部 metadata 字段转换正确。
     #[test]
     fn raw_frame_metadata_and_data_are_converted() {
         let mut data = vec![1, 2, 3, 4, 5, 6, 7, 8];
@@ -194,6 +195,7 @@ mod tests {
         assert_eq!(info.host_timestamp_raw(), 42);
     }
 
+    // 验证 extended width、height 和 length 不被 legacy 位宽截断。
     #[test]
     fn extended_metadata_supports_dimensions_and_lengths_above_legacy_limits() {
         let raw = sys::MV_FRAME_OUT_INFO_EX {
@@ -215,6 +217,7 @@ mod tests {
         );
     }
 
+    // 验证 extended 字段为零时按 SDK 约定回退到 legacy 字段。
     #[test]
     fn legacy_metadata_is_used_when_extended_fields_are_zero() {
         let raw = sys::MV_FRAME_OUT_INFO_EX {
@@ -233,6 +236,7 @@ mod tests {
         );
     }
 
+    // 验证 null、oversized 与 wrapping buffer 在构造 slice 前被拒绝并归还。
     #[test]
     fn invalid_frame_buffers_are_rejected_without_constructing_a_slice() {
         let mut data = vec![0_u8; 1];
@@ -281,6 +285,7 @@ mod tests {
         assert_eq!(releases, 3);
     }
 
+    // 验证无效 buffer 归还失败时返回 native error，且只尝试一次。
     #[test]
     fn invalid_frame_release_failure_is_returned_without_retry() {
         let mut data = vec![0_u8; 1];
@@ -302,6 +307,7 @@ mod tests {
         assert_eq!(releases, 1);
     }
 
+    // 验证多个 guard 独立归还一次，单次失败不会触发 Drop 重试。
     #[test]
     fn two_buffers_release_once_even_when_one_release_fails() {
         let mut first_data = vec![1; 8];

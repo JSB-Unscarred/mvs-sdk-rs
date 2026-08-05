@@ -561,6 +561,7 @@ mod tests {
     };
     use crate::sys;
 
+    // 验证头文件中每个已知 SDK error code 都可无损解析和还原。
     #[test]
     fn every_known_sdk_error_round_trips() {
         for &code in KNOWN_SDK_ERROR_CODES {
@@ -573,6 +574,7 @@ mod tests {
         }
     }
 
+    // 验证未知 native code 被保留，Rust-side error 不伪造 native code。
     #[test]
     fn unknown_and_platform_errors_preserve_their_origin() {
         let code = 0xDEAD_BEEF;
@@ -584,6 +586,7 @@ mod tests {
         );
     }
 
+    // 验证 unknown shutdown 状态按可用的 finalize evidence 格式化。
     #[test]
     fn shutdown_unknown_state_describes_available_evidence() {
         assert_eq!(
@@ -606,6 +609,7 @@ mod tests {
         );
     }
 
+    // 验证 cleanup error 保留调用顺序、首个 source 与 handle 销毁状态。
     #[test]
     fn cleanup_error_preserves_order_and_selects_the_first_error() {
         let error = CleanupError::new(

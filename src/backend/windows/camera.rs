@@ -1626,6 +1626,7 @@ mod tests {
         context
     }
 
+    // 验证各类 node raw value 转换正确，并限制 native 声明的数组长度。
     #[test]
     fn raw_node_values_convert_without_trusting_native_lengths() {
         let integer = sys::MVCC_INTVALUE_EX {
@@ -1672,6 +1673,7 @@ mod tests {
         assert_eq!(enumeration.supported[63], 63);
     }
 
+    // 验证 open 任一阶段失败都执行必要 rollback，并保留双重错误。
     #[test]
     fn open_failures_preserve_rollback_errors() {
         struct Case<'a> {
@@ -1756,6 +1758,7 @@ mod tests {
         }
     }
 
+    // 验证 keyed access mode 将 switchover key 原样传给 native open。
     #[test]
     fn open_forwards_the_requested_switchover_key() {
         let device = sys::MV_CC_DEVICE_INFO::default();
@@ -1772,6 +1775,7 @@ mod tests {
         assert_eq!(context.open_arguments, [(mode.raw(), 0x1234)]);
     }
 
+    // 验证 callback grabbing 仅允许替换 closure，并拒绝改变注册状态。
     #[test]
     fn registered_image_callback_can_replace_closure_while_callback_grabbing() {
         let mut callbacks = FakeCallbacks::default();
@@ -1855,6 +1859,7 @@ mod tests {
         assert_eq!(callbacks.image_calls.len(), 1);
     }
 
+    // 验证已注册但停用的 image slot 必须重装 closure 后才能 start。
     #[test]
     fn registered_but_disabled_image_callback_must_be_reconciled_before_restart() {
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
@@ -1878,6 +1883,7 @@ mod tests {
         );
     }
 
+    // 验证 start/stop native failure 将 acquisition 标为 unknown，仅 stop 可恢复。
     #[test]
     fn acquisition_failures_become_unknown_until_stop_recovers() {
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
@@ -1922,6 +1928,7 @@ mod tests {
         camera.handle = None;
     }
 
+    // 验证 register、replace、unregister、reregister 全程只调用当前 closure。
     #[test]
     fn image_callback_uses_the_current_closure_across_its_lifecycle() {
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
@@ -1986,6 +1993,7 @@ mod tests {
         camera.handle = None;
     }
 
+    // 验证同步 callback 可在注册返回前执行，注册失败后晚到调用被屏蔽。
     #[test]
     fn failed_registration_allows_sync_delivery_then_silences_late_callbacks() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2038,6 +2046,7 @@ mod tests {
         );
     }
 
+    // 验证 unregister 失败只污染该 callback 状态，并允许显式重试。
     #[test]
     fn failed_unregister_marks_only_callback_unknown_and_can_retry() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2093,6 +2102,7 @@ mod tests {
         camera.handle = None;
     }
 
+    // 验证成功 cleanup 先 drain closure、执行全部必要步骤，重复调用为空操作。
     #[test]
     fn cleanup_drains_callbacks_runs_every_step_and_then_becomes_a_noop() {
         let drops = Arc::new(AtomicUsize::new(0));
@@ -2131,6 +2141,7 @@ mod tests {
         assert!(unexpected_call.calls.is_empty());
     }
 
+    // 验证 cleanup 按调用顺序聚合全部错误，前序失败不跳过 destroy。
     #[test]
     fn cleanup_aggregates_all_failures_in_call_order_and_reaches_destroy() {
         let mut camera = camera_with_all_callbacks();
@@ -2160,6 +2171,7 @@ mod tests {
         assert!(!error.native_handle_destroyed());
     }
 
+    // 验证前序 cleanup 失败但 destroy 成功时仍释放 handle 与 callback backing。
     #[test]
     fn cleanup_reports_successful_destroy_despite_an_earlier_failure() {
         let mut camera = camera_with_all_callbacks();
@@ -2179,6 +2191,7 @@ mod tests {
         assert!(camera.event_cbs.is_empty());
     }
 
+    // 验证 successful destroy 作为 native callback quiescence boundary 释放 slot。
     #[test]
     fn successful_destroy_releases_callback_backing_at_quiescence_boundary() {
         let mut camera = camera_with_handle(AcquisitionState::Stopped);
@@ -2246,6 +2259,7 @@ mod tests {
         (destroyed, (native.calls, failures))
     }
 
+    // 验证 exception callback 内 cleanup 可 close/destroy，并延迟释放当前 slot。
     #[test]
     fn exception_callback_cleanup_closes_and_destroys_then_defers_current_slot() {
         type Outcome = (Vec<CleanupStep>, Vec<usize>, bool, usize);
@@ -2319,6 +2333,7 @@ mod tests {
         assert!(slot_weak.upgrade().is_none());
     }
 
+    // 验证 exception callback 内 destroy 失败时保留 slot backing 并屏蔽晚到调用。
     #[test]
     fn exception_callback_destroy_failure_keeps_backing_and_silences_late_calls() {
         let camera_holder = shared();
@@ -2370,6 +2385,7 @@ mod tests {
         assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
     }
 
+    // 验证 image callback 内 cleanup 跳过未获文档保证的 native teardown。
     #[test]
     fn image_callback_cleanup_abandons_without_native_teardown() {
         let camera_holder = shared();
@@ -2420,6 +2436,7 @@ mod tests {
         assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
     }
 
+    // 验证 image callback 内嵌 exception callback 时仍采用保守 abandon 路径。
     #[test]
     fn nested_exception_inside_image_callback_remains_conservative() {
         let camera_holder = shared();
@@ -2470,6 +2487,7 @@ mod tests {
         assert_eq!(failure_steps, [CleanupStep::DrainCallbacks]);
     }
 
+    // 验证 event callback 内 cleanup 与 image callback 共享受限上下文约束。
     #[test]
     fn event_callback_cleanup_abandons_without_native_teardown() {
         let camera_holder = shared();

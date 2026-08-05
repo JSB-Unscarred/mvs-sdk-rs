@@ -237,8 +237,8 @@ mod tests {
     use std::net::Ipv4Addr;
     use std::sync::Arc;
 
-    use super::{DeviceInfo, DeviceList, with_raw_device_list};
-    use crate::{TransportLayer, sys};
+    use super::{DeviceInfo, DeviceList};
+    use crate::sys;
 
     fn c_string<const N: usize>(value: &str) -> [u8; N] {
         assert!(value.len() < N);
@@ -260,32 +260,7 @@ mod tests {
         assert_eq!(info.user_defined_name(), user_defined_name);
     }
 
-    #[test]
-    fn device_records_are_snapshotted_from_the_raw_list() {
-        let mut device = sys::MV_CC_DEVICE_INFO {
-            nTLayerType: sys::MV_USB_DEVICE,
-            ..Default::default()
-        };
-
-        let devices = with_raw_device_list(
-            TransportLayer::USB,
-            |layers, raw| {
-                assert_eq!(layers, sys::MV_USB_DEVICE);
-                raw.nDeviceNum = 1;
-                raw.pDeviceInfo[0] = &mut device;
-                sys::MV_OK as i32
-            },
-            |raw| {
-                // SAFETY: the fake enumerator above stored the live local
-                // `device` pointer in slot zero before this snapshot runs.
-                vec![Arc::new(unsafe { *raw.pDeviceInfo[0] })]
-            },
-        )
-        .unwrap();
-
-        assert_eq!(devices[0].nTLayerType, sys::MV_USB_DEVICE);
-    }
-
+    // 验证 DeviceInfo clone 共享稳定地址，并延长 Rust-owned record 生命周期。
     #[test]
     fn device_info_owns_an_address_stable_record() {
         let list = DeviceList {
@@ -307,6 +282,7 @@ mod tests {
         assert_eq!(cloned.raw().nTLayerType, sys::MV_USB_DEVICE);
     }
 
+    // 验证 GigE/USB 及其 alias 选择正确 union arm 与网络字段。
     #[test]
     fn device_metadata_decodes_gige_and_usb_union_records() {
         let mut gige_record = sys::MV_CC_DEVICE_INFO {
@@ -394,6 +370,7 @@ mod tests {
         assert_metadata(&virtual_usb, "Vision USB", "USB-7", "USB-0002", "bench");
     }
 
+    // 验证 Camera Link/GenTL transport 选择各自 union arm，未知字段返回空值。
     #[test]
     fn device_metadata_decodes_camera_link_and_gentl_union_records() {
         let mut camera_link_record = sys::MV_CC_DEVICE_INFO {

@@ -387,6 +387,7 @@ mod tests {
         }
     }
 
+    // 验证 image trampoline 按 extended frame 字段构造 callback view。
     #[test]
     fn image_trampoline_uses_extended_frame_shape_and_length() {
         let observed = Arc::new(Mutex::new(None));
@@ -425,6 +426,7 @@ mod tests {
         drop_callback_safely(slot.deactivate().expect("active callback"));
     }
 
+    // 验证 image trampoline 在构造 slice 前忽略非法 native buffer。
     #[test]
     fn image_trampoline_ignores_invalid_frame_buffers() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -461,6 +463,7 @@ mod tests {
         drop_callback_safely(slot.deactivate().expect("active callback"));
     }
 
+    // 验证 callback slot 替换 closure 时地址稳定，停用后屏蔽晚到调用。
     #[test]
     fn slot_lifecycle_keeps_its_address_and_silences_late_calls() {
         let drops = Arc::new(AtomicUsize::new(0));
@@ -497,6 +500,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 0);
     }
 
+    // 验证停用会等待 in-flight callback，随后屏蔽晚到调用。
     #[test]
     fn deactivation_waits_for_in_flight_callback_then_silences_late_calls() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -547,6 +551,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
+    // 验证同一 slot 拒绝重入以防 FnMut deadlock，不同 slot 仍可嵌套。
     #[test]
     fn reentry_is_rejected_per_slot_but_other_slots_may_nest() {
         let outer_calls = Arc::new(AtomicUsize::new(0));
@@ -588,6 +593,7 @@ mod tests {
         drop_callback_safely(inner.deactivate().expect("active callback"));
     }
 
+    // 验证 closure、panic payload 与 destructor panic 都不会跨 FFI unwind。
     #[test]
     fn callback_and_destructor_panics_are_contained() {
         let calls = Arc::new(AtomicUsize::new(0));
