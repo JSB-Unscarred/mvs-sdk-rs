@@ -34,8 +34,8 @@
 //! [`Sdk::shutdown`] can explicitly finalize the process-wide runtime.
 //! Successful shutdown is terminal for the process.
 //!
-//! See the repository's `examples/callback.rs` and `examples/polling.rs` for
-//! complete acquisition workflows.
+//! See the repository's `tests/hardware_smoke.rs` for polling, callback, and
+//! acquisition-mode transition workflows on a real camera.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // Public functions must not expose types that downstream crates cannot name.

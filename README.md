@@ -22,8 +22,8 @@ Sdk::init → enumerate_devices → open → 配置节点 → callback 或 polli
           → stop_grabbing → Camera::close → Sdk::shutdown
 ```
 
-完整示例见 [`examples/callback.rs`](examples/callback.rs) 和
-[`examples/polling.rs`](examples/polling.rs)。运行示例需启用 `hardware-tests` feature。
+真实设备的轮询、callback 与模式切换流程见
+[`tests/hardware_smoke.rs`](tests/hardware_smoke.rs)。运行测试需启用 `hardware-tests` feature。
 
 ## SDK 接口与安全 Rust 接口
 

@@ -14,7 +14,6 @@ homepage = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
 include = [
     "/src/**",
     "/tests/**",
-    "/examples/**",
     "/Cargo.toml",
     "/README.md",
     "/LICENSE",
@@ -24,21 +23,12 @@ keywords = ["mvs", "hikvision", "camera", "machine-vision", "ffi"]
 categories = ["api-bindings", "hardware-support"]
 
 [features]
-# Enables the explicitly-invoked examples and tests that link the native SDK;
-# the smoke test also requires a dedicated camera. It is intentionally off for
-# normal builds and CI.
+# Enables the explicitly-invoked smoke test that links the native SDK and
+# requires a dedicated camera. It is intentionally off for normal builds and CI.
 hardware-tests = []
 
 [[test]]
 name = "hardware_smoke"
-required-features = ["hardware-tests"]
-
-[[example]]
-name = "callback"
-required-features = ["hardware-tests"]
-
-[[example]]
-name = "polling"
 required-features = ["hardware-tests"]
 
 [dependencies]
