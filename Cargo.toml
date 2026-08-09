@@ -28,27 +28,7 @@ categories = ["api-bindings", "hardware-support"]
 hardware-tests = []
 
 [[test]]
-name = "hardware_enumeration"
-required-features = ["hardware-tests"]
-
-[[test]]
-name = "hardware_nodes"
-required-features = ["hardware-tests"]
-
-[[test]]
-name = "hardware_polling_release"
-required-features = ["hardware-tests"]
-
-[[test]]
-name = "hardware_polling_drop"
-required-features = ["hardware-tests"]
-
-[[test]]
-name = "hardware_callback"
-required-features = ["hardware-tests"]
-
-[[test]]
-name = "hardware_shutdown"
+name = "hardware_smoke"
 required-features = ["hardware-tests"]
 
 [dependencies]

@@ -31,12 +31,12 @@ impl DeviceList {
         self.len() == 0
     }
 
-    /// Iterate over cloned, owned device snapshots.
-    pub fn iter(&self) -> DeviceIter<'_> {
-        DeviceIter {
-            list: self,
-            index: 0,
-        }
+    /// 迭代 cloned、owned device snapshot。
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = DeviceInfo> + '_ {
+        (0..self.len()).map(|index| {
+            self.get(index)
+                .expect("index produced from DeviceList::len must exist")
+        })
     }
 
     /// Clone the device snapshot at `index`, or return `None` if out of range.
@@ -52,29 +52,6 @@ impl fmt::Debug for DeviceList {
             .finish()
     }
 }
-
-/// Iterator over the snapshots in a [`DeviceList`].
-pub struct DeviceIter<'a> {
-    list: &'a DeviceList,
-    index: usize,
-}
-
-impl<'a> Iterator for DeviceIter<'a> {
-    type Item = DeviceInfo;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let info = self.list.get(self.index)?;
-        self.index += 1;
-        Some(info)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.list.len().saturating_sub(self.index);
-        (remaining, Some(remaining))
-    }
-}
-
-impl ExactSizeIterator for DeviceIter<'_> {}
 
 /// Owned snapshot of one enumerated device.
 #[derive(Clone)]
@@ -154,10 +131,7 @@ impl DeviceInfo {
 
     /// Open this device with the requested access mode.
     ///
-    /// This requires an active process-wide [`Sdk`]. If handle creation or
-    /// device opening fails after the SDK writes a non-null handle, and
-    /// rollback also fails, the error is
-    /// [`MvsError::OpenRollback`](crate::MvsError::OpenRollback).
+    /// This requires an active process-wide [`Sdk`].
     pub fn open(&self, mode: AccessMode) -> MvsResult<Camera> {
         let active = Sdk::active()?;
         Camera::open(self.inner.clone(), &active, mode)

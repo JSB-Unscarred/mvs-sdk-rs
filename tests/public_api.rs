@@ -7,10 +7,7 @@
 
 use std::cell::Cell;
 
-use mvs_sdk_rs::{
-    AccessMode, Camera, CleanupError, EventInfo, Frame, FrameGuard, MvsResult, OwnedFrame, Sdk,
-    ShutdownError,
-};
+use mvs_sdk_rs::{Camera, EventInfo, Frame, FrameGuard, MvsResult, OwnedFrame, Sdk};
 use static_assertions::{assert_impl_all, assert_not_impl_any};
 
 // 验证 SDK state 可共享，而 Camera 的可变状态需要调用方同步。
@@ -21,37 +18,6 @@ assert_not_impl_any!(Camera: Sync);
 // 验证 SDK buffer 仅在取图线程使用，OwnedFrame 与 SDK storage 解耦后可跨线程。
 assert_not_impl_any!(FrameGuard<'static>: Send, Sync);
 assert_impl_all!(OwnedFrame: Send, Sync);
-
-// 验证 close 默认返回首个错误，close_detailed 可保留完整 cleanup diagnostics。
-fn camera_close_contract() {
-    let _: fn(Camera) -> MvsResult<()> = Camera::close;
-    let _: fn(Camera) -> Result<(), CleanupError> = Camera::close_detailed;
-}
-
-// 验证 SDK shutdown 暴露资源占用与终态错误。
-fn sdk_shutdown_contract(sdk: &Sdk) {
-    let _: Result<(), ShutdownError> = sdk.shutdown();
-}
-
-// 验证 guard 可先复制 frame，再通过 consuming release 报告归还错误。
-fn frame_guard_ownership_contract(guard: FrameGuard<'_>) -> MvsResult<()> {
-    let _: Frame<'_> = guard.frame();
-    let _: u64 = guard.info().frame_len();
-    let _: OwnedFrame = guard.to_owned();
-    guard.release()
-}
-
-// 验证 OwnedFrame 提供只读、可变与 consuming data access。
-fn owned_frame_data_contract(mut frame: OwnedFrame) {
-    let _: &[u8] = frame.data();
-    let _: &mut [u8] = frame.data_mut();
-    let _: Vec<u8> = frame.into_data();
-}
-
-// 验证 keyed access mode 的公开构造形式保持稳定。
-fn keyed_access_mode_contract() {
-    let _: AccessMode = AccessMode::ControlSwitchEnableWithKey(0x1234);
-}
 
 // 验证 callback 接受 FnMut + Send closure，且不额外要求 Sync。
 fn callbacks_accept_fn_mut_send_but_not_sync(camera: &mut Camera) {

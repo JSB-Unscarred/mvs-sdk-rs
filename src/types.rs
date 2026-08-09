@@ -246,9 +246,9 @@ mod tests {
     use super::{PixelType, TransportLayer};
     use crate::sys;
 
-    // 验证 TransportLayer bit mask 与 native SDK 常量保持 ABI 对应。
+    // 验证公开 bit/code 类型与 native SDK 保持 ABI 对应。
     #[test]
-    fn transport_layer_values_match_the_native_sdk() {
+    fn public_codes_match_the_native_sdk() {
         assert_eq!(TransportLayer::UNKNOWN.raw(), sys::MV_UNKNOW_DEVICE);
         assert_eq!(TransportLayer::GIGE.raw(), sys::MV_GIGE_DEVICE);
         assert_eq!(TransportLayer::IEEE_1394.raw(), sys::MV_1394_DEVICE);
@@ -278,11 +278,7 @@ mod tests {
                 | sys::MV_GENTL_XOF_DEVICE
                 | sys::MV_GENTL_VIR_DEVICE
         );
-    }
 
-    // 验证 custom pixel type 仍按 SDK category bits 区分 mono 与 color。
-    #[test]
-    fn custom_pixel_types_keep_their_mono_or_color_classification() {
         let mono = PixelType::from_raw(sys::PixelType_Gvsp_HB_Mono8 as u32);
         assert!(mono.is_mono());
         assert!(!mono.is_color());

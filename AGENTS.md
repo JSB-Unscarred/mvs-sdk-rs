@@ -36,8 +36,8 @@
 - SDK的示例程序说明文档：C:\Program Files (x86)\MVS\Development\Documentations\工业相机Windows SDK C++示例程序说明.pdf
 - SDK的头文件目录：C:\Program Files (x86)\MVS\Development\Includes
 - SDK的示例程序目录：C:\Program Files (x86)\MVS\Development\Samples\C++
-- 生命周期与调用时序总览：生命周期与调用时序.md
-- Callback取流主流程：docs/Callback取流主流程.md
-- 轮询取图与buffer归还：docs/轮询取图与buffer归还.md
-- Camera显式关闭与Drop兜底：docs/Camera显式关闭与Drop兜底.md
-- Sdk shutdown的终态约束：docs/Sdk-shutdown的终态约束.md
+- 生命周期与调用时序总览：README.md
+- Callback取流主流程：时序图/Callback取流.md
+- 轮询取图与buffer归还：时序图/轮询取图与buffer归还.md
+- Camera显式关闭与Drop兜底：时序图/Camera显式关闭与Drop兜底.md
+- Sdk shutdown的终态约束：时序图/Sdk-shutdown的终态约束.md

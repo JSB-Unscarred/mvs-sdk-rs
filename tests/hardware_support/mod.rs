@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::error::Error;
 use std::io;
 use std::sync::Arc;
@@ -9,7 +7,7 @@ use mvs_sdk_rs::{AccessMode, Camera, DeviceInfo, MvsError, Sdk, TransportLayer};
 pub(crate) const FRAME_TIMEOUT_MS: u32 = 3_000;
 
 /// 读取专用测试相机序列号，避免测试误操作其他设备。
-pub(crate) fn test_camera_serial() -> Result<String, io::Error> {
+fn test_camera_serial() -> Result<String, io::Error> {
     std::env::var("MVS_TEST_CAMERA_SERIAL").map_err(|_| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -19,7 +17,7 @@ pub(crate) fn test_camera_serial() -> Result<String, io::Error> {
 }
 
 /// 枚举并返回指定相机的 Rust-owned 设备快照。
-pub(crate) fn test_device(sdk: &Sdk) -> Result<DeviceInfo, Box<dyn Error>> {
+fn test_device(sdk: &Sdk) -> Result<DeviceInfo, Box<dyn Error>> {
     let serial = test_camera_serial()?;
     let devices = sdk.enumerate_devices(TransportLayer::GIGE | TransportLayer::USB)?;
     devices
@@ -34,7 +32,7 @@ pub(crate) fn test_device(sdk: &Sdk) -> Result<DeviceInfo, Box<dyn Error>> {
         })
 }
 
-/// 以 exclusive 模式打开指定相机，隔离各硬件测试的 native handle。
+/// 初始化 SDK、枚举并以 exclusive 模式打开指定相机。
 pub(crate) fn open_test_camera() -> Result<(Arc<Sdk>, Camera), Box<dyn Error>> {
     let sdk = Sdk::init()?;
     let device = test_device(&sdk)?;

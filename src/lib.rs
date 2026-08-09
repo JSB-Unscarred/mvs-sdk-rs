@@ -20,19 +20,17 @@
 //!   [`Camera::get_image_buffer`]. Its [`FrameGuard`] releases the native buffer
 //!   on drop; call [`FrameGuard::release`] to observe release errors.
 //!
-//! Stop acquisition before first registering or unregistering the image
-//! callback, or before switching acquisition modes. An already registered
-//! callback may be replaced while callback acquisition runs. To keep pixels
-//! beyond a callback or guard lifetime, copy them with [`Frame::to_owned`].
+//! Stop acquisition before registering, replacing, or unregistering the image
+//! callback, and before switching acquisition modes. To keep pixels beyond a
+//! callback or guard lifetime, copy them with [`Frame::to_owned`].
 //!
 //! # Lifetimes and shutdown
 //!
 //! [`Camera`] is `Send` but not `Sync`; synchronize shared access externally.
 //! Prefer [`Camera::close`] over relying on `Drop`, because explicit close can
-//! report cleanup failure; use [`Camera::close_detailed`] to inspect every
-//! failure. After all cameras are closed and callbacks have returned,
-//! [`Sdk::shutdown`] can explicitly finalize the process-wide runtime.
-//! Successful shutdown is terminal for the process.
+//! report cleanup failure. After all cameras are closed and callbacks have
+//! returned, [`Sdk::shutdown`] can explicitly finalize the process-wide
+//! runtime. Successful shutdown is terminal for the process.
 //!
 //! See the repository's `tests/hardware_smoke.rs` for polling, callback, and
 //! acquisition-mode transition workflows on a real camera.
@@ -57,8 +55,8 @@ mod types;
 
 pub use callback::EventInfo;
 pub use camera::Camera;
-pub use device::{DeviceInfo, DeviceIter, DeviceList};
-pub use error::{CleanupError, MvsError, MvsResult, ShutdownError};
+pub use device::{DeviceInfo, DeviceList};
+pub use error::{MvsError, MvsResult};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
 pub use types::{AccessMode, EnumNode, FloatNode, IntNode, PixelType, TransportLayer};

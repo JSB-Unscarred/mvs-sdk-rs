@@ -3,7 +3,6 @@ use std::net::Ipv4Addr;
 use std::os::raw::c_void;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
-use crate::error::CleanupError;
 use crate::frame::{Frame, FrameInfo};
 use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult, TransportLayer};
 
@@ -14,11 +13,6 @@ fn unsupported<T>() -> MvsResult<T> {
 pub(crate) struct Sdk;
 
 impl Sdk {
-    #[cfg(test)]
-    pub(crate) fn test_instance() -> Self {
-        Self
-    }
-
     pub(crate) fn init() -> MvsResult<Self> {
         unsupported()
     }
@@ -227,7 +221,7 @@ impl Camera {
         ("Closed", None, false, false, 0)
     }
 
-    pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
+    pub(crate) fn cleanup(&mut self) -> MvsResult<()> {
         Ok(())
     }
 }

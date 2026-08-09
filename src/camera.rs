@@ -7,10 +7,9 @@ use std::os::raw::c_void;
 
 use crate::backend;
 use crate::callback::EventInfo;
-use crate::error::CleanupError;
 use crate::frame::{Frame, FrameGuard};
 use crate::library::{ActiveSdk, CameraLease};
-use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult};
+use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsResult};
 
 pub(crate) type ImageCallback = Box<dyn FnMut(&Frame<'_>) + Send + 'static>;
 pub(crate) type ExceptionCallback = Box<dyn FnMut(u32) + Send + 'static>;
@@ -18,22 +17,15 @@ pub(crate) type EventCallback = Box<dyn FnMut(&EventInfo<'_>) + Send + 'static>;
 
 /// An opened MVS camera.
 ///
-/// Native-operation uncertainty is tracked locally. A failed acquisition
-/// transition can be reconciled by retrying [`Camera::stop_grabbing`], while a
-/// failed callback registration transition can be reconciled by retrying that
-/// callback's unregister operation. Unrelated operations remain available as
-/// long as the native handle is live.
-///
 /// `Camera` is `Send` but not `Sync`; concurrent access to one camera requires
 /// external synchronization. Dropping it performs best-effort cleanup and
-/// discards cleanup failures. Prefer [`Camera::close`] to observe a failure,
-/// or [`Camera::close_detailed`] to inspect every failure.
+/// discards cleanup failures. Prefer [`Camera::close`] to observe a failure.
 /// Callbacks in different slots may overlap and must not synchronously wait for
 /// one another; unregister and cleanup drain in-flight callbacks.
 ///
 pub struct Camera {
     inner: backend::Camera,
-    lease: CameraLease,
+    _lease: CameraLease,
     _not_sync: PhantomData<Cell<()>>,
 }
 
@@ -43,29 +35,17 @@ impl Camera {
         active: &ActiveSdk,
         mode: AccessMode,
     ) -> MvsResult<Self> {
-        let pending = active.begin_camera_open();
-        match backend::Camera::open(device, mode) {
-            Ok(inner) => Ok(Self {
-                inner,
-                lease: pending.opened(),
-                _not_sync: PhantomData,
-            }),
-            Err(error) => {
-                let orphaned = matches!(&error, MvsError::OpenRollback { .. });
-                pending.failed(orphaned);
-                Err(error)
-            }
-        }
+        let inner = backend::Camera::open(device, mode)?;
+        Ok(Self {
+            inner,
+            _lease: active.camera_lease(),
+            _not_sync: PhantomData,
+        })
     }
 
-    fn cleanup(&mut self) -> Result<(), CleanupError> {
-        let result = self.inner.cleanup();
-        let destroyed = match &result {
-            Ok(()) => true,
-            Err(error) => error.native_handle_destroyed(),
-        };
-        self.lease.settle(destroyed);
-        result
+    /// Run the backend cleanup sequence while this Camera still owns its lease.
+    fn cleanup(&mut self) -> MvsResult<()> {
+        self.inner.cleanup()
     }
 
     /// Borrow the opaque native camera handle for advanced interoperability.
@@ -92,32 +72,28 @@ impl Camera {
     /// An active, natively registered image callback selects callback mode. If
     /// no image callback is registered, polling mode is selected. A callback
     /// disabled by panic must first be replaced or unregistered; otherwise this
-    /// method returns [`MvsError::CallOrder`]. The mode remains fixed until
-    /// [`Camera::stop_grabbing`] succeeds. If start or stop fails, retry stop to
-    /// reconcile the uncertain acquisition state.
+    /// method returns [`crate::MvsError::CallOrder`]. The mode remains fixed until
+    /// [`Camera::stop_grabbing`] succeeds.
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }
 
     /// Stop image acquisition.
     ///
-    /// Call this before first registering or unregistering an image callback,
-    /// or before switching between callback and polling modes. An already
-    /// registered callback may be replaced while callback acquisition runs.
-    /// This method may also be retried after an uncertain start/stop failure to
-    /// reconcile the wrapper with native acquisition state.
+    /// Call this before registering, replacing, or unregistering an image
+    /// callback, and before switching between callback and polling modes.
+    /// Native failures are returned unchanged.
     pub fn stop_grabbing(&mut self) -> MvsResult<()> {
         self.inner.stop_grabbing()
     }
 
     /// Poll for one image while acquisition is running in polling mode.
     ///
-    /// Calling this in callback mode returns [`MvsError::CallOrder`].
+    /// Calling this in callback mode returns [`crate::MvsError::CallOrder`].
     /// Multiple guards may coexist, up to the SDK's configured image-node
     /// count. Each guard keeps the camera borrowed until it is released or
     /// dropped. `timeout_ms` is passed to the SDK in milliseconds.
     ///
-    /// [`MvsError::CallOrder`]: crate::MvsError::CallOrder
     pub fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
         self.inner.get_image_buffer(timeout_ms).map(FrameGuard::new)
     }
@@ -125,13 +101,11 @@ impl Camera {
     /// Register an image callback that may be invoked by the SDK's streaming
     /// thread.
     ///
-    /// First registration requires acquisition to be stopped. Once callback
-    /// acquisition is running, registering again replaces only the Rust
-    /// closure and does not call the SDK; replacement waits for an in-flight
-    /// invocation to finish. Stop acquisition before switching modes or
-    /// unregistering. Each borrowed [`Frame`] is valid only for that
-    /// invocation; call [`Frame::to_owned`] before sending image data
-    /// elsewhere.
+    /// Acquisition must be stopped for registration and replacement.
+    /// Replacing an existing registration updates only the Rust closure and
+    /// waits for an in-flight invocation to finish. Each borrowed [`Frame`] is
+    /// valid only for that invocation; call [`Frame::to_owned`] before sending
+    /// image data elsewhere.
     ///
     /// A panic is caught at the FFI boundary and disables this callback after
     /// that invocation. Register another closure to resume delivery.
@@ -160,9 +134,8 @@ impl Camera {
     ///
     /// Acquisition must be stopped before unregistering the callback.
     ///
-    /// This waits for an in-flight closure and silences later native calls. A
-    /// native failure leaves only this registration uncertain; unregister may
-    /// be retried, and cleanup will conservatively retry it as well.
+    /// This waits for an in-flight closure and silences later native calls.
+    /// Native failures are returned unchanged.
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_image_callback()
     }
@@ -197,8 +170,7 @@ impl Camera {
     /// Unregister the current device-exception callback.
     ///
     /// This waits for an in-flight closure and silences later native calls. A
-    /// native failure leaves only this registration uncertain; unregister may
-    /// be retried, and cleanup will conservatively retry it as well.
+    /// Native failures are returned unchanged.
     pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_exception_callback()
     }
@@ -235,8 +207,7 @@ impl Camera {
     /// This is distinct from [`Camera::event_notification_off`], which stops
     /// device-side event notification without removing the callback.
     /// Returning successfully means the Rust closure is no longer running and
-    /// will not be invoked again. A native failure leaves only this named
-    /// registration uncertain and the unregister operation may be retried.
+    /// will not be invoked again. Native failures are returned unchanged.
     pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
         self.inner.unregister_event_callback(event_name)
     }
@@ -329,7 +300,7 @@ impl Camera {
 
     /// Read an enum node's current numeric value and supported-value list.
     ///
-    /// This uses the SDK's standard enum query, which reports at most 64
+    /// This uses the SDK's extended enum query, which reports at most 256
     /// supported values.
     pub fn get_enum_info(&self, key: &str) -> MvsResult<EnumNode> {
         self.inner.get_enum_info(key)
@@ -344,33 +315,11 @@ impl Camera {
 
     /// Consume the camera and close its native resources.
     ///
-    /// Cleanup continues after failures so handle destruction is still
-    /// attempted. If multiple operations fail, this returns the first error in
-    /// call order. Use [`Camera::close_detailed`] to inspect every failure.
+    /// On the owner thread, the backend still attempts handle destruction after
+    /// an earlier cleanup failure and returns the first error in call order.
+    /// Calling this from one of the camera's callbacks returns
+    /// [`crate::MvsError::CallOrder`] and keeps SDK finalization blocked.
     pub fn close(mut self) -> MvsResult<()> {
-        self.cleanup().map_err(CleanupError::into_first_error)
-    }
-
-    /// Consume the camera and report every cleanup failure.
-    ///
-    /// Cleanup first silences and drains Rust callbacks, then attempts to stop
-    /// acquisition, unregister every native callback, close the device, and
-    /// destroy the handle. A failed step does not short-circuit later steps,
-    /// and [`CleanupError`] retains failures in call order.
-    /// Consequently, an error does not imply that the handle is still alive:
-    /// destruction may already have succeeded after an earlier failure.
-    /// Closing from this camera's image callback cannot release the frame that
-    /// callback is still borrowing; event callbacks are treated conservatively
-    /// as well. Those contexts skip native teardown and report
-    /// [`MvsError::CallOrder`] through [`CleanupError::errors`]. The SDK does
-    /// explicitly support closing and destroying a disconnected handle from
-    /// its exception callback, so that context performs only the supported
-    /// close-and-destroy sequence.
-    ///
-    /// This is preferred when diagnostics need more than the first error
-    /// returned by [`Camera::close`]. [`Drop`] uses the same cleanup path but
-    /// cannot report its result.
-    pub fn close_detailed(mut self) -> Result<(), CleanupError> {
         self.cleanup()
     }
 }
@@ -391,11 +340,5 @@ impl fmt::Debug for Camera {
             .field("exception_cb", &exception_cb)
             .field("event_cbs", &event_cbs)
             .finish()
-    }
-}
-
-impl Drop for Camera {
-    fn drop(&mut self) {
-        let _ = self.cleanup();
     }
 }

@@ -231,8 +231,7 @@ impl<'cam> FrameGuard<'cam> {
 
     /// Release the SDK buffer and report the vendor result.
     ///
-    /// The guard is consumed. If the SDK returns an error, release is not
-    /// retried because native ownership is uncertain.
+    /// The guard is consumed, so the native release is attempted exactly once.
     pub fn release(mut self) -> MvsResult<()> {
         self.inner.release()
     }

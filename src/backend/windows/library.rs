@@ -7,11 +7,6 @@ pub(crate) struct Sdk {
 }
 
 impl Sdk {
-    #[cfg(test)]
-    pub(crate) fn test_instance() -> Self {
-        Self { _private: () }
-    }
-
     pub(crate) fn init() -> MvsResult<Self> {
         // SAFETY: process-wide serialization is provided by the safe wrapper.
         check(unsafe { sys::MV_CC_Initialize() })?;

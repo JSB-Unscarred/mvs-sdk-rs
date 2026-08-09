@@ -5,7 +5,6 @@
 //! [`MvsError::Unknown`] so nothing is lost.
 
 use std::ffi::NulError;
-use std::fmt;
 use std::os::raw::c_int;
 
 use crate::sys;
@@ -13,193 +12,8 @@ use crate::sys;
 /// Crate-wide result alias.
 pub type MvsResult<T> = Result<T, MvsError>;
 
-/// Error returned by [`Sdk::shutdown`](crate::Sdk::shutdown).
-#[non_exhaustive]
-#[derive(Debug)]
-pub enum ShutdownError {
-    /// Native camera resources or callbacks are still live.
-    InUse {
-        /// Cameras that have not completed handle destruction.
-        live_cameras: usize,
-        /// Callbacks that are still executing.
-        active_callbacks: usize,
-    },
-    /// A native handle could not be destroyed safely, so finalization is
-    /// permanently blocked for this process.
-    UnresolvedResources {
-        /// Number of native handles whose destruction could not be confirmed.
-        orphaned_handles: usize,
-    },
-    /// The vendor finalization call failed.
-    Finalize(MvsError),
-    /// The process-wide SDK state can no longer be trusted.
-    StateUnknown {
-        /// Original finalization error code, when finalization caused the
-        /// unknown state and returned a vendor error.
-        finalize_code: Option<u32>,
-    },
-}
-
-impl fmt::Display for ShutdownError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InUse {
-                live_cameras,
-                active_callbacks,
-            } => write!(
-                f,
-                "MVS SDK is still in use by {live_cameras} camera(s) and {active_callbacks} callback(s)"
-            ),
-            Self::UnresolvedResources { orphaned_handles } => write!(
-                f,
-                "MVS SDK cannot be finalized because {orphaned_handles} native handle(s) could not be destroyed"
-            ),
-            Self::Finalize(error) => write!(f, "MVS SDK finalization failed: {error}"),
-            Self::StateUnknown {
-                finalize_code: Some(code),
-            } => write!(
-                f,
-                "MVS SDK state is unknown after finalization failed with 0x{code:08X}"
-            ),
-            Self::StateUnknown {
-                finalize_code: None,
-            } => f.write_str("MVS SDK process state is unknown"),
-        }
-    }
-}
-
-impl std::error::Error for ShutdownError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Finalize(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-/// One internal operation attempted while closing a camera.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    not(all(target_os = "windows", target_arch = "x86_64")),
-    allow(dead_code)
-)]
-pub(crate) enum CleanupStep {
-    /// Drain Rust callbacks before native teardown.
-    DrainCallbacks,
-    /// Stop image acquisition when it may still be active.
-    StopGrabbing,
-    /// Unregister the image callback.
-    UnregisterImageCallback,
-    /// Unregister the device-exception callback.
-    UnregisterExceptionCallback,
-    /// Unregister one named event callback.
-    UnregisterEventCallback,
-    /// Close the device.
-    CloseDevice,
-    /// Destroy the native handle.
-    DestroyHandle,
-}
-
-impl fmt::Display for CleanupStep {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::DrainCallbacks => "drain callbacks",
-            Self::StopGrabbing => "stop grabbing",
-            Self::UnregisterImageCallback => "unregister image callback",
-            Self::UnregisterExceptionCallback => "unregister exception callback",
-            Self::UnregisterEventCallback => "unregister event callback",
-            Self::CloseDevice => "close device",
-            Self::DestroyHandle => "destroy handle",
-        })
-    }
-}
-
-/// One failed internal operation from a camera cleanup attempt.
-#[derive(Debug)]
-pub(crate) struct CleanupFailure {
-    /// The cleanup operation that failed.
-    pub(crate) step: CleanupStep,
-    /// The error returned by that operation.
-    pub(crate) error: MvsError,
-}
-
-impl fmt::Display for CleanupFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.step, self.error)
-    }
-}
-
-/// Errors returned by [`Camera::close_detailed`](crate::Camera::close_detailed).
-///
-/// Cleanup normally continues after each failure so that handle destruction
-/// is attempted, and errors are retained in call order. An error therefore
-/// does not imply that the native handle is still alive; use
-/// [`CleanupError::native_handle_destroyed`] when that distinction matters.
-#[derive(Debug)]
-pub struct CleanupError {
-    failures: Vec<CleanupFailure>,
-    native_handle_destroyed: bool,
-}
-
-impl CleanupError {
-    #[cfg(any(test, all(target_os = "windows", target_arch = "x86_64")))]
-    pub(crate) fn new(failures: Vec<CleanupFailure>, native_handle_destroyed: bool) -> Self {
-        debug_assert!(!failures.is_empty());
-        Self {
-            failures,
-            native_handle_destroyed,
-        }
-    }
-
-    #[cfg(all(test, target_os = "windows", target_arch = "x86_64"))]
-    pub(crate) fn failures(&self) -> &[CleanupFailure] {
-        &self.failures
-    }
-
-    /// Return the non-empty cleanup errors in attempted call order.
-    pub fn errors(&self) -> impl ExactSizeIterator<Item = &MvsError> {
-        self.failures.iter().map(|failure| &failure.error)
-    }
-
-    pub(crate) fn into_first_error(self) -> MvsError {
-        self.failures
-            .into_iter()
-            .next()
-            .expect("cleanup errors are never empty")
-            .error
-    }
-
-    /// Whether native handle destruction was confirmed despite the reported
-    /// cleanup failures.
-    pub fn native_handle_destroyed(&self) -> bool {
-        self.native_handle_destroyed
-    }
-}
-
-impl fmt::Display for CleanupError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "camera cleanup failed in {} step(s)",
-            self.failures.len()
-        )?;
-        for failure in &self.failures {
-            write!(f, "; {failure}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for CleanupError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.failures
-            .first()
-            .map(|failure| &failure.error as &(dyn std::error::Error + 'static))
-    }
-}
-
-/// Error returned by any MVS SDK call, plus Rust-side marshalling, lifecycle,
-/// and open-rollback failures.
+/// Error returned by any MVS SDK call, plus Rust-side marshalling and lifecycle
+/// failures.
 ///
 /// This enum is non-exhaustive so newer SDK releases and additional safe-layer
 /// validation errors can be represented without another source-breaking change.
@@ -413,9 +227,9 @@ pub enum MvsError {
     /// The process-wide SDK has already been finalized.
     #[error("MVS SDK has already been shut down for this process")]
     SdkFinalized,
-    /// The process-wide SDK state can no longer be trusted.
-    #[error("MVS SDK process state is unknown")]
-    SdkStateUnknown,
+    /// A camera, unresolved native handle, or callback still depends on the SDK.
+    #[error("MVS SDK is still in use by a camera, native handle, or callback")]
+    SdkInUse,
 
     /// The SDK returned frame metadata that cannot describe a valid Rust
     /// slice, such as a non-empty null buffer or an address-space-sized frame.
@@ -423,18 +237,6 @@ pub enum MvsError {
     InvalidFrameBuffer {
         /// Effective length reported by the SDK's extended or legacy metadata.
         frame_len: u64,
-    },
-
-    /// Handle creation or device opening failed, and destroying the non-null
-    /// partial handle also failed.
-    #[error(
-        "camera open sequence failed ({open}); rollback handle destruction also failed ({destroy})"
-    )]
-    OpenRollback {
-        /// Error returned while creating the handle or opening the device.
-        open: Box<MvsError>,
-        /// Error returned while rolling back the newly created handle.
-        destroy: Box<MvsError>,
     },
 }
 
@@ -453,9 +255,8 @@ macro_rules! define_sdk_error_codes {
                     | Self::UnsupportedPlatform
                     | Self::SdkNotInitialized
                     | Self::SdkFinalized
-                    | Self::SdkStateUnknown
-                    | Self::InvalidFrameBuffer { .. }
-                    | Self::OpenRollback { .. } => None,
+                    | Self::SdkInUse
+                    | Self::InvalidFrameBuffer { .. } => None,
                 }
             }
         }
@@ -556,10 +357,7 @@ pub(crate) fn check(code: c_int) -> MvsResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CleanupError, CleanupFailure, CleanupStep, KNOWN_SDK_ERROR_CODES, MvsError, ShutdownError,
-    };
-    use crate::sys;
+    use super::{KNOWN_SDK_ERROR_CODES, MvsError};
 
     // 验证头文件中每个已知 SDK error code 都可无损解析和还原。
     #[test]
@@ -580,76 +378,10 @@ mod tests {
         let code = 0xDEAD_BEEF;
         assert_eq!(MvsError::from(code).raw_code(), Some(code));
         assert_eq!(MvsError::UnsupportedPlatform.raw_code(), None);
+        assert_eq!(MvsError::SdkInUse.raw_code(), None);
         assert_eq!(
             MvsError::InvalidFrameBuffer { frame_len: 1 }.raw_code(),
             None
         );
-    }
-
-    // 验证 unknown shutdown 状态按可用的 finalize evidence 格式化。
-    #[test]
-    fn shutdown_unknown_state_describes_available_evidence() {
-        assert_eq!(
-            MvsError::SdkStateUnknown.to_string(),
-            "MVS SDK process state is unknown"
-        );
-        assert_eq!(
-            ShutdownError::StateUnknown {
-                finalize_code: None
-            }
-            .to_string(),
-            "MVS SDK process state is unknown"
-        );
-        assert_eq!(
-            ShutdownError::StateUnknown {
-                finalize_code: Some(sys::MV_E_RESOURCE)
-            }
-            .to_string(),
-            "MVS SDK state is unknown after finalization failed with 0x80000006"
-        );
-    }
-
-    // 验证 cleanup error 保留调用顺序、首个 source 与 handle 销毁状态。
-    #[test]
-    fn cleanup_error_preserves_order_and_selects_the_first_error() {
-        let error = CleanupError::new(
-            vec![
-                CleanupFailure {
-                    step: CleanupStep::StopGrabbing,
-                    error: MvsError::Resource,
-                },
-                CleanupFailure {
-                    step: CleanupStep::CloseDevice,
-                    error: MvsError::CallOrder,
-                },
-            ],
-            true,
-        );
-
-        assert_eq!(
-            error.errors().map(MvsError::raw_code).collect::<Vec<_>>(),
-            [Some(sys::MV_E_RESOURCE), Some(sys::MV_E_CALLORDER)]
-        );
-        assert!(error.native_handle_destroyed());
-        let source = std::error::Error::source(&error).expect("cleanup error has a source");
-        assert_eq!(
-            source
-                .downcast_ref::<MvsError>()
-                .and_then(MvsError::raw_code),
-            Some(sys::MV_E_RESOURCE)
-        );
-        assert_eq!(
-            error.into_first_error().raw_code(),
-            Some(sys::MV_E_RESOURCE)
-        );
-
-        let destroy_error = CleanupError::new(
-            vec![CleanupFailure {
-                step: CleanupStep::DestroyHandle,
-                error: MvsError::Resource,
-            }],
-            false,
-        );
-        assert!(!destroy_error.native_handle_destroyed());
     }
 }
