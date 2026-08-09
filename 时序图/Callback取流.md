@@ -4,54 +4,49 @@
 sequenceDiagram
     autonumber
     actor App as 应用
-    participant Sdk as Sdk / ProcessRuntime
+    participant Sdk as Sdk owner
     participant Camera as Camera
+    participant Slot as Arc callback slot
     participant Native as MVS SDK
-    participant Thread as SDK callback 线程
 
     App->>Sdk: Sdk::init()
-    alt 首次初始化
-        Sdk->>Native: MV_CC_Initialize()
-        Native-->>Sdk: MV_OK
-    else 已初始化
-        Sdk-->>App: clone 同一 Arc(Sdk)
-    end
-
+    Sdk->>Native: MV_CC_Initialize()
     App->>Sdk: enumerate_devices(layers)
     Sdk->>Native: MV_CC_EnumDevices(...)
-    Native-->>Sdk: 临时设备列表
-    Sdk-->>App: Rust-owned DeviceList
+    Native-->>Sdk: SDK-owned 临时列表
+    Sdk-->>App: 深拷贝 DeviceList<'sdk>
 
-    App->>Camera: DeviceInfo::open(mode)
+    App->>Camera: DeviceInfo::open(mode, key)
     Camera->>Native: CreateHandle → OpenDevice
-    Native-->>App: Camera（Stopped）
-
     App->>Camera: register_image_callback(closure)
-    Camera->>Native: RegisterImageCallBackEx(trampoline, stable slot)
+    Camera->>Slot: 保存 Arc(closure) 与 native Arc token
+    Camera->>Native: RegisterImageCallBackEx2(trampoline, slot, true)
     App->>Camera: start_grabbing()
     Camera->>Native: MV_CC_StartGrabbing()
 
     loop 每帧
-        Native-->>Thread: image_trampoline(data, info, slot)
-        Thread->>Sdk: active_callbacks += 1
-        Thread->>App: closure(&Frame)
-        Note over Thread,App: Frame 仅在本次 callback 有效；跨调用使用 to_owned()
-        App-->>Thread: 返回
-        Thread->>Sdk: active_callbacks -= 1
+        Native-->>Slot: image_trampoline(MV_FRAME_OUT, slot, true)
+        Slot->>Slot: 临时 clone slot 与 closure Arc
+        Slot->>App: closure(&Frame)
+        Note over Slot,App: Frame 仅在本次 callback 有效；跨调用使用 to_owned()
+        App-->>Slot: 返回
     end
 
     App->>Camera: stop_grabbing()
     Camera->>Native: MV_CC_StopGrabbing()
-    App->>Camera: unregister_image_callback()
-    Camera->>Native: RegisterImageCallBackEx(NULL, NULL)
-    Camera->>Camera: 等待在途 closure 返回
+    opt 显式注销
+        App->>Camera: unregister_image_callback()
+        Camera->>Native: RegisterImageCallBackEx2(NULL, NULL, true)
+        Camera->>Slot: 清除 stored closure
+        Note over Camera,Slot: 已在途 closure 由临时 Arc 保活，可短暂继续
+    end
 
     App->>Camera: close()
     Camera->>Native: CloseDevice → DestroyHandle
+    Camera->>Slot: Destroy 成功后回收 native Arc token
     App->>Sdk: shutdown()
     Sdk->>Native: MV_CC_Finalize()
 ```
 
-callback 负责通知或复制数据，Camera 的停止、关闭和重连由 owner 线程执行。closure panic
-在 trampoline 内截获，并停用对应 slot。
-
+callback 只做通知或复制数据，停止、关闭和重连交给 `Camera` owner。closure panic 在
+trampoline 最外层截获，Arc 的析构也不会跨越 FFI 边界。

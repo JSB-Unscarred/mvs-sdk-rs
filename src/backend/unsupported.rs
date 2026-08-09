@@ -4,7 +4,7 @@ use std::os::raw::c_void;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
 use crate::frame::{Frame, FrameInfo};
-use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsError, MvsResult, TransportLayer};
+use crate::{AccessMode, EnumValue, FloatValue, IntValue, MvsError, MvsResult, TransportLayer};
 
 fn unsupported<T>() -> MvsResult<T> {
     Err(MvsError::UnsupportedPlatform)
@@ -17,8 +17,8 @@ impl Sdk {
         unsupported()
     }
 
-    pub(crate) fn sdk_version(&self) -> u32 {
-        0
+    pub(crate) fn sdk_version() -> MvsResult<u32> {
+        unsupported()
     }
 
     pub(crate) fn finalize(&self) -> MvsResult<()> {
@@ -33,12 +33,8 @@ impl DeviceList {
         unsupported()
     }
 
-    pub(crate) fn len(&self) -> usize {
-        0
-    }
-
-    pub(crate) fn get(&self, _index: usize) -> Option<DeviceInfo> {
-        None
+    pub(crate) fn into_devices(self) -> Vec<DeviceInfo> {
+        Vec::new()
     }
 }
 
@@ -94,7 +90,11 @@ impl DeviceInfo {
 pub(crate) struct Camera;
 
 impl Camera {
-    pub(crate) fn open(_device: DeviceInfo, _mode: AccessMode) -> MvsResult<Self> {
+    pub(crate) fn open(
+        _device: DeviceInfo,
+        _mode: AccessMode,
+        _switchover_key: u16,
+    ) -> MvsResult<Self> {
         unsupported()
     }
 
@@ -126,6 +126,54 @@ impl Camera {
         unsupported()
     }
 
+    pub(crate) fn get_int(&self, _key: &str) -> MvsResult<IntValue> {
+        unsupported()
+    }
+
+    pub(crate) fn set_int(&self, _key: &str, _value: i64) -> MvsResult<()> {
+        unsupported()
+    }
+
+    pub(crate) fn get_enum(&self, _key: &str) -> MvsResult<EnumValue> {
+        unsupported()
+    }
+
+    pub(crate) fn set_enum_value(&self, _key: &str, _value: u32) -> MvsResult<()> {
+        unsupported()
+    }
+
+    pub(crate) fn set_enum_symbolic(&self, _key: &str, _value: &str) -> MvsResult<()> {
+        unsupported()
+    }
+
+    pub(crate) fn get_float(&self, _key: &str) -> MvsResult<FloatValue> {
+        unsupported()
+    }
+
+    pub(crate) fn set_float(&self, _key: &str, _value: f32) -> MvsResult<()> {
+        unsupported()
+    }
+
+    pub(crate) fn get_bool(&self, _key: &str) -> MvsResult<bool> {
+        unsupported()
+    }
+
+    pub(crate) fn set_bool(&self, _key: &str, _value: bool) -> MvsResult<()> {
+        unsupported()
+    }
+
+    pub(crate) fn get_string(&self, _key: &str) -> MvsResult<String> {
+        unsupported()
+    }
+
+    pub(crate) fn set_string(&self, _key: &str, _value: &str) -> MvsResult<()> {
+        unsupported()
+    }
+
+    pub(crate) fn exec_command(&self, _key: &str) -> MvsResult<()> {
+        unsupported()
+    }
+
     pub(crate) fn register_exception_callback(
         &mut self,
         _callback: ExceptionCallback,
@@ -154,66 +202,6 @@ impl Camera {
     }
 
     pub(crate) fn event_notification_off(&self, _event_name: &str) -> MvsResult<()> {
-        unsupported()
-    }
-
-    pub(crate) fn set_int(&self, _key: &str, _value: i64) -> MvsResult<()> {
-        unsupported()
-    }
-
-    pub(crate) fn get_int(&self, _key: &str) -> MvsResult<i64> {
-        unsupported()
-    }
-
-    pub(crate) fn get_int_range(&self, _key: &str) -> MvsResult<IntNode> {
-        unsupported()
-    }
-
-    pub(crate) fn set_float(&self, _key: &str, _value: f32) -> MvsResult<()> {
-        unsupported()
-    }
-
-    pub(crate) fn get_float(&self, _key: &str) -> MvsResult<f32> {
-        unsupported()
-    }
-
-    pub(crate) fn get_float_range(&self, _key: &str) -> MvsResult<FloatNode> {
-        unsupported()
-    }
-
-    pub(crate) fn set_bool(&self, _key: &str, _value: bool) -> MvsResult<()> {
-        unsupported()
-    }
-
-    pub(crate) fn get_bool(&self, _key: &str) -> MvsResult<bool> {
-        unsupported()
-    }
-
-    pub(crate) fn set_enum(&self, _key: &str, _value: &str) -> MvsResult<()> {
-        unsupported()
-    }
-
-    pub(crate) fn set_string(&self, _key: &str, _value: &str) -> MvsResult<()> {
-        unsupported()
-    }
-
-    pub(crate) fn exec_command(&self, _key: &str) -> MvsResult<()> {
-        unsupported()
-    }
-
-    pub(crate) fn get_string(&self, _key: &str) -> MvsResult<String> {
-        unsupported()
-    }
-
-    pub(crate) fn get_enum(&self, _key: &str) -> MvsResult<u32> {
-        unsupported()
-    }
-
-    pub(crate) fn get_enum_info(&self, _key: &str) -> MvsResult<EnumNode> {
-        unsupported()
-    }
-
-    pub(crate) fn set_enum_value(&self, _key: &str, _value: u32) -> MvsResult<()> {
         unsupported()
     }
 

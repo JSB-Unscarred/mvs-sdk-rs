@@ -1,4 +1,4 @@
-//! Device enumeration and per-device metadata.
+//! 设备枚举结果与设备 metadata。
 
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -9,43 +9,45 @@ use crate::camera::Camera;
 use crate::library::Sdk;
 use crate::{AccessMode, MvsResult, TransportLayer};
 
-/// Owned list of enumerated devices. Iterate via [`DeviceList::iter`].
-pub struct DeviceList {
-    inner: backend::DeviceList,
+/// Rust-owned 设备 snapshot 列表。
+///
+/// 列表借用 [`Sdk`]，保证其条目传回 native API 时 SDK 仍处于活动期。
+pub struct DeviceList<'sdk> {
+    devices: Vec<DeviceInfo<'sdk>>,
 }
 
-impl DeviceList {
-    pub(crate) fn enumerate(layers: TransportLayer) -> MvsResult<Self> {
-        Ok(Self {
-            inner: backend::DeviceList::enumerate(layers)?,
-        })
+impl<'sdk> DeviceList<'sdk> {
+    pub(crate) fn enumerate(sdk: &'sdk Sdk, layers: TransportLayer) -> MvsResult<Self> {
+        let devices = backend::DeviceList::enumerate(layers)?
+            .into_devices()
+            .into_iter()
+            .map(|inner| DeviceInfo { inner, sdk })
+            .collect();
+        Ok(Self { devices })
     }
 
-    /// Return the number of enumerated device snapshots.
+    /// 返回设备数量。
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.devices.len()
     }
 
-    /// Return whether enumeration produced no devices.
+    /// 返回列表是否为空。
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.devices.is_empty()
     }
 
-    /// 迭代 cloned、owned device snapshot。
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = DeviceInfo> + '_ {
-        (0..self.len()).map(|index| {
-            self.get(index)
-                .expect("index produced from DeviceList::len must exist")
-        })
+    /// 按枚举顺序借用设备 snapshot。
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = &DeviceInfo<'sdk>> {
+        self.devices.iter()
     }
 
-    /// Clone the device snapshot at `index`, or return `None` if out of range.
-    pub fn get(&self, index: usize) -> Option<DeviceInfo> {
-        self.inner.get(index).map(|inner| DeviceInfo { inner })
+    /// 借用指定位置的设备 snapshot。
+    pub fn get(&self, index: usize) -> Option<&DeviceInfo<'sdk>> {
+        self.devices.get(index)
     }
 }
 
-impl fmt::Debug for DeviceList {
+impl fmt::Debug for DeviceList<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceList")
             .field("count", &self.len())
@@ -53,116 +55,80 @@ impl fmt::Debug for DeviceList {
     }
 }
 
-/// Owned snapshot of one enumerated device.
+/// 从 SDK 枚举结果深拷贝得到的单个设备 snapshot。
 #[derive(Clone)]
-pub struct DeviceInfo {
+pub struct DeviceInfo<'sdk> {
     inner: backend::DeviceInfo,
+    sdk: &'sdk Sdk,
 }
 
-impl DeviceInfo {
-    /// Return the transport layer reported by the SDK.
+impl<'sdk> DeviceInfo<'sdk> {
+    /// 返回 SDK 报告的 transport layer。
     pub fn transport_layer(&self) -> TransportLayer {
         self.inner.transport_layer()
     }
 
-    /// Return whether this is a native, virtual, or GenTL GigE device.
+    /// 返回设备是否使用 GigE transport。
     pub fn is_gige(&self) -> bool {
         self.inner.is_gige()
     }
 
-    /// Return whether this is a native or virtual USB device.
+    /// 返回设备是否使用 USB transport。
     pub fn is_usb(&self) -> bool {
         self.inner.is_usb()
     }
 
-    /// Return the manufacturer name, decoded lossily as UTF-8.
-    ///
-    /// Returns an empty string when the SDK's transport record does not expose
-    /// this field.
+    /// 返回 manufacturer name；无对应字段时为空字符串。
     pub fn manufacturer(&self) -> String {
         self.inner.manufacturer()
     }
 
-    /// Return the model name, decoded lossily as UTF-8.
-    ///
-    /// Returns an empty string when the SDK's transport record does not expose
-    /// this field.
+    /// 返回 model name；无对应字段时为空字符串。
     pub fn model(&self) -> String {
         self.inner.model()
     }
 
-    /// Return the serial number, decoded lossily as UTF-8.
-    ///
-    /// Returns an empty string when the SDK's transport record does not expose
-    /// this field.
+    /// 返回 serial number；无对应字段时为空字符串。
     pub fn serial(&self) -> String {
         self.inner.serial()
     }
 
-    /// Return the user-defined device name, decoded lossily as UTF-8.
-    ///
-    /// Returns an empty string when the SDK's transport record does not expose
-    /// this field, including native Camera Link device records.
+    /// 返回 user-defined name；无对应字段时为空字符串。
     pub fn user_defined_name(&self) -> String {
         self.inner.user_defined_name()
     }
 
-    /// Return the current device IP for GigE devices.
-    ///
-    /// Other transport layers return `None`.
+    /// 返回 GigE 设备当前 IP，其它 transport 返回 `None`。
     pub fn ip(&self) -> Option<Ipv4Addr> {
         self.inner.ip()
     }
 
-    /// Return the host NIC IP used by a GigE device.
-    ///
-    /// Other transport layers return `None`.
+    /// 返回 GigE 设备使用的 host NIC IP，其它 transport 返回 `None`。
     pub fn host_nic_ip(&self) -> Option<Ipv4Addr> {
         self.inner.host_nic_ip()
     }
 
-    /// Query whether the device can currently be opened in `mode`.
-    ///
-    /// This requires an active process-wide [`Sdk`].
-    pub fn is_accessible(&self, mode: AccessMode) -> MvsResult<bool> {
-        let _active = Sdk::active()?;
-        Ok(self.inner.is_accessible(mode))
+    /// 查询设备是否可按指定权限打开。
+    pub fn is_accessible(&self, mode: AccessMode) -> bool {
+        self.inner.is_accessible(mode)
     }
 
-    /// Open this device with the requested access mode.
+    /// 按官方 `OpenDevice` 的 access mode 与 switchover key 打开设备。
     ///
-    /// This requires an active process-wide [`Sdk`].
-    pub fn open(&self, mode: AccessMode) -> MvsResult<Camera> {
-        let active = Sdk::active()?;
-        Camera::open(self.inner.clone(), &active, mode)
+    /// key 仅对 native GigE 设备有意义；其它 transport 由 SDK 忽略。
+    pub fn open(&self, mode: AccessMode, switchover_key: u16) -> MvsResult<Camera<'sdk>> {
+        Camera::open(self.inner.clone(), self.sdk, mode, switchover_key)
     }
 
-    /// Open this device with [`AccessMode::Exclusive`].
+    /// 借出当前 owned snapshot 的 opaque pointer。
     ///
-    /// See [`AccessMode`] for transport-specific behavior.
-    pub fn open_exclusive(&self) -> MvsResult<Camera> {
-        self.open(AccessMode::Exclusive)
-    }
-
-    /// Open this device with [`AccessMode::Control`].
-    ///
-    /// See [`AccessMode`] for transport-specific behavior.
-    pub fn open_control(&self) -> MvsResult<Camera> {
-        self.open(AccessMode::Control)
-    }
-
-    /// Opaque pointer to the owned backend device-info snapshot.
-    ///
-    /// The address remains valid while this value or one of its clones keeps
-    /// the snapshot alive. After [`Sdk::shutdown`], the pointer remains valid
-    /// as Rust-owned memory but must not be passed back to the native SDK.
-    /// Do not mutate or free the pointed-to record.
+    /// pointer 只在本值存活期间有效；调用 raw SDK 仍属于 `unsafe` 操作。
     pub fn as_raw(&self) -> *const c_void {
         self.inner.as_raw()
     }
 }
 
-impl fmt::Debug for DeviceInfo {
+impl fmt::Debug for DeviceInfo<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceInfo")
             .field("transport", &self.transport_layer())

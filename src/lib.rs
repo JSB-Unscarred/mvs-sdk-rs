@@ -20,20 +20,21 @@
 //!   [`Camera::get_image_buffer`]. Its [`FrameGuard`] releases the native buffer
 //!   on drop; call [`FrameGuard::release`] to observe release errors.
 //!
-//! Stop acquisition before registering, replacing, or unregistering the image
+//! Stop acquisition before registering or unregistering the image
 //! callback, and before switching acquisition modes. To keep pixels beyond a
 //! callback or guard lifetime, copy them with [`Frame::to_owned`].
 //!
 //! # Lifetimes and shutdown
 //!
-//! [`Camera`] is `Send` but not `Sync`; synchronize shared access externally.
+//! [`Camera`] borrows its unique [`Sdk`] owner and is `Send` but not `Sync`;
+//! move it to a scoped thread when needed and serialize access to one handle.
 //! Prefer [`Camera::close`] over relying on `Drop`, because explicit close can
-//! report cleanup failure. After all cameras are closed and callbacks have
-//! returned, [`Sdk::shutdown`] can explicitly finalize the process-wide
-//! runtime. Successful shutdown is terminal for the process.
+//! report cleanup failure. Consuming [`Sdk`] with [`Sdk::shutdown`] is accepted
+//! only after its camera and device borrows end. Finalization is terminal for
+//! the process, as required by the vendor documentation.
 //!
-//! See the repository's `tests/hardware_smoke.rs` for polling, callback, and
-//! acquisition-mode transition workflows on a real camera.
+//! See the repository's `tests/hardware_smoke.rs` for polling and callback
+//! workflows on separate native handles.
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 // Public functions must not expose types that downstream crates cannot name.
@@ -59,4 +60,4 @@ pub use device::{DeviceInfo, DeviceList};
 pub use error::{MvsError, MvsResult};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
-pub use types::{AccessMode, EnumNode, FloatNode, IntNode, PixelType, TransportLayer};
+pub use types::{AccessMode, EnumValue, FloatValue, IntValue, PixelType, TransportLayer};

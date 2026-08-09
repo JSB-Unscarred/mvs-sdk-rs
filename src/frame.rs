@@ -1,8 +1,6 @@
 //! Platform-independent image frame views and ownership types.
 
 use std::fmt;
-use std::marker::PhantomData;
-use std::rc::Rc;
 
 use crate::backend;
 use crate::{MvsResult, PixelType};
@@ -197,21 +195,16 @@ impl fmt::Debug for OwnedFrame {
 
 /// RAII guard returned by [`Camera::get_image_buffer`](crate::Camera::get_image_buffer).
 ///
-/// The guard keeps the camera borrowed and the SDK buffer valid. It is neither
-/// `Send` nor `Sync`; inspect, copy, and release it on the acquiring thread.
+/// The guard keeps the camera borrowed and the SDK buffer valid.
 /// Dropping the guard makes one best-effort release attempt and cannot report
 /// an error, so use [`FrameGuard::release`] when release failures matter.
 pub struct FrameGuard<'cam> {
     inner: backend::FrameGuard<'cam>,
-    _not_send_sync: PhantomData<Rc<()>>,
 }
 
 impl<'cam> FrameGuard<'cam> {
     pub(crate) fn new(inner: backend::FrameGuard<'cam>) -> Self {
-        Self {
-            inner,
-            _not_send_sync: PhantomData,
-        }
+        Self { inner }
     }
 
     /// Borrow the guarded SDK buffer as a frame.
@@ -242,15 +235,15 @@ mod tests {
     use super::{Frame, FrameInfo};
     use crate::PixelType;
 
-    // 验证 frame copy 会按实际 data 长度校正 metadata，并与 SDK buffer 解耦。
+    // 核心所有权约定：OwnedFrame 的像素与借用 buffer 解耦。
     #[test]
-    fn owned_frame_keeps_data_length_and_metadata_consistent() {
+    fn owned_frame_detaches_from_borrowed_data() {
         let info = FrameInfo {
             width: 2,
             height: 1,
             pixel_type: PixelType::MONO8,
             frame_num: 1,
-            frame_len: 99,
+            frame_len: 2,
             offset_x: 0,
             offset_y: 0,
             gain: 0.0,
@@ -261,10 +254,12 @@ mod tests {
             host_timestamp_raw: 0,
         };
 
-        let mut owned = Frame::from_parts(&[1, 2], info).to_owned();
+        let mut data = [1, 2];
+        let owned = Frame::from_parts(&data, info).to_owned();
+        data[0] = 9;
+
+        assert_eq!(data, [9, 2]);
+        assert_eq!(owned.data(), [1, 2]);
         assert_eq!(owned.info().frame_len(), 2);
-        owned.data_mut()[1] = 3;
-        assert_eq!(owned.as_frame().data(), [1, 3]);
-        assert_eq!(owned.into_data(), [1, 3]);
     }
 }

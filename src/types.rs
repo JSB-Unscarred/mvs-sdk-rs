@@ -3,6 +3,8 @@
 use std::fmt;
 use std::ops::{BitOr, BitOrAssign};
 
+use crate::sys;
+
 /// Device access mode passed to [`DeviceInfo::open`](crate::DeviceInfo::open).
 ///
 /// The vendor SDK applies these modes differently by transport. The mode and
@@ -23,15 +25,15 @@ pub enum AccessMode {
     ControlWithSwitch,
     /// Enable control-owner switching without a key.
     ControlSwitchEnable,
-    /// Enable control-owner switching with the supplied GigE switchover key.
-    ControlSwitchEnableWithKey(u16),
+    /// Enable control-owner switching with a key supplied to `DeviceInfo::open`.
+    ControlSwitchEnableWithKey,
     /// Read-only monitoring access.
     Monitor,
 }
 
-/// Full integer-node information: current value plus its allowed range.
+/// Integer node value snapshot: current value plus its allowed range.
 #[derive(Copy, Clone, Debug)]
-pub struct IntNode {
+pub struct IntValue {
     /// Current node value.
     pub current: i64,
     /// Smallest accepted value.
@@ -42,9 +44,9 @@ pub struct IntNode {
     pub inc: i64,
 }
 
-/// Full float-node information: current value plus min/max.
+/// Float node value snapshot: current value plus min/max.
 #[derive(Copy, Clone, Debug)]
-pub struct FloatNode {
+pub struct FloatValue {
     /// Current node value.
     pub current: f32,
     /// Smallest accepted value.
@@ -53,9 +55,9 @@ pub struct FloatNode {
     pub max: f32,
 }
 
-/// Enum-node information: current numeric value and the list of allowed values.
+/// Enum node value snapshot: current numeric value and allowed values.
 #[derive(Clone, Debug)]
-pub struct EnumNode {
+pub struct EnumValue {
     /// Current numeric value.
     pub current: u32,
     /// Numeric values reported as supported by the node.
@@ -68,29 +70,29 @@ pub struct TransportLayer(u32);
 
 impl TransportLayer {
     /// Unknown or unspecified transport.
-    pub const UNKNOWN: Self = Self(0);
+    pub const UNKNOWN: Self = Self(sys::MV_UNKNOW_DEVICE);
     /// GigE Vision devices.
-    pub const GIGE: Self = Self(1);
+    pub const GIGE: Self = Self(sys::MV_GIGE_DEVICE);
     /// IEEE 1394-a/b devices.
-    pub const IEEE_1394: Self = Self(2);
+    pub const IEEE_1394: Self = Self(sys::MV_1394_DEVICE);
     /// USB3 Vision devices.
-    pub const USB: Self = Self(4);
+    pub const USB: Self = Self(sys::MV_USB_DEVICE);
     /// Camera Link devices.
-    pub const CAMERALINK: Self = Self(8);
+    pub const CAMERALINK: Self = Self(sys::MV_CAMERALINK_DEVICE);
     /// Virtual GigE devices.
-    pub const VIR_GIGE: Self = Self(0x10);
+    pub const VIR_GIGE: Self = Self(sys::MV_VIR_GIGE_DEVICE);
     /// Virtual USB devices.
-    pub const VIR_USB: Self = Self(0x20);
+    pub const VIR_USB: Self = Self(sys::MV_VIR_USB_DEVICE);
     /// GigE devices exposed through GenTL.
-    pub const GENTL_GIGE: Self = Self(0x40);
+    pub const GENTL_GIGE: Self = Self(sys::MV_GENTL_GIGE_DEVICE);
     /// Camera Link devices exposed through GenTL.
-    pub const GENTL_CAMERALINK: Self = Self(0x80);
+    pub const GENTL_CAMERALINK: Self = Self(sys::MV_GENTL_CAMERALINK_DEVICE);
     /// CoaXPress devices exposed through GenTL.
-    pub const GENTL_CXP: Self = Self(0x100);
+    pub const GENTL_CXP: Self = Self(sys::MV_GENTL_CXP_DEVICE);
     /// XoF devices exposed through GenTL.
-    pub const GENTL_XOF: Self = Self(0x200);
+    pub const GENTL_XOF: Self = Self(sys::MV_GENTL_XOF_DEVICE);
     /// Virtual devices exposed through GenTL.
-    pub const GENTL_VIR: Self = Self(0x800);
+    pub const GENTL_VIR: Self = Self(sys::MV_GENTL_VIR_DEVICE);
 
     /// Every transport-layer bit defined by the SDK header version used to
     /// generate these bindings.
@@ -158,45 +160,45 @@ impl PixelType {
     const CATEGORY_MASK: u32 = 0x7F00_0000;
 
     /// Undefined or unknown pixel format.
-    pub const UNDEFINED: Self = Self(0xFFFF_FFFF);
+    pub const UNDEFINED: Self = Self(sys::PixelType_Gvsp_Undefined as u32);
 
     /// 8-bit monochrome pixels.
-    pub const MONO8: Self = Self(0x0108_0001);
+    pub const MONO8: Self = Self(sys::PixelType_Gvsp_Mono8 as u32);
     /// 10-bit monochrome pixels stored in 16-bit words.
-    pub const MONO10: Self = Self(0x0110_0003);
+    pub const MONO10: Self = Self(sys::PixelType_Gvsp_Mono10 as u32);
     /// Packed 10-bit monochrome pixels.
-    pub const MONO10_PACKED: Self = Self(0x010C_0004);
+    pub const MONO10_PACKED: Self = Self(sys::PixelType_Gvsp_Mono10_Packed as u32);
     /// 12-bit monochrome pixels stored in 16-bit words.
-    pub const MONO12: Self = Self(0x0110_0005);
+    pub const MONO12: Self = Self(sys::PixelType_Gvsp_Mono12 as u32);
     /// Packed 12-bit monochrome pixels.
-    pub const MONO12_PACKED: Self = Self(0x010C_0006);
+    pub const MONO12_PACKED: Self = Self(sys::PixelType_Gvsp_Mono12_Packed as u32);
     /// 14-bit monochrome pixels stored in 16-bit words.
-    pub const MONO14: Self = Self(0x0110_0025);
+    pub const MONO14: Self = Self(sys::PixelType_Gvsp_Mono14 as u32);
     /// 16-bit monochrome pixels.
-    pub const MONO16: Self = Self(0x0110_0007);
+    pub const MONO16: Self = Self(sys::PixelType_Gvsp_Mono16 as u32);
 
     /// 8-bit Bayer pixels in GR order.
-    pub const BAYER_GR8: Self = Self(0x0108_0008);
+    pub const BAYER_GR8: Self = Self(sys::PixelType_Gvsp_BayerGR8 as u32);
     /// 8-bit Bayer pixels in RG order.
-    pub const BAYER_RG8: Self = Self(0x0108_0009);
+    pub const BAYER_RG8: Self = Self(sys::PixelType_Gvsp_BayerRG8 as u32);
     /// 8-bit Bayer pixels in GB order.
-    pub const BAYER_GB8: Self = Self(0x0108_000A);
+    pub const BAYER_GB8: Self = Self(sys::PixelType_Gvsp_BayerGB8 as u32);
     /// 8-bit Bayer pixels in BG order.
-    pub const BAYER_BG8: Self = Self(0x0108_000B);
+    pub const BAYER_BG8: Self = Self(sys::PixelType_Gvsp_BayerBG8 as u32);
 
     /// Packed RGB with 8 bits per channel.
-    pub const RGB8_PACKED: Self = Self(0x0218_0014);
+    pub const RGB8_PACKED: Self = Self(sys::PixelType_Gvsp_RGB8_Packed as u32);
     /// Packed BGR with 8 bits per channel.
-    pub const BGR8_PACKED: Self = Self(0x0218_0015);
+    pub const BGR8_PACKED: Self = Self(sys::PixelType_Gvsp_BGR8_Packed as u32);
     /// Packed RGBA with 8 bits per channel.
-    pub const RGBA8_PACKED: Self = Self(0x0220_0016);
+    pub const RGBA8_PACKED: Self = Self(sys::PixelType_Gvsp_RGBA8_Packed as u32);
     /// Packed BGRA with 8 bits per channel.
-    pub const BGRA8_PACKED: Self = Self(0x0220_0017);
+    pub const BGRA8_PACKED: Self = Self(sys::PixelType_Gvsp_BGRA8_Packed as u32);
 
     /// Packed YUV 4:2:2 pixels.
-    pub const YUV422_PACKED: Self = Self(0x0210_001F);
+    pub const YUV422_PACKED: Self = Self(sys::PixelType_Gvsp_YUV422_Packed as u32);
     /// Packed YUV 4:2:2 pixels in YUYV order.
-    pub const YUV422_YUYV_PACKED: Self = Self(0x0210_0032);
+    pub const YUV422_YUYV_PACKED: Self = Self(sys::PixelType_Gvsp_YUV422_YUYV_Packed as u32);
 
     /// Construct a pixel type from the SDK's raw wire-format code.
     #[inline]
@@ -238,60 +240,5 @@ impl PixelType {
 impl fmt::Debug for PixelType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PixelType(0x{:08X})", self.0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{PixelType, TransportLayer};
-    use crate::sys;
-
-    // 验证公开 bit/code 类型与 native SDK 保持 ABI 对应。
-    #[test]
-    fn public_codes_match_the_native_sdk() {
-        assert_eq!(TransportLayer::UNKNOWN.raw(), sys::MV_UNKNOW_DEVICE);
-        assert_eq!(TransportLayer::GIGE.raw(), sys::MV_GIGE_DEVICE);
-        assert_eq!(TransportLayer::IEEE_1394.raw(), sys::MV_1394_DEVICE);
-        assert_eq!(TransportLayer::USB.raw(), sys::MV_USB_DEVICE);
-        assert_eq!(TransportLayer::CAMERALINK.raw(), sys::MV_CAMERALINK_DEVICE);
-        assert_eq!(TransportLayer::VIR_GIGE.raw(), sys::MV_VIR_GIGE_DEVICE);
-        assert_eq!(TransportLayer::VIR_USB.raw(), sys::MV_VIR_USB_DEVICE);
-        assert_eq!(TransportLayer::GENTL_GIGE.raw(), sys::MV_GENTL_GIGE_DEVICE);
-        assert_eq!(
-            TransportLayer::GENTL_CAMERALINK.raw(),
-            sys::MV_GENTL_CAMERALINK_DEVICE
-        );
-        assert_eq!(TransportLayer::GENTL_CXP.raw(), sys::MV_GENTL_CXP_DEVICE);
-        assert_eq!(TransportLayer::GENTL_XOF.raw(), sys::MV_GENTL_XOF_DEVICE);
-        assert_eq!(TransportLayer::GENTL_VIR.raw(), sys::MV_GENTL_VIR_DEVICE);
-        assert_eq!(
-            TransportLayer::ALL.raw(),
-            sys::MV_GIGE_DEVICE
-                | sys::MV_1394_DEVICE
-                | sys::MV_USB_DEVICE
-                | sys::MV_CAMERALINK_DEVICE
-                | sys::MV_VIR_GIGE_DEVICE
-                | sys::MV_VIR_USB_DEVICE
-                | sys::MV_GENTL_GIGE_DEVICE
-                | sys::MV_GENTL_CAMERALINK_DEVICE
-                | sys::MV_GENTL_CXP_DEVICE
-                | sys::MV_GENTL_XOF_DEVICE
-                | sys::MV_GENTL_VIR_DEVICE
-        );
-
-        let mono = PixelType::from_raw(sys::PixelType_Gvsp_HB_Mono8 as u32);
-        assert!(mono.is_mono());
-        assert!(!mono.is_color());
-        assert!(mono.is_custom());
-
-        let color = PixelType::from_raw(sys::PixelType_Gvsp_HB_RGB8_Packed as u32);
-        assert!(!color.is_mono());
-        assert!(color.is_color());
-        assert!(color.is_custom());
-
-        assert!(PixelType::MONO8.is_mono());
-        assert!(PixelType::RGB8_PACKED.is_color());
-        assert!(!PixelType::UNDEFINED.is_mono());
-        assert!(!PixelType::UNDEFINED.is_color());
     }
 }

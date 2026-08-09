@@ -1,29 +1,38 @@
 # Sdk shutdown 的终态约束
 
-`Sdk::shutdown` 与初始化、枚举和设备打开通过进程状态锁串行。简单资源计数只回答一个
-问题：相机 handle 或 callback 是否仍在使用 SDK；销毁失败的 handle 会保留一次计数。
+`Sdk` 是进程内唯一 owner。`DeviceList<'sdk>`、`DeviceInfo<'sdk>` 与 `Camera<'sdk>`
+借用它，因此 Rust 会在编译期阻止 native 资源存活时消费 `Sdk`。
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor App as 应用
-    participant Runtime as ProcessRuntime
+    participant State as 进程 atomic state
+    participant Sdk as Sdk owner
     participant Native as MVS SDK
 
-    App->>Runtime: Sdk::shutdown()
-    Runtime->>Runtime: 获取状态写锁
-    alt live_cameras > 0 或 active_callbacks > 0
-        Runtime-->>App: MvsError::SdkInUse
-    else 资源已收敛
-        Runtime->>Native: MV_CC_Finalize()
-        alt Finalize 成功
-            Runtime->>Runtime: Active → Finalized
-            Runtime-->>App: Ok(())
-        else Finalize 失败
-            Runtime->>Runtime: 状态仍为 Active
-            Runtime-->>App: native MvsError，可重试
+    App->>State: Sdk::init()
+    alt Unused
+        State->>State: Unused → Active
+        Sdk->>Native: MV_CC_Initialize()
+        alt Initialize 成功
+            Native-->>Sdk: Sdk owner
+        else Initialize 失败
+            State->>State: Active → Terminated
+            Native-->>App: native MvsError
         end
+    else Active
+        State-->>App: MvsError::SdkInUse
+    else Terminated
+        State-->>App: MvsError::SdkTerminated
     end
+
+    App->>Sdk: shutdown(self)
+    Note over App,Sdk: live borrow 存在时本调用无法编译
+    State->>State: Active → Terminated
+    Sdk->>Native: MV_CC_Finalize()
+    Native-->>App: Ok 或 native MvsError
 ```
 
-成功 shutdown 后重复调用仍返回 `Ok(())`，后续 `Sdk::init` 返回 `SdkFinalized`。
+官方 CHM 限定单进程仅执行一次 Initialize 与 Finalize。Initialize 失败或 Finalize 尝试后
+均进入终态，后续 `Sdk::init` 返回 `SdkTerminated`；失败路径不重试 native 调用。

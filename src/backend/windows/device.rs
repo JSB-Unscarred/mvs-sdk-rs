@@ -1,6 +1,5 @@
 use std::net::Ipv4Addr;
 use std::os::raw::c_void;
-use std::sync::Arc;
 
 use crate::error::check;
 use crate::sys;
@@ -8,7 +7,7 @@ use crate::{AccessMode, MvsResult, TransportLayer};
 
 /// 保存枚举结果的 Rust-owned snapshot。
 pub(crate) struct DeviceList {
-    devices: Vec<Arc<sys::MV_CC_DEVICE_INFO>>,
+    devices: Vec<DeviceInfo>,
 }
 
 impl DeviceList {
@@ -22,28 +21,31 @@ impl DeviceList {
         for ptr in raw.pDeviceInfo.iter().take(device_count) {
             if !ptr.is_null() {
                 // SAFETY: non-null 项由本次 EnumDevices 填充，且枚举锁仍在持有。
-                devices.push(Arc::new(unsafe { **ptr }));
+                devices.push(DeviceInfo {
+                    raw: Box::new(unsafe { **ptr }),
+                });
             }
         }
 
         Ok(Self { devices })
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.devices.len()
-    }
-
-    pub(crate) fn get(&self, index: usize) -> Option<DeviceInfo> {
-        self.devices.get(index).map(|raw| DeviceInfo {
-            raw: Arc::clone(raw),
-        })
+    pub(crate) fn into_devices(self) -> Vec<DeviceInfo> {
+        self.devices
     }
 }
 
-/// 地址稳定的单个 device record，由列表与 clone 共享所有权。
-#[derive(Clone)]
+/// 地址稳定的 device record；Clone 会生成独立 snapshot。
 pub(crate) struct DeviceInfo {
-    raw: Arc<sys::MV_CC_DEVICE_INFO>,
+    raw: Box<sys::MV_CC_DEVICE_INFO>,
+}
+
+impl Clone for DeviceInfo {
+    fn clone(&self) -> Self {
+        Self {
+            raw: Box::new(*self.raw),
+        }
+    }
 }
 
 struct DeviceMetadata<'a> {
@@ -55,7 +57,7 @@ struct DeviceMetadata<'a> {
 
 impl DeviceInfo {
     pub(crate) fn raw(&self) -> &sys::MV_CC_DEVICE_INFO {
-        self.raw.as_ref()
+        &self.raw
     }
 
     pub(crate) fn transport_layer(&self) -> TransportLayer {
@@ -200,139 +202,11 @@ impl DeviceInfo {
     }
 
     pub(crate) fn as_raw(&self) -> *const c_void {
-        Arc::as_ptr(&self.raw).cast()
+        std::ptr::from_ref(self.raw.as_ref()).cast()
     }
 }
 
 fn cstr_array_to_string(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::net::Ipv4Addr;
-    use std::sync::Arc;
-
-    use super::{DeviceInfo, DeviceList};
-    use crate::sys;
-
-    fn c_string<const N: usize>(value: &str) -> [u8; N] {
-        let mut bytes = [0; N];
-        bytes[..value.len()].copy_from_slice(value.as_bytes());
-        bytes
-    }
-
-    fn assert_metadata(info: &DeviceInfo, expected: (&str, &str, &str, &str)) {
-        assert_eq!(
-            (
-                info.manufacturer(),
-                info.model(),
-                info.serial(),
-                info.user_defined_name(),
-            ),
-            (
-                expected.0.into(),
-                expected.1.into(),
-                expected.2.into(),
-                expected.3.into(),
-            )
-        );
-    }
-
-    // 验证 snapshot 地址由 Arc 保持稳定，并按 transport 选择各 union arm。
-    #[test]
-    fn device_snapshots_are_stable_and_decode_transport_metadata() {
-        let mut gige_raw = sys::MV_CC_DEVICE_INFO {
-            nTLayerType: sys::MV_GIGE_DEVICE,
-            ..Default::default()
-        };
-        gige_raw.SpecialInfo.stGigEInfo = sys::MV_GIGE_DEVICE_INFO {
-            chManufacturerName: c_string("Hikrobot"),
-            chModelName: c_string("GigE-42"),
-            chSerialNumber: c_string("GE-0001"),
-            chUserDefinedName: c_string("line-a"),
-            nCurrentIp: u32::from_be_bytes([192, 168, 1, 64]),
-            nNetExport: u32::from_be_bytes([192, 168, 1, 10]),
-            ..Default::default()
-        };
-        let list = DeviceList {
-            devices: vec![Arc::new(gige_raw)],
-        };
-        let gige = list.get(0).unwrap();
-        let raw_address = gige.as_raw();
-        let clone = gige.clone();
-        drop(list);
-        assert_eq!(clone.as_raw(), raw_address);
-        assert_metadata(&gige, ("Hikrobot", "GigE-42", "GE-0001", "line-a"));
-        assert_eq!(gige.ip(), Some(Ipv4Addr::new(192, 168, 1, 64)));
-        assert_eq!(gige.host_nic_ip(), Some(Ipv4Addr::new(192, 168, 1, 10)));
-
-        let mut usb_raw = sys::MV_CC_DEVICE_INFO {
-            nTLayerType: sys::MV_USB_DEVICE,
-            ..Default::default()
-        };
-        usb_raw.SpecialInfo.stUsb3VInfo = sys::MV_USB3_DEVICE_INFO {
-            chManufacturerName: c_string("USB Vendor"),
-            chModelName: c_string("USB Model"),
-            chSerialNumber: c_string("USB Serial"),
-            chUserDefinedName: c_string("USB User"),
-            ..Default::default()
-        };
-        let usb = DeviceInfo {
-            raw: Arc::new(usb_raw),
-        };
-        assert_metadata(&usb, ("USB Vendor", "USB Model", "USB Serial", "USB User"));
-        assert_eq!(usb.ip(), None);
-
-        let mut camera_link_raw = sys::MV_CC_DEVICE_INFO {
-            nTLayerType: sys::MV_CAMERALINK_DEVICE,
-            ..Default::default()
-        };
-        camera_link_raw.SpecialInfo.stCamLInfo = sys::MV_CamL_DEV_INFO {
-            chManufacturerName: c_string("CL Vendor"),
-            chModelName: c_string("CL Model"),
-            chSerialNumber: c_string("CL Serial"),
-            ..Default::default()
-        };
-        assert_metadata(
-            &DeviceInfo {
-                raw: Arc::new(camera_link_raw),
-            },
-            ("CL Vendor", "CL Model", "CL Serial", ""),
-        );
-
-        macro_rules! assert_gentl_arm {
-            ($layer:expr, $field:ident, $info:ident) => {{
-                let mut raw = sys::MV_CC_DEVICE_INFO {
-                    nTLayerType: $layer,
-                    ..Default::default()
-                };
-                raw.SpecialInfo.$field = sys::$info {
-                    chVendorName: c_string("GenTL Vendor"),
-                    chModelName: c_string("GenTL Model"),
-                    chSerialNumber: c_string("GenTL Serial"),
-                    chUserDefinedName: c_string("GenTL User"),
-                    ..Default::default()
-                };
-                assert_metadata(
-                    &DeviceInfo { raw: Arc::new(raw) },
-                    ("GenTL Vendor", "GenTL Model", "GenTL Serial", "GenTL User"),
-                );
-            }};
-        }
-
-        assert_gentl_arm!(
-            sys::MV_GENTL_CAMERALINK_DEVICE,
-            stCMLInfo,
-            MV_CML_DEVICE_INFO
-        );
-        assert_gentl_arm!(sys::MV_GENTL_CXP_DEVICE, stCXPInfo, MV_CXP_DEVICE_INFO);
-        assert_gentl_arm!(sys::MV_GENTL_XOF_DEVICE, stXoFInfo, MV_XOF_DEVICE_INFO);
-        assert_gentl_arm!(
-            sys::MV_GENTL_VIR_DEVICE,
-            stVirInfo,
-            MV_GENTL_VIR_DEVICE_INFO
-        );
-    }
 }

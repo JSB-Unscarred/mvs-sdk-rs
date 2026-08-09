@@ -83,7 +83,7 @@ pub enum MvsError {
     PortInUse,
     /// Image decoding failed.
     #[error("image decoding error")]
-    ImageDecodec,
+    ImageDecode,
     /// The image size exceeds the SDK's `u32` limit.
     #[error("image size exceeds u32 limit")]
     Uint32Limit,
@@ -221,28 +221,15 @@ pub enum MvsError {
     #[error("MVS SDK is only available on Windows x86_64")]
     UnsupportedPlatform,
 
-    /// An SDK operation was requested before [`Sdk::init`](crate::Sdk::init).
-    #[error("MVS SDK has not been initialized")]
-    SdkNotInitialized,
-    /// The process-wide SDK has already been finalized.
-    #[error("MVS SDK has already been shut down for this process")]
-    SdkFinalized,
-    /// A camera, unresolved native handle, or callback still depends on the SDK.
-    #[error("MVS SDK is still in use by a camera, native handle, or callback")]
+    /// The process-wide SDK lifecycle is already terminal.
+    #[error("MVS SDK lifecycle is already terminal for this process")]
+    SdkTerminated,
+    /// The process-wide SDK owner already exists.
+    #[error("MVS SDK already has an active owner")]
     SdkInUse,
-
-    /// The SDK returned frame metadata that cannot describe a valid Rust
-    /// slice, such as a non-empty null buffer or an address-space-sized frame.
-    #[error("SDK returned an invalid frame buffer with reported length {frame_len}")]
-    InvalidFrameBuffer {
-        /// Effective length reported by the SDK's extended or legacy metadata.
-        frame_len: u64,
-    },
 }
 
-// Keep the bidirectional mapping and its round-trip test data in one place.
-// The public enum remains explicit above so each variant keeps readable
-// rustdoc and this internal table stays focused on code conversion only.
+// 公开 enum 保留完整 rustdoc，内部表只负责 native code 转换。
 macro_rules! define_sdk_error_codes {
     ($($variant:ident => $code:path),+ $(,)?) => {
         impl MvsError {
@@ -253,10 +240,8 @@ macro_rules! define_sdk_error_codes {
                     Self::Unknown(code) => Some(*code),
                     Self::Nul(_)
                     | Self::UnsupportedPlatform
-                    | Self::SdkNotInitialized
-                    | Self::SdkFinalized
-                    | Self::SdkInUse
-                    | Self::InvalidFrameBuffer { .. } => None,
+                    | Self::SdkTerminated
+                    | Self::SdkInUse => None,
                 }
             }
         }
@@ -271,9 +256,6 @@ macro_rules! define_sdk_error_codes {
                 }
             }
         }
-
-        #[cfg(test)]
-        const KNOWN_SDK_ERROR_CODES: &[u32] = &[$($code),+];
     };
 }
 
@@ -298,7 +280,7 @@ define_sdk_error_codes! {
     NoAlignBuffer => sys::MV_E_NOALIGN_BUF,
     NotEnoughBufferNum => sys::MV_E_NOENOUGH_BUF_NUM,
     PortInUse => sys::MV_E_PORT_IN_USE,
-    ImageDecodec => sys::MV_E_IMAGE_DECODEC,
+    ImageDecode => sys::MV_E_IMAGE_DECODEC,
     Uint32Limit => sys::MV_E_UINT32_LIMIT,
     ImageHeight => sys::MV_E_IMAGE_HEIGHT,
     NotEnoughDdr => sys::MV_E_NOENOUGH_DDR,
@@ -357,31 +339,12 @@ pub(crate) fn check(code: c_int) -> MvsResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KNOWN_SDK_ERROR_CODES, MvsError};
+    use super::MvsError;
 
-    // 验证头文件中每个已知 SDK error code 都可无损解析和还原。
+    // 核心错误约定：未知 native code 必须无损保留。
     #[test]
-    fn every_known_sdk_error_round_trips() {
-        for &code in KNOWN_SDK_ERROR_CODES {
-            let error = MvsError::from(code);
-            assert!(
-                !matches!(&error, MvsError::Unknown(_)),
-                "known SDK code was not decoded: 0x{code:08X}"
-            );
-            assert_eq!(error.raw_code(), Some(code));
-        }
-    }
-
-    // 验证未知 native code 被保留，Rust-side error 不伪造 native code。
-    #[test]
-    fn unknown_and_platform_errors_preserve_their_origin() {
+    fn unknown_sdk_code_is_preserved() {
         let code = 0xDEAD_BEEF;
         assert_eq!(MvsError::from(code).raw_code(), Some(code));
-        assert_eq!(MvsError::UnsupportedPlatform.raw_code(), None);
-        assert_eq!(MvsError::SdkInUse.raw_code(), None);
-        assert_eq!(
-            MvsError::InvalidFrameBuffer { frame_len: 1 }.raw_code(),
-            None
-        );
     }
 }

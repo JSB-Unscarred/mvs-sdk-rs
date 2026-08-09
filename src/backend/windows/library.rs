@@ -14,13 +14,12 @@ impl Sdk {
     }
 
     pub(crate) fn finalize(&self) -> MvsResult<()> {
-        // SAFETY: the process runtime holds its exclusive lifecycle gate and
-        // has verified that no tracked native resource remains.
+        // SAFETY: Sdk 是唯一 owner，借用生命周期保证相机资源已结束。
         check(unsafe { sys::MV_CC_Finalize() })
     }
 
-    pub(crate) fn sdk_version(&self) -> u32 {
-        // SAFETY: SDK entry point has no arguments after initialization.
-        unsafe { sys::MV_CC_GetSDKVersion() as u32 }
+    pub(crate) fn sdk_version() -> MvsResult<u32> {
+        // SAFETY: 官方接口允许在 Initialize 前直接查询版本。
+        Ok(unsafe { sys::MV_CC_GetSDKVersion() as u32 })
     }
 }

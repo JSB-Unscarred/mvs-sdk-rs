@@ -1,4 +1,4 @@
-//! Opened camera — the central public resource type.
+//! 已打开相机的安全接口。
 
 use std::cell::Cell;
 use std::fmt;
@@ -8,323 +8,206 @@ use std::os::raw::c_void;
 use crate::backend;
 use crate::callback::EventInfo;
 use crate::frame::{Frame, FrameGuard};
-use crate::library::{ActiveSdk, CameraLease};
-use crate::{AccessMode, EnumNode, FloatNode, IntNode, MvsResult};
+use crate::library::Sdk;
+use crate::{AccessMode, EnumValue, FloatValue, IntValue, MvsResult};
 
-pub(crate) type ImageCallback = Box<dyn FnMut(&Frame<'_>) + Send + 'static>;
-pub(crate) type ExceptionCallback = Box<dyn FnMut(u32) + Send + 'static>;
-pub(crate) type EventCallback = Box<dyn FnMut(&EventInfo<'_>) + Send + 'static>;
+pub(crate) type ImageCallback = Box<dyn Fn(&Frame<'_>) + Send + Sync + 'static>;
+pub(crate) type ExceptionCallback = Box<dyn Fn(u32) + Send + Sync + 'static>;
+pub(crate) type EventCallback = Box<dyn Fn(&EventInfo<'_>) + Send + Sync + 'static>;
 
-/// An opened MVS camera.
+/// 已打开的 MVS 相机。
 ///
-/// `Camera` is `Send` but not `Sync`; concurrent access to one camera requires
-/// external synchronization. Dropping it performs best-effort cleanup and
-/// discards cleanup failures. Prefer [`Camera::close`] to observe a failure.
-/// Callbacks in different slots may overlap and must not synchronously wait for
-/// one another; unregister and cleanup drain in-flight callbacks.
-///
-pub struct Camera {
+/// `Camera` 借用唯一 [`Sdk`] owner，因而 SDK 必定晚于 native handle 销毁。
+/// 它可以移动到 scoped thread，但不实现 `Sync`；同一 handle 的调用由 owner
+/// 串行发起。`Drop` 只做忽略错误的兜底，正常路径使用 [`Camera::close`]。
+pub struct Camera<'sdk> {
     inner: backend::Camera,
-    _lease: CameraLease,
+    _sdk: &'sdk Sdk,
     _not_sync: PhantomData<Cell<()>>,
 }
 
-impl Camera {
+impl<'sdk> Camera<'sdk> {
     pub(crate) fn open(
         device: backend::DeviceInfo,
-        active: &ActiveSdk,
+        sdk: &'sdk Sdk,
         mode: AccessMode,
+        switchover_key: u16,
     ) -> MvsResult<Self> {
-        let inner = backend::Camera::open(device, mode)?;
         Ok(Self {
-            inner,
-            _lease: active.camera_lease(),
+            inner: backend::Camera::open(device, mode, switchover_key)?,
+            _sdk: sdk,
             _not_sync: PhantomData,
         })
     }
 
-    /// Run the backend cleanup sequence while this Camera still owns its lease.
-    fn cleanup(&mut self) -> MvsResult<()> {
-        self.inner.cleanup()
-    }
-
-    /// Borrow the opaque native camera handle for advanced interoperability.
+    /// 借出 opaque native handle，供尚未包装的 SDK 接口使用。
     ///
-    /// The pointer is owned by this `Camera` and is valid only while its native
-    /// handle remains live. Do not close, destroy, or retain it beyond the
-    /// camera's lifetime. Calling the vendor API through this pointer is
-    /// `unsafe`: changing acquisition, callback, or lifetime state behind this
-    /// wrapper can invalidate the assumptions used by later safe methods.
+    /// pointer 由本 `Camera` 所有。通过 raw API 修改取流、callback 或 handle
+    /// 生命周期会破坏 safe 层状态，因此调用 raw API 属于 `unsafe` 操作。
     pub fn as_raw_handle(&self) -> *mut c_void {
         self.inner.as_raw_handle()
     }
 
-    /// Query whether the opened device is still connected.
-    ///
-    /// This is a diagnostic snapshot; the connection may change immediately
-    /// after the call.
+    /// 返回当前连接状态快照。
     pub fn is_connected(&self) -> bool {
         self.inner.is_connected()
     }
 
-    /// Start image acquisition in callback or polling mode.
+    /// 注册 image callback，使用 `MV_CC_RegisterImageCallBackEx2(autoFree=true)`。
     ///
-    /// An active, natively registered image callback selects callback mode. If
-    /// no image callback is registered, polling mode is selected. A callback
-    /// disabled by panic must first be replaced or unregistered; otherwise this
-    /// method returns [`crate::MvsError::CallOrder`]. The mode remains fixed until
-    /// [`Camera::stop_grabbing`] succeeds.
-    pub fn start_grabbing(&mut self) -> MvsResult<()> {
-        self.inner.start_grabbing()
-    }
-
-    /// Stop image acquisition.
+    /// 注册与注销要求停止取流。同一注册只接受一次；先注销后可重新注册。
+    /// `Frame` 仅在本次调用期间有效，跨线程或长期使用时调用
+    /// [`Frame::to_owned`]。panic 会在 FFI 边界截获。
     ///
-    /// Call this before registering, replacing, or unregistering an image
-    /// callback, and before switching between callback and polling modes.
-    /// Native failures are returned unchanged.
-    pub fn stop_grabbing(&mut self) -> MvsResult<()> {
-        self.inner.stop_grabbing()
-    }
-
-    /// Poll for one image while acquisition is running in polling mode.
-    ///
-    /// Calling this in callback mode returns [`crate::MvsError::CallOrder`].
-    /// Multiple guards may coexist, up to the SDK's configured image-node
-    /// count. Each guard keeps the camera borrowed until it is released or
-    /// dropped. `timeout_ms` is passed to the SDK in milliseconds.
-    ///
-    pub fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
-        self.inner.get_image_buffer(timeout_ms).map(FrameGuard::new)
-    }
-
-    /// Register an image callback that may be invoked by the SDK's streaming
-    /// thread.
-    ///
-    /// Acquisition must be stopped for registration and replacement.
-    /// Replacing an existing registration updates only the Rust closure and
-    /// waits for an in-flight invocation to finish. Each borrowed [`Frame`] is
-    /// valid only for that invocation; call [`Frame::to_owned`] before sending
-    /// image data elsewhere.
-    ///
-    /// A panic is caught at the FFI boundary and disables this callback after
-    /// that invocation. Register another closure to resume delivery.
-    ///
-    /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
+    /// callback 由 SDK thread 调用，因此 capture 必须 `Send + Sync`：
     ///
     /// ```compile_fail
     /// use std::rc::Rc;
     /// use mvs_sdk_rs::Camera;
     ///
-    /// fn register_non_send(camera: &mut Camera) {
+    /// fn register_non_send(camera: &mut Camera<'_>) {
     ///     let state = Rc::new(());
-    ///     let _ = camera.register_image_callback(move |_| {
-    ///         drop(Rc::clone(&state));
-    ///     });
+    ///     let _ = camera.register_image_callback(move |_| drop(Rc::clone(&state)));
     /// }
     /// ```
-    pub fn register_image_callback<F>(&mut self, f: F) -> MvsResult<()>
+    pub fn register_image_callback<F>(&mut self, callback: F) -> MvsResult<()>
     where
-        F: FnMut(&Frame<'_>) + Send + 'static,
+        F: Fn(&Frame<'_>) + Send + Sync + 'static,
     {
-        self.inner.register_image_callback(Box::new(f))
+        self.inner.register_image_callback(Box::new(callback))
     }
 
-    /// Unregister the current image callback.
+    /// 注销 image callback。
     ///
-    /// Acquisition must be stopped before unregistering the callback.
-    ///
-    /// This waits for an in-flight closure and silences later native calls.
-    /// Native failures are returned unchanged.
+    /// 返回后不再开始新的 Rust 调用；已经进入 trampoline 的调用可短暂继续，
+    /// 其 closure 由独立 Arc 保活。
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_image_callback()
     }
 
-    /// Register or replace a device-exception callback.
-    ///
-    /// The callback may run on an SDK-managed thread and receives the vendor's
-    /// raw exception message type. Keep it short and hand off longer work. A
-    /// panic is caught and disables this callback after that invocation;
-    /// register another closure to resume delivery.
-    ///
-    /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
-    ///
-    /// ```compile_fail
-    /// use std::rc::Rc;
-    /// use mvs_sdk_rs::Camera;
-    ///
-    /// fn register_non_send(camera: &mut Camera) {
-    ///     let state = Rc::new(());
-    ///     let _ = camera.register_exception_callback(move |_| {
-    ///         drop(Rc::clone(&state));
-    ///     });
-    /// }
-    /// ```
-    pub fn register_exception_callback<F>(&mut self, f: F) -> MvsResult<()>
-    where
-        F: FnMut(u32) + Send + 'static,
-    {
-        self.inner.register_exception_callback(Box::new(f))
+    /// 启动取流；已注册 image callback 时使用 callback 模式，否则使用 polling。
+    pub fn start_grabbing(&mut self) -> MvsResult<()> {
+        self.inner.start_grabbing()
     }
 
-    /// Unregister the current device-exception callback.
-    ///
-    /// This waits for an in-flight closure and silences later native calls. A
-    /// Native failures are returned unchanged.
-    pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
-        self.inner.unregister_exception_callback()
+    /// 停止取流。
+    pub fn stop_grabbing(&mut self) -> MvsResult<()> {
+        self.inner.stop_grabbing()
     }
 
-    /// Register or replace a callback for a named GenICam event.
+    /// polling 模式下获取一帧 SDK buffer。
     ///
-    /// Call [`Camera::event_notification_on`] separately when device-side
-    /// notification is not already enabled. Event metadata is borrowed for the
-    /// callback invocation only. A panic is caught and disables this callback
-    /// after that invocation; register another closure to resume delivery.
-    ///
-    /// The callback must be `Send`; a thread-local `Rc` capture is rejected:
-    ///
-    /// ```compile_fail
-    /// use std::rc::Rc;
-    /// use mvs_sdk_rs::Camera;
-    ///
-    /// fn register_non_send(camera: &mut Camera) {
-    ///     let state = Rc::new(());
-    ///     let _ = camera.register_event_callback("ExposureEnd", move |_| {
-    ///         drop(Rc::clone(&state));
-    ///     });
-    /// }
-    /// ```
-    pub fn register_event_callback<F>(&mut self, event_name: &str, f: F) -> MvsResult<()>
-    where
-        F: FnMut(&EventInfo<'_>) + Send + 'static,
-    {
-        self.inner.register_event_callback(event_name, Box::new(f))
+    /// guard 借用相机并在 [`FrameGuard::release`] 或 `Drop` 时归还 buffer。
+    pub fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
+        self.inner.get_image_buffer(timeout_ms).map(FrameGuard::new)
     }
 
-    /// Unregister the callback for one named GenICam event.
-    ///
-    /// This is distinct from [`Camera::event_notification_off`], which stops
-    /// device-side event notification without removing the callback.
-    /// Returning successfully means the Rust closure is no longer running and
-    /// will not be invoked again. Native failures are returned unchanged.
-    pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
-        self.inner.unregister_event_callback(event_name)
+    /// 获取 Integer 节点当前值、范围和步长。
+    pub fn get_int(&self, key: &str) -> MvsResult<IntValue> {
+        self.inner.get_int(key)
     }
 
-    /// Enable device-side notification for one named GenICam event.
-    ///
-    /// This does not register a Rust callback; use
-    /// [`Camera::register_event_callback`] for delivery to Rust code.
-    pub fn event_notification_on(&self, event_name: &str) -> MvsResult<()> {
-        self.inner.event_notification_on(event_name)
-    }
-
-    /// Disable device-side notification for one named GenICam event.
-    ///
-    /// The event callback remains registered. Use
-    /// [`Camera::unregister_event_callback`] to remove it.
-    pub fn event_notification_off(&self, event_name: &str) -> MvsResult<()> {
-        self.inner.event_notification_off(event_name)
-    }
-
-    /// Set an integer GenICam node, such as `Width`, `Height`, or `OffsetX`.
+    /// 设置 Integer 节点。
     pub fn set_int(&self, key: &str, value: i64) -> MvsResult<()> {
         self.inner.set_int(key, value)
     }
 
-    /// Read the current value of an integer GenICam node.
-    pub fn get_int(&self, key: &str) -> MvsResult<i64> {
-        self.inner.get_int(key)
-    }
-
-    /// Read an integer node's current value, bounds, and increment.
-    pub fn get_int_range(&self, key: &str) -> MvsResult<IntNode> {
-        self.inner.get_int_range(key)
-    }
-
-    /// Set a floating-point GenICam node, such as `ExposureTime` or `Gain`.
-    pub fn set_float(&self, key: &str, value: f32) -> MvsResult<()> {
-        self.inner.set_float(key, value)
-    }
-
-    /// Read the current value of a floating-point GenICam node.
-    pub fn get_float(&self, key: &str) -> MvsResult<f32> {
-        self.inner.get_float(key)
-    }
-
-    /// Read a floating-point node's current value and bounds.
-    pub fn get_float_range(&self, key: &str) -> MvsResult<FloatNode> {
-        self.inner.get_float_range(key)
-    }
-
-    /// Set a boolean GenICam node, such as `ReverseX`.
-    pub fn set_bool(&self, key: &str, value: bool) -> MvsResult<()> {
-        self.inner.set_bool(key, value)
-    }
-
-    /// Read a boolean GenICam node.
-    pub fn get_bool(&self, key: &str) -> MvsResult<bool> {
-        self.inner.get_bool(key)
-    }
-
-    /// Set an enum GenICam node by symbolic name.
-    ///
-    /// For example, `set_enum("TriggerMode", "Off")`.
-    pub fn set_enum(&self, key: &str, value: &str) -> MvsResult<()> {
-        self.inner.set_enum(key, value)
-    }
-
-    /// Set a string GenICam node, such as `DeviceUserID`.
-    pub fn set_string(&self, key: &str, value: &str) -> MvsResult<()> {
-        self.inner.set_string(key, value)
-    }
-
-    /// Execute a command GenICam node, such as `TriggerSoftware`.
-    pub fn exec_command(&self, key: &str) -> MvsResult<()> {
-        self.inner.exec_command(key)
-    }
-
-    /// Read a string GenICam node.
-    ///
-    /// The Windows backend reads at most the SDK field capacity and decodes
-    /// invalid UTF-8 lossily.
-    pub fn get_string(&self, key: &str) -> MvsResult<String> {
-        self.inner.get_string(key)
-    }
-
-    /// Read an enum GenICam node's current numeric value.
-    pub fn get_enum(&self, key: &str) -> MvsResult<u32> {
+    /// 获取 Enum 节点当前值和支持值列表。
+    pub fn get_enum(&self, key: &str) -> MvsResult<EnumValue> {
         self.inner.get_enum(key)
     }
 
-    /// Read an enum node's current numeric value and supported-value list.
-    ///
-    /// This uses the SDK's extended enum query, which reports at most 256
-    /// supported values.
-    pub fn get_enum_info(&self, key: &str) -> MvsResult<EnumNode> {
-        self.inner.get_enum_info(key)
-    }
-
-    /// Set an enum GenICam node by its numeric value.
-    ///
-    /// Prefer [`Camera::set_enum`] when a stable symbolic name is available.
+    /// 按 numeric value 设置 Enum 节点。
     pub fn set_enum_value(&self, key: &str, value: u32) -> MvsResult<()> {
         self.inner.set_enum_value(key, value)
     }
 
-    /// Consume the camera and close its native resources.
+    /// 按 symbolic name 设置 Enum 节点。
+    pub fn set_enum_symbolic(&self, key: &str, value: &str) -> MvsResult<()> {
+        self.inner.set_enum_symbolic(key, value)
+    }
+
+    /// 获取 Float 节点当前值和范围。
+    pub fn get_float(&self, key: &str) -> MvsResult<FloatValue> {
+        self.inner.get_float(key)
+    }
+
+    /// 设置 Float 节点。
+    pub fn set_float(&self, key: &str, value: f32) -> MvsResult<()> {
+        self.inner.set_float(key, value)
+    }
+
+    /// 获取 Boolean 节点。
+    pub fn get_bool(&self, key: &str) -> MvsResult<bool> {
+        self.inner.get_bool(key)
+    }
+
+    /// 设置 Boolean 节点。
+    pub fn set_bool(&self, key: &str, value: bool) -> MvsResult<()> {
+        self.inner.set_bool(key, value)
+    }
+
+    /// 获取 String 节点；无效 UTF-8 使用 replacement character 解码。
+    pub fn get_string(&self, key: &str) -> MvsResult<String> {
+        self.inner.get_string(key)
+    }
+
+    /// 设置 String 节点。
+    pub fn set_string(&self, key: &str, value: &str) -> MvsResult<()> {
+        self.inner.set_string(key, value)
+    }
+
+    /// 执行 Command 节点。
+    pub fn exec_command(&self, key: &str) -> MvsResult<()> {
+        self.inner.exec_command(key)
+    }
+
+    /// 注册设备 exception callback。
     ///
-    /// On the owner thread, the backend still attempts handle destruction after
-    /// an earlier cleanup failure and returns the first error in call order.
-    /// Calling this from one of the camera's callbacks returns
-    /// [`crate::MvsError::CallOrder`] and keeps SDK finalization blocked.
+    /// closure 只用于通知；需要关闭或重连时通过 channel 交给 Camera owner。
+    pub fn register_exception_callback<F>(&mut self, callback: F) -> MvsResult<()>
+    where
+        F: Fn(u32) + Send + Sync + 'static,
+    {
+        self.inner.register_exception_callback(Box::new(callback))
+    }
+
+    /// 注销 exception callback；已经进入的调用可短暂继续。
+    pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
+        self.inner.unregister_exception_callback()
+    }
+
+    /// 注册一个 named GenICam event callback。
+    pub fn register_event_callback<F>(&mut self, event_name: &str, callback: F) -> MvsResult<()>
+    where
+        F: Fn(&EventInfo<'_>) + Send + Sync + 'static,
+    {
+        self.inner
+            .register_event_callback(event_name, Box::new(callback))
+    }
+
+    /// 注销一个 named event callback；已经进入的调用可短暂继续。
+    pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
+        self.inner.unregister_event_callback(event_name)
+    }
+
+    /// 开启设备端 named event notification。
+    pub fn event_notification_on(&self, event_name: &str) -> MvsResult<()> {
+        self.inner.event_notification_on(event_name)
+    }
+
+    /// 关闭设备端 named event notification。
+    pub fn event_notification_off(&self, event_name: &str) -> MvsResult<()> {
+        self.inner.event_notification_off(event_name)
+    }
+
+    /// 消费相机并按 Stop → callback 注销 → Close → Destroy 顺序清理。
     pub fn close(mut self) -> MvsResult<()> {
-        self.cleanup()
+        self.inner.cleanup()
     }
 }
 
-impl fmt::Debug for Camera {
+impl fmt::Debug for Camera<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (state, acquisition_mode, image_cb, exception_cb, event_cbs) =
             self.inner.debug_details();
