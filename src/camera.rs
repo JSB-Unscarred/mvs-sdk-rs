@@ -20,6 +20,8 @@ pub(crate) type EventCallback = Box<dyn Fn(&EventInfo<'_>) + Send + Sync + 'stat
 /// `Camera` 借用唯一 [`Sdk`] owner，因而 SDK 必定晚于 native handle 销毁。
 /// 它可以移动到 scoped thread，但不实现 `Sync`；同一 handle 的调用由 owner
 /// 串行发起。`Drop` 只做忽略错误的兜底，正常路径使用 [`Camera::close`]。
+/// 取流与 callback 注册状态只在对应 native 调用返回 `MV_OK` 后更新；
+/// 失败保留调用前的本地状态并返回原错误。
 pub struct Camera<'sdk> {
     inner: backend::Camera,
     _sdk: &'sdk Sdk,
@@ -60,10 +62,6 @@ impl<'sdk> Camera<'sdk> {
     /// [`Frame::to_owned`]。panic 会在 FFI 边界截获并静默该 closure，owner 需注销后
     /// 再注册以恢复 callback。
     ///
-    /// # Panics
-    ///
-    /// native 注册失败且使用 NULL callback 回滚也失败时，先完整清理 Camera 再 panic。
-    ///
     /// callback 由 SDK thread 调用，因此 capture 必须 `Send + Sync`：
     ///
     /// ```compile_fail
@@ -91,10 +89,6 @@ impl<'sdk> Camera<'sdk> {
     }
 
     /// 启动取流；已注册 image callback 时使用 callback 模式，否则使用 polling。
-    ///
-    /// # Panics
-    ///
-    /// native 启动失败且立即 Stop 回滚也失败时，先完整清理 Camera 再 panic。
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }
@@ -174,10 +168,6 @@ impl<'sdk> Camera<'sdk> {
     /// 注册设备 exception callback。
     ///
     /// closure 只用于通知；需要关闭或重连时通过 channel 交给 Camera owner。
-    ///
-    /// # Panics
-    ///
-    /// native 注册与 NULL callback 回滚连续失败时，先完整清理 Camera 再 panic。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> MvsResult<()>
     where
         F: Fn(u32) + Send + Sync + 'static,
@@ -191,10 +181,6 @@ impl<'sdk> Camera<'sdk> {
     }
 
     /// 注册一个 named GenICam event callback。
-    ///
-    /// # Panics
-    ///
-    /// native 注册与 NULL callback 回滚连续失败时，先完整清理 Camera 再 panic。
     pub fn register_event_callback<F>(&mut self, event_name: &str, callback: F) -> MvsResult<()>
     where
         F: Fn(&EventInfo<'_>) + Send + Sync + 'static,

@@ -24,7 +24,8 @@ sequenceDiagram
     Camera->>Native: RegisterImageCallBackEx2(trampoline, slot, true)
     App->>Camera: start_grabbing()
     Camera->>Native: MV_CC_StartGrabbing()
-    Note over Camera,Native: 注册/Start 失败时立即 NULL callback/Stop 回滚；回滚也失败则清理后 panic
+    Note over Camera,Native: 仅 MV_OK 提交 Camera 本地状态；失败返回原错误，不调用 Stop/NULL callback
+    Note over Camera,Slot: 注册失败清空 closure；native Arc token 在 DestroyHandle 成功后回收
 
     loop 每帧
         Native-->>Slot: image_trampoline(MV_FRAME_OUT, slot, true)
@@ -66,3 +67,4 @@ sequenceDiagram
 callback 只做通知或复制数据，停止、关闭和重连交给 `Camera` owner。callback 内的
 生命周期变更以本地 `CallOrder` 拒绝，不会进入 native SDK。closure panic 在 trampoline
 最外层截获并静默该 closure，owner 注销后可重新注册；Arc 的析构不会跨越 FFI 边界。
+Camera 本地状态只在调用返回 `MV_OK` 后更新，错误直接交给宿主决定重试、降级或退出。

@@ -126,7 +126,8 @@ API，不扩展 safe 层。
 - image callback 与 polling 互斥；注册、注销或切换方式前停止采集。
 - callback 使用 `Fn + Send + Sync`。注销返回时，已进入的 callback 可能仍在执行；`Arc` backing 持有 closure 到该次调用结束。当前线程位于任一 MVS callback 时不得修改 `Camera` 生命周期，需要通过 channel 通知 owner 线程处理；本地以 `CallOrder` 拒绝，`close` 通过 `CleanupError` 报告。
 - wrapper 不增加 callback drain；普通 owner teardown 依赖 SDK 的 Stop、Close、Destroy 同步约定，`Arc` 只保活已经进入 Rust 的 closure。
-- callback panic 会被截获并静默该 closure；owner 注销后可重新注册。Start 或 callback 注册失败时立即执行 Stop/NULL callback 回滚；两次 native 调用都失败时，完整清理 Camera 后 panic。
+- 取流与 callback 注册状态只在 native 返回 `MV_OK` 后更新；失败保留调用前的本地状态并返回原错误。注册失败清空 closure，native Arc token 在 `DestroyHandle` 成功后回收。
+- callback panic 会在 FFI 边界截获并静默该 closure；owner 注销后可重新注册。宿主根据返回错误选择重试、降级或结束进程。
 - polling buffer 由 `FrameGuard` 唯一归还；显式 `release` 可取得错误，`Drop` 执行兜底。
 - 正常路径显式调用 `Camera::close` 和 `Sdk::shutdown`。`OpenRollback` 保留 open/create 与回滚销毁错误；`CleanupError` 保留清理首错与独立的 DestroyHandle 错误。
 - `Camera::as_raw_handle` 与 `DeviceInfo::as_raw` 只借出指针；raw 调用不得改变 safe 层维护的取流、callback 或 handle 生命周期。

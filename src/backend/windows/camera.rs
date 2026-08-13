@@ -40,8 +40,6 @@ struct CallbackRecord<C> {
     native_token: bool,
 }
 
-type RegistrationResult = Result<(), (MvsError, Option<MvsError>)>;
-
 impl<C> CallbackRecord<C> {
     fn new() -> Self {
         Self {
@@ -59,10 +57,9 @@ impl<C> CallbackRecord<C> {
         &mut self,
         callback: C,
         native_register: impl FnOnce(*mut c_void) -> c_int,
-        native_unregister: impl FnOnce() -> c_int,
-    ) -> RegistrationResult {
+    ) -> MvsResult<()> {
         if self.registered {
-            return Err((MvsError::CallOrder, None));
+            return Err(MvsError::CallOrder);
         }
         self.slot.set(callback);
         if !self.native_token {
@@ -72,16 +69,9 @@ impl<C> CallbackRecord<C> {
         }
 
         if let Err(error) = check(native_register(self.user_data())) {
-            // native 失败不保证完全无副作用，立即用 NULL callback 回滚。
-            self.registered = true;
+            // 仅 native 成功才提交 registered；稳定空 slot 继续保护 pUser。
             self.slot.clear();
-            return match check(native_unregister()) {
-                Ok(()) => {
-                    self.registered = false;
-                    Err((error, None))
-                }
-                Err(rollback) => Err((error, Some(rollback))),
-            };
+            return Err(error);
         }
 
         self.registered = true;
@@ -156,7 +146,6 @@ impl NativeHandle {
 /// 已打开的 MVS 相机及其局部资源。
 pub(crate) struct Camera {
     handle: Option<NativeHandle>,
-    destroy_unconfirmed: bool,
     grabbing: bool,
     image_cb: Option<CallbackRecord<ImageCallbackFn>>,
     exception_cb: Option<CallbackRecord<ExceptionCallbackFn>>,
@@ -205,7 +194,6 @@ impl Camera {
 
         Ok(Self {
             handle: Some(handle),
-            destroy_unconfirmed: false,
             grabbing: false,
             image_cb: None,
             exception_cb: None,
@@ -231,33 +219,6 @@ impl Camera {
         Ok((self.handle()?, CString::new(key)?))
     }
 
-    fn finish_registration(
-        &mut self,
-        operation: &'static str,
-        result: RegistrationResult,
-    ) -> MvsResult<()> {
-        match result {
-            Ok(()) => Ok(()),
-            Err((error, None)) => Err(error),
-            Err((error, Some(rollback))) => {
-                self.panic_after_failed_rollback(operation, error, rollback)
-            }
-        }
-    }
-
-    /// 双重失败后先关闭本地 Camera，再 panic，避免 catch 后继续使用半状态 handle。
-    fn panic_after_failed_rollback(
-        &mut self,
-        operation: &'static str,
-        error: MvsError,
-        rollback: MvsError,
-    ) -> ! {
-        let cleanup = self.cleanup();
-        panic!(
-            "{operation} failed ({error}); rollback failed ({rollback}); Camera cleanup result: {cleanup:?}"
-        );
-    }
-
     /// 借出 handle 只用于尚未覆盖的厂商接口；调用方不得改变本包装维护的状态。
     pub(crate) fn as_raw_handle(&self) -> *mut c_void {
         self.handle
@@ -278,23 +239,9 @@ impl Camera {
         let handle = self.stopped_handle()?;
 
         // SAFETY: handle 已打开，且本地状态为 stopped。
-        match check(unsafe { sys::MV_CC_StartGrabbing(handle) }) {
-            Ok(()) => {
-                self.grabbing = true;
-                Ok(())
-            }
-            Err(error) => {
-                // Start 失败后立即 Stop；Stop 成功即可确认回到 stopped。
-                match check(unsafe { sys::MV_CC_StopGrabbing(handle) }) {
-                    Ok(()) => Err(error),
-                    Err(rollback) => {
-                        // cleanup 需再次保守尝试 Stop。
-                        self.grabbing = true;
-                        self.panic_after_failed_rollback("StartGrabbing", error, rollback)
-                    }
-                }
-            }
-        }
+        check(unsafe { sys::MV_CC_StartGrabbing(handle) })?;
+        self.grabbing = true;
+        Ok(())
     }
 
     /// 仅在 native 调用成功后更新本地状态，失败时允许原操作重试。
@@ -332,22 +279,10 @@ impl Camera {
         reject_callback_context()?;
         let handle = self.stopped_handle()?;
         let record = self.image_cb.get_or_insert_with(CallbackRecord::new);
-        let result = record.register(
-            callback,
-            |user| {
-                // SAFETY: native Arc token 使 slot 稳定；autoFree=true 限定 Frame 借用期。
-                unsafe {
-                    sys::MV_CC_RegisterImageCallBackEx2(handle, Some(image_trampoline), user, 1)
-                }
-            },
-            || {
-                // SAFETY: 注册失败后用 NULL callback 恢复确定状态。
-                unsafe {
-                    sys::MV_CC_RegisterImageCallBackEx2(handle, None, std::ptr::null_mut(), 1)
-                }
-            },
-        );
-        self.finish_registration("RegisterImageCallBackEx2", result)
+        record.register(callback, |user| {
+            // SAFETY: native Arc token 使 slot 稳定；autoFree=true 限定 Frame 借用期。
+            unsafe { sys::MV_CC_RegisterImageCallBackEx2(handle, Some(image_trampoline), user, 1) }
+        })
     }
 
     pub(crate) fn unregister_image_callback(&mut self) -> MvsResult<()> {
@@ -475,20 +410,12 @@ impl Camera {
         reject_callback_context()?;
         let handle = self.handle()?;
         let record = self.exception_cb.get_or_insert_with(CallbackRecord::new);
-        let result = record.register(
-            callback,
-            |user| {
-                // SAFETY: slot 地址稳定并匹配 exception trampoline 类型。
-                unsafe {
-                    sys::MV_CC_RegisterExceptionCallBack(handle, Some(exception_trampoline), user)
-                }
-            },
-            || {
-                // SAFETY: 注册失败后用 NULL callback 恢复确定状态。
-                unsafe { sys::MV_CC_RegisterExceptionCallBack(handle, None, std::ptr::null_mut()) }
-            },
-        );
-        self.finish_registration("RegisterExceptionCallBack", result)
+        record.register(callback, |user| {
+            // SAFETY: slot 地址稳定并匹配 exception trampoline 类型。
+            unsafe {
+                sys::MV_CC_RegisterExceptionCallBack(handle, Some(exception_trampoline), user)
+            }
+        })
     }
 
     pub(crate) fn unregister_exception_callback(&mut self) -> MvsResult<()> {
@@ -523,27 +450,12 @@ impl Camera {
                 self.event_cbs.len() - 1
             });
         let name_ptr = self.event_cbs[index].name.as_ptr();
-        let result = self.event_cbs[index].callback.register(
-            callback,
-            |user| {
-                // SAFETY: event name 和 slot 均由 EventRecord 稳定持有。
-                unsafe {
-                    sys::MV_CC_RegisterEventCallBackEx(
-                        handle,
-                        name_ptr,
-                        Some(event_trampoline),
-                        user,
-                    )
-                }
-            },
-            || {
-                // SAFETY: 注册失败后用相同 event name 和 NULL callback 回滚。
-                unsafe {
-                    sys::MV_CC_RegisterEventCallBackEx(handle, name_ptr, None, std::ptr::null_mut())
-                }
-            },
-        );
-        self.finish_registration("RegisterEventCallBackEx", result)
+        self.event_cbs[index].callback.register(callback, |user| {
+            // SAFETY: event name 和 slot 均由 EventRecord 稳定持有。
+            unsafe {
+                sys::MV_CC_RegisterEventCallBackEx(handle, name_ptr, Some(event_trampoline), user)
+            }
+        })
     }
 
     pub(crate) fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
@@ -582,9 +494,7 @@ impl Camera {
 
     pub(crate) fn debug_details(&self) -> (&'static str, Option<&'static str>, bool, bool, usize) {
         (
-            if self.destroy_unconfirmed {
-                "DestroyUnconfirmed"
-            } else if self.handle.is_some() {
+            if self.handle.is_some() {
                 if self.grabbing { "Grabbing" } else { "Open" }
             } else {
                 "Closed"
@@ -616,11 +526,7 @@ impl Camera {
     /// 尝试完整 teardown，分别保留前序首错与 DestroyHandle 错误。
     pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
         if self.handle.is_none() {
-            return if self.destroy_unconfirmed {
-                Err(CleanupError::new(None, None, false))
-            } else {
-                Ok(())
-            };
+            return Ok(());
         }
         if in_callback() {
             // callback 内不重入 native teardown；live handle 计数会阻止 Finalize。
@@ -690,7 +596,6 @@ impl Camera {
         );
         let destroy_error = handle.destroy().err();
         let destroyed = destroy_error.is_none();
-        self.destroy_unconfirmed = !destroyed;
 
         self.grabbing = false;
         if destroyed {
@@ -761,5 +666,67 @@ fn record_first_error(first_error: &mut Option<MvsError>, result: MvsResult<()>)
         && first_error.is_none()
     {
         *first_error = Some(error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::raw::c_int;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::camera::ExceptionCallback;
+    use crate::sys;
+
+    use super::{CallbackRecord, exception_trampoline};
+
+    /// 注册调用可同步派发；失败只静默 slot，成功后才提交本地状态。
+    #[test]
+    fn registration_failure_silences_slot_and_allows_retry() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_calls = Arc::clone(&calls);
+        let mut record = CallbackRecord::<ExceptionCallback>::new();
+
+        let first_user = record.user_data();
+        let error = record
+            .register(
+                Box::new(move |_| {
+                    first_calls.fetch_add(1, Ordering::SeqCst);
+                }),
+                |user| {
+                    unsafe { exception_trampoline(1, user) };
+                    sys::MV_E_PARAMETER as c_int
+                },
+            )
+            .expect_err("native 注册失败应返回原错误");
+
+        assert_eq!(error.raw_code(), Some(sys::MV_E_PARAMETER));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(!record.is_active());
+
+        unsafe { exception_trampoline(2, first_user) };
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let retry_calls = Arc::clone(&calls);
+        record
+            .register(
+                Box::new(move |_| {
+                    retry_calls.fetch_add(1, Ordering::SeqCst);
+                }),
+                |user| {
+                    assert_eq!(user, first_user);
+                    unsafe { exception_trampoline(3, user) };
+                    sys::MV_OK as c_int
+                },
+            )
+            .expect("后续注册应可成功");
+
+        assert!(record.is_active());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        record
+            .unregister(|| sys::MV_OK as c_int)
+            .expect("测试清理应成功");
+        unsafe { record.release_native() };
     }
 }
