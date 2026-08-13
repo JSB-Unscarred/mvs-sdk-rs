@@ -37,4 +37,5 @@ sequenceDiagram
 ```
 
 每个 `FrameGuard` 唯一负责一份 `MV_FRAME_OUT` 的归还凭据，并借用 `Camera`，防止 buffer
-仍在使用时停止或关闭相机。
+仍在使用时停止或关闭相机。归还结束后，`Camera` 再按 Stop → callback 注销 → Close →
+Destroy 顺序清理；Destroy 未确认成功时，live handle 会阻止 SDK Finalize。

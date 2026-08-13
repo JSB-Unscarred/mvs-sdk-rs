@@ -1,6 +1,6 @@
-//! Windows x64 + MVS SDK 真机完整数据流测试。
+//! Windows x64 MSVC + MVS SDK 真机完整数据流测试。
 
-#![cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#![cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 
 mod hardware_support;
 

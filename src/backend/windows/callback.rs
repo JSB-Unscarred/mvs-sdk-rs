@@ -1,5 +1,6 @@
 //! Windows callback backing 与 FFI trampoline。
 
+use std::cell::Cell;
 use std::os::raw::{c_uint, c_void};
 use std::slice;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -10,6 +11,45 @@ use crate::sys;
 
 use super::frame::{data_len_from_raw, info_from_raw};
 use crate::callback::EventInfo;
+
+thread_local! {
+    /// 只区分“当前是否处于 MVS callback”，用于拒绝 native 生命周期重入。
+    static CALLBACK_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+pub(super) fn in_callback() -> bool {
+    CALLBACK_DEPTH.with(|depth| depth.get() != 0)
+}
+
+struct CallbackDepthGuard;
+
+impl CallbackDepthGuard {
+    fn enter() -> Self {
+        CALLBACK_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for CallbackDepthGuard {
+    fn drop(&mut self) {
+        CALLBACK_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// FFI callback 内只能吞掉 panic；forget payload 可避免其 Drop 再次 panic。
+fn catch_and_forget_panic(function: impl FnOnce()) -> bool {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(function)) {
+        Ok(()) => false,
+        Err(payload) => {
+            std::mem::forget(payload);
+            true
+        }
+    }
+}
+
+fn drop_without_unwind<T>(value: T) {
+    catch_and_forget_panic(|| drop(value));
+}
 
 /// SDK 仅保存 `pUser`，Arc 的 native strong ref 使地址稳定到 DestroyHandle。
 pub(super) struct CallbackSlot<C> {
@@ -25,13 +65,14 @@ impl<C> CallbackSlot<C> {
 
     /// 安装一次 closure；旧的 in-flight closure 由其临时 Arc 保活。
     pub(super) fn set(&self, callback: C) {
-        *self.lock() = Some(Arc::new(callback));
+        let previous = self.lock().replace(Arc::new(callback));
+        drop_without_unwind(previous);
     }
 
     /// 静默后续 callback；已经进入 trampoline 的 closure 可以自然返回。
     pub(super) fn clear(&self) {
         let callback = self.lock().take();
-        drop(callback);
+        drop_without_unwind(callback);
     }
 
     fn load(&self) -> Option<Arc<C>> {
@@ -107,18 +148,25 @@ unsafe fn invoke_slot<C>(user: *mut c_void, invoke: impl FnOnce(&C)) {
         return;
     }
 
-    // Arc clone、用户 closure 及其析构均留在 catch_unwind 内，禁止 panic 穿过 FFI。
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+    // slot 操作和用户 closure 都留在最外层 boundary 内，禁止 Rust panic 穿过 FFI。
+    catch_and_forget_panic(|| {
+        let _depth = CallbackDepthGuard::enter();
         let ptr = user.cast::<CallbackSlot<C>>();
         // SAFETY: 注册时为 SDK 单独保留一个 raw Arc strong ref。
-        Arc::increment_strong_count(ptr);
-        let slot = Arc::from_raw(ptr);
+        unsafe { Arc::increment_strong_count(ptr) };
+        // SAFETY: 上一步为本次调用增加了一个 strong ref。
+        let slot = unsafe { Arc::from_raw(ptr) };
         let callback = slot.load();
-        drop(slot);
+
         if let Some(callback) = callback {
-            invoke(callback.as_ref());
+            if catch_and_forget_panic(|| invoke(callback.as_ref())) {
+                // panic 后静默该 slot，避免 SDK thread 重复进入同一异常 closure。
+                slot.clear();
+            }
+            drop_without_unwind(callback);
         }
-    }));
+        drop_without_unwind(slot);
+    });
 }
 
 #[cfg(test)]
@@ -145,6 +193,8 @@ mod tests {
         let native = Arc::into_raw(Arc::clone(&slot));
 
         // SAFETY: native 是本测试为 trampoline 保留的匹配 Arc strong ref。
+        unsafe { exception_trampoline(1, native.cast_mut().cast::<c_void>()) };
+        // 首次 panic 后 slot 已静默，后续 native callback 不再调用用户 closure。
         unsafe { exception_trampoline(1, native.cast_mut().cast::<c_void>()) };
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);

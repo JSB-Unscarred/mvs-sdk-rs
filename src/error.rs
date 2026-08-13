@@ -5,12 +5,71 @@
 //! [`MvsError::Unknown`] so nothing is lost.
 
 use std::ffi::NulError;
+use std::fmt;
 use std::os::raw::c_int;
 
 use crate::sys;
 
 /// Crate-wide result alias.
 pub type MvsResult<T> = Result<T, MvsError>;
+
+/// `Camera::close` 返回的清理结果。
+///
+/// owner 线程的清理会继续执行到 `DestroyHandle`，因此分别保留 Destroy 前的首个
+/// 错误与 Destroy 错误；callback 上下文则拒绝 native teardown。只有
+/// [`CleanupError::native_handle_destroyed`] 为 `true` 时，native handle 才已确认失效。
+#[derive(Debug)]
+pub struct CleanupError {
+    prior_error: Option<MvsError>,
+    destroy_error: Option<MvsError>,
+    native_handle_destroyed: bool,
+}
+
+impl CleanupError {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    pub(crate) fn new(
+        prior_error: Option<MvsError>,
+        destroy_error: Option<MvsError>,
+        native_handle_destroyed: bool,
+    ) -> Self {
+        Self {
+            prior_error,
+            destroy_error,
+            native_handle_destroyed,
+        }
+    }
+
+    /// 返回 `DestroyHandle` 前遇到的首个错误。
+    pub fn prior_error(&self) -> Option<&MvsError> {
+        self.prior_error.as_ref()
+    }
+
+    /// 返回独立保存的 `DestroyHandle` 错误。
+    pub fn destroy_error(&self) -> Option<&MvsError> {
+        self.destroy_error.as_ref()
+    }
+
+    /// 返回 native handle 是否已由 `DestroyHandle` 确认销毁。
+    pub fn native_handle_destroyed(&self) -> bool {
+        self.native_handle_destroyed
+    }
+}
+
+impl fmt::Display for CleanupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (&self.prior_error, &self.destroy_error) {
+            (Some(prior), Some(destroy)) => write!(
+                f,
+                "camera cleanup failed before DestroyHandle ({prior}); DestroyHandle also failed ({destroy})"
+            ),
+            (Some(prior), None) => write!(f, "camera cleanup failed: {prior}"),
+            (None, Some(destroy)) => write!(f, "DestroyHandle failed: {destroy}"),
+            (None, None) => f.write_str("camera cleanup did not destroy the native handle"),
+        }
+    }
+}
+
+impl std::error::Error for CleanupError {}
 
 /// Error returned by any MVS SDK call, plus Rust-side marshalling and lifecycle
 /// failures.
@@ -218,7 +277,7 @@ pub enum MvsError {
     Nul(#[from] NulError),
 
     /// The native MVS SDK backend is unavailable on this target.
-    #[error("MVS SDK is only available on Windows x86_64")]
+    #[error("MVS SDK is only available on Windows x86_64 MSVC")]
     UnsupportedPlatform,
 
     /// The process-wide SDK lifecycle is already terminal.
@@ -227,6 +286,15 @@ pub enum MvsError {
     /// The process-wide SDK owner already exists.
     #[error("MVS SDK already has an active owner")]
     SdkInUse,
+
+    /// Creating or opening a camera failed and rollback destruction also failed.
+    #[error("camera open failed ({open}); rollback DestroyHandle also failed ({destroy})")]
+    OpenRollback {
+        /// Original `CreateHandle` or `OpenDevice` error.
+        open: Box<MvsError>,
+        /// Error returned while destroying the partial handle.
+        destroy: Box<MvsError>,
+    },
 }
 
 // 公开 enum 保留完整 rustdoc，内部表只负责 native code 转换。
@@ -241,7 +309,8 @@ macro_rules! define_sdk_error_codes {
                     Self::Nul(_)
                     | Self::UnsupportedPlatform
                     | Self::SdkTerminated
-                    | Self::SdkInUse => None,
+                    | Self::SdkInUse
+                    | Self::OpenRollback { .. } => None,
                 }
             }
         }
@@ -328,7 +397,7 @@ impl From<u32> for MvsError {
 }
 
 /// Convert an SDK return code to a `MvsResult<()>`.
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 pub(crate) fn check(code: c_int) -> MvsResult<()> {
     if code as u32 == sys::MV_OK {
         Ok(())

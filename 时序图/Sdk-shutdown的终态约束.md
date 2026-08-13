@@ -1,7 +1,8 @@
 # Sdk shutdown 的终态约束
 
-`Sdk` 是进程内唯一 owner。`DeviceList<'sdk>`、`DeviceInfo<'sdk>` 与 `Camera<'sdk>`
-借用它，因此 Rust 会在编译期阻止 native 资源存活时消费 `Sdk`。
+`Sdk` 是进程内唯一 owner。正常的 `DeviceList<'sdk>`、`DeviceInfo<'sdk>` 与
+`Camera<'sdk>` 借用它，因此 Rust 会在编译期阻止这些资源存活时消费 `Sdk`。此外，
+CreateHandle 写出的每个非空 handle 都计为 live，只有 DestroyHandle 成功才解除。
 
 ```mermaid
 sequenceDiagram
@@ -29,10 +30,17 @@ sequenceDiagram
 
     App->>Sdk: shutdown(self)
     Note over App,Sdk: live borrow 存在时本调用无法编译
-    State->>State: Active → Terminated
-    Sdk->>Native: MV_CC_Finalize()
-    Native-->>App: Ok 或 native MvsError
+    alt 仍有未确认销毁的 native handle
+        State-->>App: MvsError::SdkInUse
+        Note over State,Native: 状态仍为 Active；不调用 Finalize
+    else live handle 为 0
+        State->>State: Active → Terminated
+        Sdk->>Native: MV_CC_Finalize()
+        Native-->>App: Ok 或 native MvsError
+    end
 ```
 
 官方 CHM 限定单进程仅执行一次 Initialize 与 Finalize。Initialize 失败或 Finalize 尝试后
 均进入终态，后续 `Sdk::init` 返回 `SdkTerminated`；失败路径不重试 native 调用。
+Open rollback 或 Camera cleanup 未确认 DestroyHandle 成功时，live handle 门禁优先阻止
+Finalize。

@@ -9,7 +9,7 @@ use crate::backend;
 use crate::callback::EventInfo;
 use crate::frame::{Frame, FrameGuard};
 use crate::library::Sdk;
-use crate::{AccessMode, EnumValue, FloatValue, IntValue, MvsResult};
+use crate::{AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsResult};
 
 pub(crate) type ImageCallback = Box<dyn Fn(&Frame<'_>) + Send + Sync + 'static>;
 pub(crate) type ExceptionCallback = Box<dyn Fn(u32) + Send + Sync + 'static>;
@@ -57,7 +57,12 @@ impl<'sdk> Camera<'sdk> {
     ///
     /// 注册与注销要求停止取流。同一注册只接受一次；先注销后可重新注册。
     /// `Frame` 仅在本次调用期间有效，跨线程或长期使用时调用
-    /// [`Frame::to_owned`]。panic 会在 FFI 边界截获。
+    /// [`Frame::to_owned`]。panic 会在 FFI 边界截获并静默该 closure，owner 需注销后
+    /// 再注册以恢复 callback。
+    ///
+    /// # Panics
+    ///
+    /// native 注册失败且使用 NULL callback 回滚也失败时，先完整清理 Camera 再 panic。
     ///
     /// callback 由 SDK thread 调用，因此 capture 必须 `Send + Sync`：
     ///
@@ -86,6 +91,10 @@ impl<'sdk> Camera<'sdk> {
     }
 
     /// 启动取流；已注册 image callback 时使用 callback 模式，否则使用 polling。
+    ///
+    /// # Panics
+    ///
+    /// native 启动失败且立即 Stop 回滚也失败时，先完整清理 Camera 再 panic。
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }
@@ -165,6 +174,10 @@ impl<'sdk> Camera<'sdk> {
     /// 注册设备 exception callback。
     ///
     /// closure 只用于通知；需要关闭或重连时通过 channel 交给 Camera owner。
+    ///
+    /// # Panics
+    ///
+    /// native 注册与 NULL callback 回滚连续失败时，先完整清理 Camera 再 panic。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> MvsResult<()>
     where
         F: Fn(u32) + Send + Sync + 'static,
@@ -178,6 +191,10 @@ impl<'sdk> Camera<'sdk> {
     }
 
     /// 注册一个 named GenICam event callback。
+    ///
+    /// # Panics
+    ///
+    /// native 注册与 NULL callback 回滚连续失败时，先完整清理 Camera 再 panic。
     pub fn register_event_callback<F>(&mut self, event_name: &str, callback: F) -> MvsResult<()>
     where
         F: Fn(&EventInfo<'_>) + Send + Sync + 'static,
@@ -202,7 +219,7 @@ impl<'sdk> Camera<'sdk> {
     }
 
     /// 消费相机并按 Stop → callback 注销 → Close → Destroy 顺序清理。
-    pub fn close(mut self) -> MvsResult<()> {
+    pub fn close(mut self) -> Result<(), CleanupError> {
         self.inner.cleanup()
     }
 }

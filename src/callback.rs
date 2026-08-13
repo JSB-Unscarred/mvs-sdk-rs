@@ -14,7 +14,7 @@ pub struct EventInfo<'a> {
 }
 
 impl<'a> EventInfo<'a> {
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
     pub(crate) fn new(
         name: &'a [u8],
         event_id: u16,

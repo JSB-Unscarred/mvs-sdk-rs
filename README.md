@@ -5,7 +5,7 @@
 - `mvs-sdk-rs`：面向应用的安全接口；
 - `mvs-sdk-sys`：bindgen 生成的原始 FFI。
 
-真实相机访问支持 Windows x86_64。其它目标保留同形 API，`Sdk::init` 返回
+真实相机访问支持 Windows x86_64 MSVC。其它目标保留同形 API，`Sdk::init` 返回
 `MvsError::UnsupportedPlatform`。项目暂不发布到 Crates.io，请通过仓库源码或本地
 `path` 依赖使用。
 
@@ -67,11 +67,11 @@ API，不扩展 safe 层。
 | 1 | `MV_CC_GetSDKVersion` | `Sdk::sdk_version() -> MvsResult<u32>` | 独立查询，可在 `Sdk::init` 前调用。 |
 | 2 | `MV_CC_EnumDevices` | `Sdk::enumerate_devices(&self, TransportLayer) -> MvsResult<DeviceList<'_>>` | 串行枚举、复制设备记录，返回值借用 `Sdk`。 |
 | 2 | `MV_CC_IsDeviceAccessible` | `DeviceInfo::is_accessible(&self, AccessMode) -> bool` | 使用枚举记录的私有副本查询。 |
-| 2 | `MV_CC_CreateHandle` | `DeviceInfo<'sdk>::open(&self, AccessMode, u16) -> MvsResult<Camera<'sdk>>` | 与 `OpenDevice` 合并，创建失败时回收 handle。 |
-| 2 | `MV_CC_OpenDevice` | `DeviceInfo<'sdk>::open(&self, AccessMode, u16) -> MvsResult<Camera<'sdk>>` | `u16` 直接对应 `nSwitchoverKey`。 |
+| 2 | `MV_CC_CreateHandle` | `DeviceInfo<'sdk>::open(&self, AccessMode, u16) -> MvsResult<Camera<'sdk>>` | 与 `OpenDevice` 合并；失败时回滚非空 handle。 |
+| 2 | `MV_CC_OpenDevice` | `DeviceInfo<'sdk>::open(&self, AccessMode, u16) -> MvsResult<Camera<'sdk>>` | 回滚销毁也失败时，`OpenRollback` 保留两项错误。 |
 | 2 | `MV_CC_IsDeviceConnected` | `Camera::is_connected(&self) -> bool` | 返回调用时的连接状态快照。 |
-| 2 | `MV_CC_CloseDevice` | `Camera::close(self) -> MvsResult<()>` | 与 `DestroyHandle` 组成完整清理。 |
-| 2 | `MV_CC_DestroyHandle` | `Camera::close(self) -> MvsResult<()>`；`Drop` 兜底 | native handle 只由 `Camera` owner 清理。 |
+| 2 | `MV_CC_CloseDevice` | `Camera::close(self) -> Result<(), CleanupError>` | 全部尝试；保留前序首错与独立的 Destroy 错误。 |
+| 2 | `MV_CC_DestroyHandle` | `Camera::close(self) -> Result<(), CleanupError>`；`Drop` 兜底 | 销毁成功才确认 handle 与 callback backing 释放。 |
 | 2 | `MV_CC_RegisterImageCallBackEx2` | `register_image_callback(F)` / `unregister_image_callback()` | `F: Fn(&Frame<'_>) + Send + Sync + 'static`；固定 `bAutoFree=true`。 |
 | 2 | `MV_CC_StartGrabbing` | `Camera::start_grabbing(&mut self) -> MvsResult<()>` | image callback 与 polling 二选一。 |
 | 2 | `MV_CC_StopGrabbing` | `Camera::stop_grabbing(&mut self) -> MvsResult<()>` | 变更 image callback 或切换取流方式前先停止。 |
@@ -112,14 +112,24 @@ API，不扩展 safe 层。
 
 ## 生命周期约束
 
+完整数据流见
+[`Callback 取流`](时序图/Callback取流.md)、
+[`轮询取图与 buffer 归还`](时序图/轮询取图与buffer归还.md)、
+[`Camera 显式关闭与 Drop 兜底`](时序图/Camera显式关闭与Drop兜底.md) 和
+[`Sdk shutdown 的终态约束`](时序图/Sdk-shutdown的终态约束.md)。
+
 - `Sdk` 是进程级唯一 owner；`DeviceList<'sdk>`、`DeviceInfo<'sdk>` 和 `Camera<'sdk>` 均借用它，借用结束后才能消费 `Sdk` 调用 `shutdown`。
 - 官方 CHM 限定单进程只执行一次 Initialize 与 Finalize；Initialize 失败或 Finalize 尝试后均进入终态，后续 `Sdk::init` 返回 `SdkTerminated`。
+- `CreateHandle` 写出非空 handle 后即计为 live；只有 `DestroyHandle` 成功才解除。live handle 存在时 `Sdk::shutdown` 返回 `SdkInUse`，不调用 Finalize。
 - `DeviceList::iter()` 借出列表内的 `DeviceInfo`，枚举记录由列表统一持有。
 - image callback 使用 `RegisterImageCallBackEx2` 且 `bAutoFree=true`，`Frame` 只在 callback 调用期间有效。
 - image callback 与 polling 互斥；注册、注销或切换方式前停止采集。
-- callback 使用 `Fn + Send + Sync`。注销返回时，已进入的 callback 可能仍在执行；`Arc` backing 持有 closure 到该次调用结束。
+- callback 使用 `Fn + Send + Sync`。注销返回时，已进入的 callback 可能仍在执行；`Arc` backing 持有 closure 到该次调用结束。当前线程位于任一 MVS callback 时不得修改 `Camera` 生命周期，需要通过 channel 通知 owner 线程处理；本地以 `CallOrder` 拒绝，`close` 通过 `CleanupError` 报告。
+- wrapper 不增加 callback drain；普通 owner teardown 依赖 SDK 的 Stop、Close、Destroy 同步约定，`Arc` 只保活已经进入 Rust 的 closure。
+- callback panic 会被截获并静默该 closure；owner 注销后可重新注册。Start 或 callback 注册失败时立即执行 Stop/NULL callback 回滚；两次 native 调用都失败时，完整清理 Camera 后 panic。
 - polling buffer 由 `FrameGuard` 唯一归还；显式 `release` 可取得错误，`Drop` 执行兜底。
-- 正常路径显式调用 `Camera::close` 和 `Sdk::shutdown`，各 owner 的 `Drop` 只清理自己的局部资源。
+- 正常路径显式调用 `Camera::close` 和 `Sdk::shutdown`。`OpenRollback` 保留 open/create 与回滚销毁错误；`CleanupError` 保留清理首错与独立的 DestroyHandle 错误。
+- `Camera::as_raw_handle` 与 `DeviceInfo::as_raw` 只借出指针；raw 调用不得改变 safe 层维护的取流、callback 或 handle 生命周期。
 
 ## 文档与验证
 
@@ -130,7 +140,7 @@ cargo check --workspace --all-targets
 cargo test --workspace
 ```
 
-真机测试需要 Windows x64、MVS SDK、专用相机和
+真机测试需要 Windows x64 MSVC、MVS SDK、专用相机和
 `MVS_TEST_CAMERA_SERIAL`：
 
 ```console

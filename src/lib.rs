@@ -2,8 +2,8 @@
 //!
 //! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate. This
 //! crate exposes one platform-independent API backed by the native SDK on
-//! Windows x86_64. On other targets, [`Sdk::init`] returns
-//! [`MvsError::UnsupportedPlatform`]. Building and linking Windows applications
+//! Windows x86_64 MSVC. On other targets, [`Sdk::init`] returns
+//! [`MvsError::UnsupportedPlatform`]. Building and linking Windows MSVC applications
 //! requires the MVS SDK and `MVCAM_COMMON_RUNENV`; at runtime, the SDK DLL
 //! directory must be discoverable by the Windows loader, typically via `PATH`.
 //!
@@ -23,15 +23,22 @@
 //! Stop acquisition before registering or unregistering the image
 //! callback, and before switching acquisition modes. To keep pixels beyond a
 //! callback or guard lifetime, copy them with [`Frame::to_owned`].
+//! A callback must ask the [`Camera`] owner thread to change lifecycle state;
+//! while the current thread is in any MVS callback, direct lifecycle changes
+//! report a local [`MvsError::CallOrder`] without entering the native SDK
+//! (`Camera::close` reports it through `CleanupError`).
 //!
 //! # Lifetimes and shutdown
 //!
 //! [`Camera`] borrows its unique [`Sdk`] owner and is `Send` but not `Sync`;
 //! move it to a scoped thread when needed and serialize access to one handle.
 //! Prefer [`Camera::close`] over relying on `Drop`, because explicit close can
-//! report cleanup failure. Consuming [`Sdk`] with [`Sdk::shutdown`] is accepted
-//! only after its camera and device borrows end. Finalization is terminal for
-//! the process, as required by the vendor documentation.
+//! preserve the first pre-destroy error and the Destroy error in `CleanupError`.
+//! Consuming [`Sdk`] with [`Sdk::shutdown`] is accepted only after its camera
+//! and device borrows end.
+//! A native handle whose destruction was not confirmed also blocks Finalize.
+//! Finalization is terminal for the process, as required by the vendor
+//! documentation.
 //!
 //! See the repository's `tests/hardware_smoke.rs` for polling and callback
 //! workflows on separate native handles.
@@ -57,7 +64,7 @@ mod types;
 pub use callback::EventInfo;
 pub use camera::Camera;
 pub use device::{DeviceInfo, DeviceList};
-pub use error::{MvsError, MvsResult};
+pub use error::{CleanupError, MvsError, MvsResult};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
 pub use types::{AccessMode, EnumValue, FloatValue, IntValue, PixelType, TransportLayer};
