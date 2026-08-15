@@ -2,6 +2,7 @@
 name = "mvs-sdk-sys"
 version = "0.1.0"
 edition = "2024"
+publish = false
 description = "Raw FFI bindings for the Hikvision MVS machine-vision camera SDK."
 license = "MIT"
 readme = "README.md"

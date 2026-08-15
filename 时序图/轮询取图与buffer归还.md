@@ -25,8 +25,10 @@ sequenceDiagram
             Guard-->>App: OwnedFrame
         end
         alt 显式归还并观察错误
-            App->>Guard: release()
+            App->>Guard: release(self)
             Guard->>Native: MV_CC_FreeImageBuffer(...)
+            Native-->>Guard: Ok 或 native MvsError
+            Guard-->>App: 返回本次结果
         else RAII 兜底
             Guard->>Native: Drop → MV_CC_FreeImageBuffer(...)
         end
@@ -37,5 +39,6 @@ sequenceDiagram
 ```
 
 每个 `FrameGuard` 唯一负责一份 `MV_FRAME_OUT` 的归还凭据，并借用 `Camera`，防止 buffer
-仍在使用时停止或关闭相机。归还结束后，`Camera` 再按 Stop → callback 注销 → Close →
-Destroy 顺序清理；Destroy 未确认成功时，live handle 会阻止 SDK Finalize。
+仍在使用时停止或关闭相机。`release(self)` 会消费 guard 并只尝试一次，错误用于诊断和宿主
+策略；`Drop` 只做一次兜底并忽略错误。归还结束后，`Camera` 再按 Stop → callback 注销 →
+Close → Destroy 顺序清理；Destroy 未确认成功时，live handle 会阻止 SDK Finalize。

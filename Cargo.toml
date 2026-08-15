@@ -6,6 +6,7 @@ resolver = "3"
 name = "mvs-sdk-rs"
 version = "0.1.0"
 edition = "2024"
+publish = false
 description = "Safe Rust bindings for Hikvision MVS with a native Windows backend."
 license = "MIT"
 readme = "README.md"

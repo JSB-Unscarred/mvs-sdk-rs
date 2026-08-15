@@ -25,7 +25,7 @@
 //! callback or guard lifetime, copy them with [`Frame::to_owned`].
 //! A callback must ask the [`Camera`] owner thread to change lifecycle state;
 //! while the current thread is in any MVS callback, direct lifecycle changes
-//! report a local [`MvsError::CallOrder`] without entering the native SDK
+//! report a local [`MvsError::InvalidState`] without entering the native SDK
 //! (`Camera::close` reports it through `CleanupError`).
 //!
 //! # Lifetimes and shutdown
@@ -33,7 +33,10 @@
 //! [`Camera`] borrows its unique [`Sdk`] owner and is `Send` but not `Sync`;
 //! move it to a scoped thread when needed and serialize access to one handle.
 //! Prefer [`Camera::close`] over relying on `Drop`, because explicit close can
-//! preserve the first pre-destroy error and the Destroy error in `CleanupError`.
+//! preserve the first pre-destroy operation/error and the Destroy error in
+//! `CleanupError`. `Camera::close`, [`FrameGuard::release`] and [`Sdk::shutdown`]
+//! consume their owner and attempt cleanup once; their errors are diagnostic
+//! input for host policy, not retry handles.
 //! Consuming [`Sdk`] with [`Sdk::shutdown`] is accepted only after its camera
 //! and device borrows end.
 //! A native handle whose destruction was not confirmed also blocks Finalize.

@@ -16,19 +16,22 @@ pub type MvsResult<T> = Result<T, MvsError>;
 /// `Camera::close` 返回的清理结果。
 ///
 /// owner 线程的清理会继续执行到 `DestroyHandle`，因此分别保留 Destroy 前的首个
-/// 错误与 Destroy 错误；callback 上下文则拒绝 native teardown。只有
+/// 失败操作与错误，以及 Destroy 错误；callback 上下文则拒绝 native teardown。只有
 /// [`CleanupError::native_handle_destroyed`] 为 `true` 时，native handle 才已确认失效。
 #[derive(Debug)]
 pub struct CleanupError {
-    prior_error: Option<MvsError>,
+    prior_error: Option<(&'static str, MvsError)>,
     destroy_error: Option<MvsError>,
     native_handle_destroyed: bool,
 }
 
 impl CleanupError {
-    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    #[cfg(any(
+        test,
+        all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
+    ))]
     pub(crate) fn new(
-        prior_error: Option<MvsError>,
+        prior_error: Option<(&'static str, MvsError)>,
         destroy_error: Option<MvsError>,
         native_handle_destroyed: bool,
     ) -> Self {
@@ -39,9 +42,14 @@ impl CleanupError {
         }
     }
 
+    /// 返回 `DestroyHandle` 前首个失败操作的名称。
+    pub fn prior_operation(&self) -> Option<&'static str> {
+        self.prior_error.as_ref().map(|(operation, _)| *operation)
+    }
+
     /// 返回 `DestroyHandle` 前遇到的首个错误。
     pub fn prior_error(&self) -> Option<&MvsError> {
-        self.prior_error.as_ref()
+        self.prior_error.as_ref().map(|(_, error)| error)
     }
 
     /// 返回独立保存的 `DestroyHandle` 错误。
@@ -58,18 +66,29 @@ impl CleanupError {
 impl fmt::Display for CleanupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (&self.prior_error, &self.destroy_error) {
-            (Some(prior), Some(destroy)) => write!(
+            (Some((operation, prior)), Some(destroy)) => write!(
                 f,
-                "camera cleanup failed before DestroyHandle ({prior}); DestroyHandle also failed ({destroy})"
+                "camera cleanup failed during {operation} ({prior}); DestroyHandle also failed ({destroy})"
             ),
-            (Some(prior), None) => write!(f, "camera cleanup failed: {prior}"),
+            (Some((operation, prior)), None) => {
+                write!(f, "camera cleanup failed during {operation}: {prior}")
+            }
             (None, Some(destroy)) => write!(f, "DestroyHandle failed: {destroy}"),
             (None, None) => f.write_str("camera cleanup did not destroy the native handle"),
         }
     }
 }
 
-impl std::error::Error for CleanupError {}
+impl std::error::Error for CleanupError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.prior_error()
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| {
+                self.destroy_error()
+                    .map(|error| error as &(dyn std::error::Error + 'static))
+            })
+    }
+}
 
 /// Error returned by any MVS SDK call, plus Rust-side marshalling and lifecycle
 /// failures.
@@ -276,6 +295,14 @@ pub enum MvsError {
     #[error("string contains interior NUL byte: {0}")]
     Nul(#[from] NulError),
 
+    /// The operation conflicts with the safe wrapper's current state.
+    #[error("invalid state: {0}")]
+    InvalidState(&'static str),
+
+    /// `CreateHandle` reported success without returning a handle.
+    #[error("CreateHandle returned a null handle")]
+    NullHandleAfterCreate,
+
     /// The native MVS SDK backend is unavailable on this target.
     #[error("MVS SDK is only available on Windows x86_64 MSVC")]
     UnsupportedPlatform,
@@ -286,11 +313,17 @@ pub enum MvsError {
     /// The process-wide SDK owner already exists.
     #[error("MVS SDK already has an active owner")]
     SdkInUse,
+    /// SDK finalization is blocked by a native handle that was not destroyed.
+    #[error("native camera handles are still live")]
+    NativeHandlesLive,
 
     /// Creating or opening a camera failed and rollback destruction also failed.
+    /// The handle is no longer recoverable through the safe API, so the host
+    /// should treat this as a process-terminal cleanup failure.
     #[error("camera open failed ({open}); rollback DestroyHandle also failed ({destroy})")]
     OpenRollback {
         /// Original `CreateHandle` or `OpenDevice` error.
+        #[source]
         open: Box<MvsError>,
         /// Error returned while destroying the partial handle.
         destroy: Box<MvsError>,
@@ -301,15 +334,18 @@ pub enum MvsError {
 macro_rules! define_sdk_error_codes {
     ($($variant:ident => $code:path),+ $(,)?) => {
         impl MvsError {
-            /// Return the raw SDK return code, if this error originated from the SDK.
+            /// Return the raw SDK status code represented by a native error variant.
             pub fn raw_code(&self) -> Option<u32> {
                 match self {
                     $(Self::$variant => Some($code),)+
                     Self::Unknown(code) => Some(*code),
                     Self::Nul(_)
+                    | Self::InvalidState(_)
+                    | Self::NullHandleAfterCreate
                     | Self::UnsupportedPlatform
                     | Self::SdkTerminated
                     | Self::SdkInUse
+                    | Self::NativeHandlesLive
                     | Self::OpenRollback { .. } => None,
                 }
             }
@@ -408,12 +444,80 @@ pub(crate) fn check(code: c_int) -> MvsResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::MvsError;
+    use std::os::raw::c_int;
+
+    use crate::sys;
+
+    use super::{CleanupError, MvsError};
+
+    // native 错误必须保留 variant 与原始返回码。
+    #[test]
+    fn known_native_code_is_mapped() {
+        let error = MvsError::from(sys::MV_E_CALLORDER as c_int);
+
+        assert!(matches!(&error, MvsError::CallOrder));
+        assert_eq!(error.raw_code(), Some(sys::MV_E_CALLORDER));
+    }
 
     // 核心错误约定：未知 native code 必须无损保留。
     #[test]
     fn unknown_sdk_code_is_preserved() {
         let code = 0xDEAD_BEEF;
         assert_eq!(MvsError::from(code).raw_code(), Some(code));
+    }
+
+    // safe wrapper 本地错误不得伪装成 native 返回码。
+    #[test]
+    fn local_errors_have_no_raw_code() {
+        let errors = [
+            MvsError::InvalidState("camera is already grabbing"),
+            MvsError::NullHandleAfterCreate,
+            MvsError::NativeHandlesLive,
+        ];
+
+        assert!(errors.iter().all(|error| error.raw_code().is_none()));
+    }
+
+    // 复合错误保留清理上下文，并暴露首个失败作为标准 error source。
+    #[test]
+    fn compound_errors_preserve_context_and_source() {
+        let error = CleanupError::new(
+            Some(("StopGrabbing", MvsError::CallOrder)),
+            Some(MvsError::Handle),
+            false,
+        );
+
+        assert_eq!(error.prior_operation(), Some("StopGrabbing"));
+        assert!(matches!(error.prior_error(), Some(MvsError::CallOrder)));
+        assert!(matches!(error.destroy_error(), Some(MvsError::Handle)));
+        assert!(!error.native_handle_destroyed());
+        assert!(error.to_string().contains("during StopGrabbing"));
+        assert_eq!(
+            std::error::Error::source(&error).and_then(|source| {
+                source
+                    .downcast_ref::<MvsError>()
+                    .and_then(MvsError::raw_code)
+            }),
+            Some(sys::MV_E_CALLORDER)
+        );
+
+        let destroy_only = CleanupError::new(None, Some(MvsError::Handle), false);
+        assert_eq!(
+            std::error::Error::source(&destroy_only).and_then(|source| {
+                source
+                    .downcast_ref::<MvsError>()
+                    .and_then(MvsError::raw_code)
+            }),
+            Some(sys::MV_E_HANDLE)
+        );
+
+        let rollback = MvsError::OpenRollback {
+            open: Box::new(MvsError::Parameter),
+            destroy: Box::new(MvsError::Handle),
+        };
+        assert_eq!(
+            std::error::Error::source(&rollback).map(ToString::to_string),
+            Some(MvsError::Parameter.to_string())
+        );
     }
 }

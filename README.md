@@ -63,20 +63,20 @@ API，不扩展 safe 层。
 | Part | MVS SDK 接口 | 安全 Rust 接口定义 | 关键约束 |
 | --- | --- | --- | --- |
 | 1 | `MV_CC_Initialize` | `Sdk::init() -> MvsResult<Sdk>` | 进程内只创建一个 SDK owner。 |
-| 1 | `MV_CC_Finalize` | `Sdk::shutdown(self) -> MvsResult<()>` | 消费 SDK owner；其借用资源需先结束。 |
+| 1 | `MV_CC_Finalize` | `Sdk::shutdown(self) -> MvsResult<()>` | 消费 SDK owner 并单次尝试 Finalize；错误用于诊断。 |
 | 1 | `MV_CC_GetSDKVersion` | `Sdk::sdk_version() -> MvsResult<u32>` | 独立查询，可在 `Sdk::init` 前调用。 |
 | 2 | `MV_CC_EnumDevices` | `Sdk::enumerate_devices(&self, TransportLayer) -> MvsResult<DeviceList<'_>>` | 串行枚举、复制设备记录，返回值借用 `Sdk`。 |
 | 2 | `MV_CC_IsDeviceAccessible` | `DeviceInfo::is_accessible(&self, AccessMode) -> bool` | 使用枚举记录的私有副本查询。 |
-| 2 | `MV_CC_CreateHandle` | `DeviceInfo<'sdk>::open(&self, AccessMode, u16) -> MvsResult<Camera<'sdk>>` | 与 `OpenDevice` 合并；失败时回滚非空 handle。 |
+| 2 | `MV_CC_CreateHandle` | `DeviceInfo<'sdk>::open(&self, AccessMode, u16) -> MvsResult<Camera<'sdk>>` | 与 `OpenDevice` 合并；失败时回滚非空 handle，成功但返回空 handle 时报告 `MvsError::NullHandleAfterCreate`。 |
 | 2 | `MV_CC_OpenDevice` | `DeviceInfo<'sdk>::open(&self, AccessMode, u16) -> MvsResult<Camera<'sdk>>` | 回滚销毁也失败时，`OpenRollback` 保留两项错误。 |
 | 2 | `MV_CC_IsDeviceConnected` | `Camera::is_connected(&self) -> bool` | 返回调用时的连接状态快照。 |
-| 2 | `MV_CC_CloseDevice` | `Camera::close(self) -> Result<(), CleanupError>` | 全部尝试；保留前序首错与独立的 Destroy 错误。 |
+| 2 | `MV_CC_CloseDevice` | `Camera::close(self) -> Result<(), CleanupError>` | 单次完整清理；保留首个失败操作、对应错误与独立的 Destroy 错误。 |
 | 2 | `MV_CC_DestroyHandle` | `Camera::close(self) -> Result<(), CleanupError>`；`Drop` 兜底 | 销毁成功才确认 handle 与 callback backing 释放。 |
 | 2 | `MV_CC_RegisterImageCallBackEx2` | `register_image_callback(F)` / `unregister_image_callback()` | `F: Fn(&Frame<'_>) + Send + Sync + 'static`；固定 `bAutoFree=true`。 |
 | 2 | `MV_CC_StartGrabbing` | `Camera::start_grabbing(&mut self) -> MvsResult<()>` | image callback 与 polling 二选一。 |
 | 2 | `MV_CC_StopGrabbing` | `Camera::stop_grabbing(&mut self) -> MvsResult<()>` | 变更 image callback 或切换取流方式前先停止。 |
 | 2 | `MV_CC_GetImageBuffer` | `Camera::get_image_buffer(&self, u32) -> MvsResult<FrameGuard<'_>>` | guard 借用相机和 SDK buffer。 |
-| 2 | `MV_CC_FreeImageBuffer` | `FrameGuard::release(self) -> MvsResult<()>`；`Drop` 兜底 | 每个成功取得的 buffer 只归还一次。 |
+| 2 | `MV_CC_FreeImageBuffer` | `FrameGuard::release(self) -> MvsResult<()>`；`Drop` 兜底 | 消费 guard 并单次归还；`Drop` 忽略错误。 |
 | 4 | `MV_CC_GetIntValueEx` | `Camera::get_int(&self, &str) -> MvsResult<IntValue>` | 返回当前值、上下界和步长。 |
 | 4 | `MV_CC_SetIntValueEx` | `Camera::set_int(&self, &str, i64) -> MvsResult<()>` | 直接转发 `i64`。 |
 | 4 | `MV_CC_GetEnumValueEx` | `Camera::get_enum(&self, &str) -> MvsResult<EnumValue>` | 复制当前值和最多 256 个候选值。 |
@@ -120,16 +120,17 @@ API，不扩展 safe 层。
 
 - `Sdk` 是进程级唯一 owner；`DeviceList<'sdk>`、`DeviceInfo<'sdk>` 和 `Camera<'sdk>` 均借用它，借用结束后才能消费 `Sdk` 调用 `shutdown`。
 - 官方 CHM 限定单进程只执行一次 Initialize 与 Finalize；Initialize 失败或 Finalize 尝试后均进入终态，后续 `Sdk::init` 返回 `SdkTerminated`。
-- `CreateHandle` 写出非空 handle 后即计为 live；只有 `DestroyHandle` 成功才解除。live handle 存在时 `Sdk::shutdown` 返回 `SdkInUse`，不调用 Finalize。
+- native error 只来自 SDK 返回码并由 `check` 转换；wrapper 自身的顺序、空 handle 与 live handle 条件分别使用 `MvsError::InvalidState(&'static str)`、`MvsError::NullHandleAfterCreate` 与 `MvsError::NativeHandlesLive`。
+- `CreateHandle` 写出非空 handle 后即计为 live；只有 `DestroyHandle` 成功才解除。live handle 存在时 `Sdk::shutdown` 返回 `MvsError::NativeHandlesLive`，不调用 Finalize。
 - `DeviceList::iter()` 借出列表内的 `DeviceInfo`，枚举记录由列表统一持有。
 - image callback 使用 `RegisterImageCallBackEx2` 且 `bAutoFree=true`，`Frame` 只在 callback 调用期间有效。
 - image callback 与 polling 互斥；注册、注销或切换方式前停止采集。
-- callback 使用 `Fn + Send + Sync`。注销返回时，已进入的 callback 可能仍在执行；`Arc` backing 持有 closure 到该次调用结束。当前线程位于任一 MVS callback 时不得修改 `Camera` 生命周期，需要通过 channel 通知 owner 线程处理；本地以 `CallOrder` 拒绝，`close` 通过 `CleanupError` 报告。
+- callback 使用 `Fn + Send + Sync`。注销返回时，已进入的 callback 可能仍在执行；`Arc` backing 持有 closure 到该次调用结束。当前线程位于任一 MVS callback 时不得修改 `Camera` 生命周期，需要通过 channel 通知 owner 线程处理；本地以 `MvsError::InvalidState(..)` 拒绝，`close` 通过 `CleanupError` 报告。
 - wrapper 不增加 callback drain；普通 owner teardown 依赖 SDK 的 Stop、Close、Destroy 同步约定，`Arc` 只保活已经进入 Rust 的 closure。
-- 取流与 callback 注册状态只在 native 返回 `MV_OK` 后更新；失败保留调用前的本地状态并返回原错误。注册失败清空 closure，native Arc token 在 `DestroyHandle` 成功后回收。
-- callback panic 会在 FFI 边界截获并静默该 closure；owner 注销后可重新注册。宿主根据返回错误选择重试、降级或结束进程。
-- polling buffer 由 `FrameGuard` 唯一归还；显式 `release` 可取得错误，`Drop` 执行兜底。
-- 正常路径显式调用 `Camera::close` 和 `Sdk::shutdown`。`OpenRollback` 保留 open/create 与回滚销毁错误；`CleanupError` 保留清理首错与独立的 DestroyHandle 错误。
+- 取流与 callback 注册状态只在 native 返回 `MV_OK` 后更新；失败保留调用前的本地状态并返回原错误。仍持有 owner 的普通操作由调用方决定重试，注册失败清空 closure，native Arc token 在 `DestroyHandle` 成功后回收。
+- callback 的业务错误通过 channel 交给 owner；panic 在 FFI 边界截获并静默 closure，不进入 `MvsResult`，owner 注销后可重新注册。
+- polling buffer 由 `FrameGuard` 唯一归还；`release(self)` 单次尝试并返回错误，`Drop` 兜底时忽略错误。
+- `Camera::close(self)` 与 `Sdk::shutdown(self)` 都会消费 owner 并只尝试一次，错误用于诊断和宿主退出策略，不能用同一 owner 重试；对应 `Drop` 兜底均忽略错误。`OpenRollback` 保留 open/create 与回滚销毁错误；`CleanupError` 保留首个失败操作、对应错误与独立的 DestroyHandle 错误。
 - `Camera::as_raw_handle` 与 `DeviceInfo::as_raw` 只借出指针；raw 调用不得改变 safe 层维护的取流、callback 或 handle 生命周期。
 
 ## 文档与验证

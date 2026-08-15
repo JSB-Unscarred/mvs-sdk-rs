@@ -21,7 +21,8 @@ pub(crate) type EventCallback = Box<dyn Fn(&EventInfo<'_>) + Send + Sync + 'stat
 /// 它可以移动到 scoped thread，但不实现 `Sync`；同一 handle 的调用由 owner
 /// 串行发起。`Drop` 只做忽略错误的兜底，正常路径使用 [`Camera::close`]。
 /// 取流与 callback 注册状态只在对应 native 调用返回 `MV_OK` 后更新；
-/// 失败保留调用前的本地状态并返回原错误。
+/// native 失败保留调用前状态并返回原错误，本地顺序冲突返回
+/// [`crate::MvsError::InvalidState`]。
 pub struct Camera<'sdk> {
     inner: backend::Camera,
     _sdk: &'sdk Sdk,
@@ -60,7 +61,8 @@ impl<'sdk> Camera<'sdk> {
     /// 注册与注销要求停止取流。同一注册只接受一次；先注销后可重新注册。
     /// `Frame` 仅在本次调用期间有效，跨线程或长期使用时调用
     /// [`Frame::to_owned`]。panic 会在 FFI 边界截获并静默该 closure，owner 需注销后
-    /// 再注册以恢复 callback。
+    /// 再注册以恢复 callback。callback 内的业务错误应由 closure 通过 channel
+    /// 通知 owner；它们不会成为本注册调用的 `MvsResult`。
     ///
     /// callback 由 SDK thread 调用，因此 capture 必须 `Send + Sync`：
     ///
@@ -205,6 +207,9 @@ impl<'sdk> Camera<'sdk> {
     }
 
     /// 消费相机并按 Stop → callback 注销 → Close → Destroy 顺序清理。
+    ///
+    /// 全部清理步骤只尝试一次；错误返回后不能使用同一 `Camera` 重试。
+    /// [`CleanupError`] 保留首个 Destroy 前操作及错误，并独立保留 Destroy 错误。
     pub fn close(mut self) -> Result<(), CleanupError> {
         self.inner.cleanup()
     }

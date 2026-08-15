@@ -31,7 +31,7 @@ sequenceDiagram
     App->>Sdk: shutdown(self)
     Note over App,Sdk: live borrow 存在时本调用无法编译
     alt 仍有未确认销毁的 native handle
-        State-->>App: MvsError::SdkInUse
+        State-->>App: MvsError::NativeHandlesLive
         Note over State,Native: 状态仍为 Active；不调用 Finalize
     else live handle 为 0
         State->>State: Active → Terminated
@@ -43,4 +43,5 @@ sequenceDiagram
 官方 CHM 限定单进程仅执行一次 Initialize 与 Finalize。Initialize 失败或 Finalize 尝试后
 均进入终态，后续 `Sdk::init` 返回 `SdkTerminated`；失败路径不重试 native 调用。
 Open rollback 或 Camera cleanup 未确认 DestroyHandle 成功时，live handle 门禁优先阻止
-Finalize。
+Finalize。`shutdown(self)` 会消费 owner 并只尝试一次，错误用于诊断和宿主策略，不能用同一
+owner 重试；`Drop` 执行相同兜底并忽略错误。

@@ -111,8 +111,9 @@ impl Sdk {
     /// 消费唯一 owner 并反初始化 SDK。
     ///
     /// 借用该 owner 的设备和相机会在编译期阻止本调用。无论 native 返回值如何，
-    /// Finalize 都只尝试一次；存在未确认销毁的 handle 时返回 [`MvsError::SdkInUse`]
-    /// 并保留 active 状态。
+    /// Finalize 都只尝试一次；存在未确认销毁的 handle 时返回
+    /// [`MvsError::NativeHandlesLive`]，调用方应按终止进程处理。
+    /// 本方法消费 `Sdk`，错误返回后不能使用同一 owner 重试。
     pub fn shutdown(mut self) -> MvsResult<()> {
         self.finalize()
     }
@@ -122,7 +123,7 @@ impl Sdk {
             return Ok(());
         }
         if native_handles_live() {
-            return Err(MvsError::SdkInUse);
+            return Err(MvsError::NativeHandlesLive);
         }
         self.active = false;
         SDK_STATE.store(SDK_TERMINATED, Ordering::Release);

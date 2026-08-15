@@ -59,7 +59,7 @@ impl<C> CallbackRecord<C> {
         native_register: impl FnOnce(*mut c_void) -> c_int,
     ) -> MvsResult<()> {
         if self.registered {
-            return Err(MvsError::CallOrder);
+            return Err(MvsError::InvalidState("callback is already registered"));
         }
         self.slot.set(callback);
         if !self.native_token {
@@ -176,7 +176,7 @@ impl Camera {
             }
             return Err(error);
         }
-        let handle = NativeHandle::new(raw_handle).ok_or(MvsError::Handle)?;
+        let handle = NativeHandle::new(raw_handle).ok_or(MvsError::NullHandleAfterCreate)?;
 
         // SAFETY: handle 来自 CreateHandle，访问模式与切换 key 直接转发。
         let open =
@@ -205,12 +205,12 @@ impl Camera {
         self.handle
             .as_ref()
             .map(NativeHandle::as_ptr)
-            .ok_or(MvsError::CallOrder)
+            .ok_or(MvsError::InvalidState("camera handle is unavailable"))
     }
 
     fn stopped_handle(&self) -> MvsResult<*mut c_void> {
         if self.grabbing {
-            return Err(MvsError::CallOrder);
+            return Err(MvsError::InvalidState("camera must be stopped"));
         }
         self.handle()
     }
@@ -248,7 +248,7 @@ impl Camera {
     pub(crate) fn stop_grabbing(&mut self) -> MvsResult<()> {
         reject_callback_context()?;
         if !self.grabbing {
-            return Err(MvsError::CallOrder);
+            return Err(MvsError::InvalidState("camera is not grabbing"));
         }
         let handle = self.handle()?;
         // SAFETY: 本地状态记录当前正在取流。
@@ -265,7 +265,9 @@ impl Camera {
                 .as_ref()
                 .is_some_and(CallbackRecord::is_active)
         {
-            return Err(MvsError::CallOrder);
+            return Err(MvsError::InvalidState(
+                "polling requires active grabbing without an image callback",
+            ));
         }
         let handle = self.handle()?;
         let mut raw = sys::MV_FRAME_OUT::default();
@@ -525,17 +527,26 @@ impl Camera {
 
     /// 尝试完整 teardown，分别保留前序首错与 DestroyHandle 错误。
     pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
-        if self.handle.is_none() {
-            return Ok(());
-        }
         if in_callback() {
+            if self.handle.is_none() {
+                return Ok(());
+            }
             // callback 内不重入 native teardown；live handle 计数会阻止 Finalize。
             self.silence_callbacks();
-            return Err(CleanupError::new(Some(MvsError::CallOrder), None, false));
+            return Err(CleanupError::new(
+                Some((
+                    "Camera::close",
+                    MvsError::InvalidState("camera cleanup cannot run from an MVS callback"),
+                )),
+                None,
+                false,
+            ));
         }
 
+        let Some(handle) = self.handle.take() else {
+            return Ok(());
+        };
         self.silence_callbacks();
-        let handle = self.handle.take().expect("handle checked above");
         let raw_handle = handle.as_ptr();
         let mut prior_error = None;
 
@@ -543,6 +554,7 @@ impl Camera {
             // SAFETY: handle 尚由本 Camera 持有；失败不阻止后续 teardown。
             record_first_error(
                 &mut prior_error,
+                "MV_CC_StopGrabbing",
                 check(unsafe { sys::MV_CC_StopGrabbing(raw_handle) }),
             );
         }
@@ -554,6 +566,7 @@ impl Camera {
             // SAFETY: 官方 Ex2 示例以 null callback/user 注销。
             record_first_error(
                 &mut prior_error,
+                "MV_CC_RegisterImageCallBackEx2(NULL)",
                 check(unsafe {
                     sys::MV_CC_RegisterImageCallBackEx2(raw_handle, None, std::ptr::null_mut(), 1)
                 }),
@@ -567,6 +580,7 @@ impl Camera {
             // SAFETY: null callback/user 注销 exception callback。
             record_first_error(
                 &mut prior_error,
+                "MV_CC_RegisterExceptionCallBack(NULL)",
                 check(unsafe {
                     sys::MV_CC_RegisterExceptionCallBack(raw_handle, None, std::ptr::null_mut())
                 }),
@@ -577,6 +591,7 @@ impl Camera {
                 // SAFETY: event name 仍由 record 持有。
                 record_first_error(
                     &mut prior_error,
+                    "MV_CC_RegisterEventCallBackEx(NULL)",
                     check(unsafe {
                         sys::MV_CC_RegisterEventCallBackEx(
                             raw_handle,
@@ -592,6 +607,7 @@ impl Camera {
         // SAFETY: teardown 继续遵循 CloseDevice → DestroyHandle。
         record_first_error(
             &mut prior_error,
+            "MV_CC_CloseDevice",
             check(unsafe { sys::MV_CC_CloseDevice(raw_handle) }),
         );
         let destroy_error = handle.destroy().err();
@@ -653,19 +669,27 @@ impl Drop for Camera {
     }
 }
 
+/// lifecycle 操作不得从 SDK callback 线程重入。
 fn reject_callback_context() -> MvsResult<()> {
     if in_callback() {
-        Err(MvsError::CallOrder)
+        Err(MvsError::InvalidState(
+            "camera lifecycle operations cannot run from an MVS callback",
+        ))
     } else {
         Ok(())
     }
 }
 
-fn record_first_error(first_error: &mut Option<MvsError>, result: MvsResult<()>) {
+/// 记录 DestroyHandle 前首个失败的清理操作，后续清理仍继续。
+fn record_first_error(
+    first_error: &mut Option<(&'static str, MvsError)>,
+    operation: &'static str,
+    result: MvsResult<()>,
+) {
     if let Err(error) = result
         && first_error.is_none()
     {
-        *first_error = Some(error);
+        *first_error = Some((operation, error));
     }
 }
 
