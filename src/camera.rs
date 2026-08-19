@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::os::raw::c_void;
+use std::sync::Arc;
 
 use crate::backend;
 use crate::callback::EventInfo;
@@ -11,9 +12,9 @@ use crate::frame::{Frame, FrameGuard};
 use crate::library::Sdk;
 use crate::{AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsResult};
 
-pub(crate) type ImageCallback = Box<dyn Fn(&Frame<'_>) + Send + Sync + 'static>;
-pub(crate) type ExceptionCallback = Box<dyn Fn(u32) + Send + Sync + 'static>;
-pub(crate) type EventCallback = Box<dyn Fn(&EventInfo<'_>) + Send + Sync + 'static>;
+pub(crate) type ImageCallback = Arc<dyn Fn(&Frame<'_>) + Send + Sync + 'static>;
+pub(crate) type ExceptionCallback = Arc<dyn Fn(u32) + Send + Sync + 'static>;
+pub(crate) type EventCallback = Arc<dyn Fn(&EventInfo<'_>) + Send + Sync + 'static>;
 
 /// 已打开的 MVS 相机。
 ///
@@ -79,7 +80,7 @@ impl<'sdk> Camera<'sdk> {
     where
         F: Fn(&Frame<'_>) + Send + Sync + 'static,
     {
-        self.inner.register_image_callback(Box::new(callback))
+        self.inner.register_image_callback(Arc::new(callback))
     }
 
     /// 注销 image callback。
@@ -174,7 +175,7 @@ impl<'sdk> Camera<'sdk> {
     where
         F: Fn(u32) + Send + Sync + 'static,
     {
-        self.inner.register_exception_callback(Box::new(callback))
+        self.inner.register_exception_callback(Arc::new(callback))
     }
 
     /// 注销 exception callback；已经进入的调用可短暂继续。
@@ -188,7 +189,7 @@ impl<'sdk> Camera<'sdk> {
         F: Fn(&EventInfo<'_>) + Send + Sync + 'static,
     {
         self.inner
-            .register_event_callback(event_name, Box::new(callback))
+            .register_event_callback(event_name, Arc::new(callback))
     }
 
     /// 注销一个 named event callback；已经进入的调用可短暂继续。
@@ -217,19 +218,6 @@ impl<'sdk> Camera<'sdk> {
 
 impl fmt::Debug for Camera<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (state, acquisition_mode, image_cb, exception_cb, event_cbs) =
-            self.inner.debug_details();
-        let mut debug = f.debug_struct("Camera");
-        debug
-            .field("handle", &self.as_raw_handle())
-            .field("state", &state);
-        if let Some(mode) = acquisition_mode {
-            debug.field("acquisition_mode", &mode);
-        }
-        debug
-            .field("image_cb", &image_cb)
-            .field("exception_cb", &exception_cb)
-            .field("event_cbs", &event_cbs)
-            .finish()
+        fmt::Debug::fmt(&self.inner, f)
     }
 }

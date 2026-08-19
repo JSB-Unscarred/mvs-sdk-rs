@@ -6,7 +6,7 @@ sequenceDiagram
     actor App as 应用
     participant Sdk as Sdk owner
     participant Camera as Camera
-    participant Slot as Arc callback slot
+    participant Slot as Box callback slot
     participant Native as MVS SDK
 
     App->>Sdk: Sdk::init()
@@ -20,16 +20,16 @@ sequenceDiagram
     Camera->>Native: CreateHandle → OpenDevice
     Note over Camera,Native: MV_OK + NULL → MvsError::NullHandleAfterCreate；回滚失败 → MvsError::OpenRollback
     App->>Camera: register_image_callback(closure)
-    Camera->>Slot: 保存 Arc(closure) 与 native Arc token
+    Camera->>Slot: 保存 Box slot 与 Arc(closure)
     Camera->>Native: RegisterImageCallBackEx2(trampoline, slot, true)
     App->>Camera: start_grabbing()
     Camera->>Native: MV_CC_StartGrabbing()
     Note over Camera,Native: 仅 MV_OK 提交 Camera 本地状态；失败返回原错误，不调用 Stop/NULL callback
-    Note over Camera,Slot: 注册失败清空 closure；native Arc token 在 DestroyHandle 成功后回收
+    Note over Camera,Slot: 首次注册失败回收新建 slot；已有 record 失败时清空 closure
 
     loop 每帧
         Native-->>Slot: image_trampoline(MV_FRAME_OUT, slot, true)
-        Slot->>Slot: 临时 clone slot 与 closure Arc
+        Slot->>Slot: 临时 clone closure Arc
         Slot->>App: closure(&Frame)
         Note over Slot,App: Frame 仅在本次 callback 有效；跨调用使用 to_owned()
         opt callback 内请求停止、关闭或改注册
@@ -52,8 +52,9 @@ sequenceDiagram
     App->>Camera: close()
     Camera->>Native: Stop → 注销 → Close → Destroy
     alt Destroy 成功
-        Camera->>Slot: 回收 native Arc token
+        Camera->>Slot: 释放 Box slot
     else Destroy 失败
+        Camera->>Slot: 遗留空 Box slot，防止 pUser 悬垂
         Camera-->>App: CleanupError（保留 Destroy 错误）
     end
     App->>Sdk: shutdown()

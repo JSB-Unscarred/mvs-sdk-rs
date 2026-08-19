@@ -4,7 +4,7 @@
 
 use mvs_sdk_rs::{MvsError, Sdk};
 
-// 验证 unsupported backend 重复调用也只返回平台错误。
+// unsupported backend 未调用 native Initialize，重复调用均返回平台错误。
 #[test]
 fn sdk_init_repeatedly_reports_unsupported_platform() {
     for _ in 0..2 {

@@ -5,34 +5,24 @@ use crate::error::check;
 use crate::sys;
 use crate::{AccessMode, MvsResult, TransportLayer};
 
-/// 保存枚举结果的 Rust-owned snapshot。
-pub(crate) struct DeviceList {
-    devices: Vec<DeviceInfo>,
-}
+/// 枚举设备并复制 SDK 管理的临时记录。
+pub(crate) fn enumerate_devices(layers: TransportLayer) -> MvsResult<Vec<DeviceInfo>> {
+    let mut raw = sys::MV_CC_DEVICE_INFO_LIST::default();
+    // SAFETY: SDK 写入 raw；Sdk::enumerate_devices 在复制完成前持有枚举锁。
+    check(unsafe { sys::MV_CC_EnumDevices(layers.raw(), &mut raw) })?;
 
-impl DeviceList {
-    pub(crate) fn enumerate(layers: TransportLayer) -> MvsResult<Self> {
-        let mut raw = sys::MV_CC_DEVICE_INFO_LIST::default();
-        // SAFETY: SDK 写入 raw；Sdk::enumerate_devices 在复制完成前持有枚举锁。
-        check(unsafe { sys::MV_CC_EnumDevices(layers.raw(), &mut raw) })?;
-
-        let device_count = (raw.nDeviceNum as usize).min(raw.pDeviceInfo.len());
-        let mut devices = Vec::with_capacity(device_count);
-        for ptr in raw.pDeviceInfo.iter().take(device_count) {
-            if !ptr.is_null() {
-                // SAFETY: non-null 项由本次 EnumDevices 填充，且枚举锁仍在持有。
-                devices.push(DeviceInfo {
-                    raw: Box::new(unsafe { **ptr }),
-                });
-            }
+    let device_count = (raw.nDeviceNum as usize).min(raw.pDeviceInfo.len());
+    let mut devices = Vec::with_capacity(device_count);
+    for ptr in raw.pDeviceInfo.iter().take(device_count) {
+        if !ptr.is_null() {
+            // SAFETY: non-null 项由本次 EnumDevices 填充，且枚举锁仍在持有。
+            devices.push(DeviceInfo {
+                raw: Box::new(unsafe { **ptr }),
+            });
         }
-
-        Ok(Self { devices })
     }
 
-    pub(crate) fn into_devices(self) -> Vec<DeviceInfo> {
-        self.devices
-    }
+    Ok(devices)
 }
 
 /// 地址稳定的 device record；Clone 会生成独立 snapshot。

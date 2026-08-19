@@ -18,8 +18,7 @@ pub struct DeviceList<'sdk> {
 
 impl<'sdk> DeviceList<'sdk> {
     pub(crate) fn enumerate(sdk: &'sdk Sdk, layers: TransportLayer) -> MvsResult<Self> {
-        let devices = backend::DeviceList::enumerate(layers)?
-            .into_devices()
+        let devices = backend::enumerate_devices(layers)?
             .into_iter()
             .map(|inner| DeviceInfo { inner, sdk })
             .collect();

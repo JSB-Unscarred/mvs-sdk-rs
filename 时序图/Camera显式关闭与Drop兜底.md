@@ -5,7 +5,7 @@ sequenceDiagram
     autonumber
     actor Caller as 调用方
     participant Camera as Camera
-    participant Slots as Arc callback slots
+    participant Slots as Box callback slots
     participant Native as MVS SDK
 
     Caller->>Camera: close()
@@ -23,10 +23,10 @@ sequenceDiagram
         Camera->>Native: MV_CC_CloseDevice()
         Camera->>Native: MV_CC_DestroyHandle()
         alt DestroyHandle 成功
-            Camera->>Slots: 回收 native Arc token
+            Camera->>Slots: 释放 Box slots
             Camera-->>Caller: Ok 或 CleanupError(首个失败操作与错误, destroyed=true)
         else DestroyHandle 失败
-            Camera->>Slots: 保留空 slot token，防止 pUser 悬垂
+            Camera->>Slots: 遗留空 Box slots，防止 pUser 悬垂
             Camera-->>Caller: CleanupError(DestroyHandle 错误, destroyed=false)
         end
     end

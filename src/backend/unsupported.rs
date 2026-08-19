@@ -28,16 +28,8 @@ impl Sdk {
     }
 }
 
-pub(crate) struct DeviceList;
-
-impl DeviceList {
-    pub(crate) fn enumerate(_layers: TransportLayer) -> MvsResult<Self> {
-        unsupported()
-    }
-
-    pub(crate) fn into_devices(self) -> Vec<DeviceInfo> {
-        Vec::new()
-    }
+pub(crate) fn enumerate_devices(_layers: TransportLayer) -> MvsResult<Vec<DeviceInfo>> {
+    unsupported()
 }
 
 #[derive(Clone)]
@@ -89,6 +81,7 @@ impl DeviceInfo {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Camera;
 
 impl Camera {
@@ -205,10 +198,6 @@ impl Camera {
 
     pub(crate) fn event_notification_off(&self, _event_name: &str) -> MvsResult<()> {
         unsupported()
-    }
-
-    pub(crate) fn debug_details(&self) -> (&'static str, Option<&'static str>, bool, bool, usize) {
-        ("Closed", None, false, false, 0)
     }
 
     pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {

@@ -1,18 +1,23 @@
 //! SDK 初始化、反初始化与设备枚举。
 
 use std::sync::Mutex;
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::backend;
 use crate::device::DeviceList;
-use crate::{MvsError, MvsResult, TransportLayer};
+use crate::{MvsResult, TransportLayer};
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 const SDK_UNUSED: u8 = 0;
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 const SDK_ACTIVE: u8 = 1;
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 const SDK_TERMINATED: u8 = 2;
 
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 static SDK_STATE: AtomicU8 = AtomicU8::new(SDK_UNUSED);
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 static LIVE_NATIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
 
 /// 记录 CreateHandle 已写出的非空 handle。
@@ -31,6 +36,7 @@ pub(crate) fn native_handle_destroyed() {
 }
 
 /// 返回进程内是否仍有 native handle 未确认销毁。
+#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 pub(crate) fn native_handles_live() -> bool {
     LIVE_NATIVE_HANDLES.load(Ordering::Acquire) != 0
 }
@@ -51,43 +57,47 @@ impl Sdk {
     ///
     /// # Errors
     ///
-    /// SDK owner 已存在时返回 [`MvsError::SdkInUse`]；反初始化已执行时返回
-    /// [`MvsError::SdkTerminated`]。
+    /// SDK owner 已存在时返回 [`crate::MvsError::SdkInUse`]；反初始化已执行时返回
+    /// [`crate::MvsError::SdkTerminated`]。
     pub fn init() -> MvsResult<Self> {
-        #[cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
-        {
-            backend::Sdk::init().map(|inner| Self {
+        Self::init_platform()
+    }
+
+    /// unsupported backend 不执行 native 初始化，也不改变进程状态。
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
+    fn init_platform() -> MvsResult<Self> {
+        backend::Sdk::init().map(|inner| Self {
+            inner,
+            enumeration_lock: Mutex::new(()),
+            active: true,
+        })
+    }
+
+    /// Windows x86_64 MSVC backend 串行执行唯一一次 native Initialize。
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
+    fn init_platform() -> MvsResult<Self> {
+        match SDK_STATE.compare_exchange(
+            SDK_UNUSED,
+            SDK_ACTIVE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(SDK_ACTIVE) => return Err(crate::MvsError::SdkInUse),
+            Err(SDK_TERMINATED) => return Err(crate::MvsError::SdkTerminated),
+            Err(_) => unreachable!("SDK state only uses declared constants"),
+        }
+
+        match backend::Sdk::init() {
+            Ok(inner) => Ok(Self {
                 inner,
                 enumeration_lock: Mutex::new(()),
                 active: true,
-            })
-        }
-
-        #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-        {
-            match SDK_STATE.compare_exchange(
-                SDK_UNUSED,
-                SDK_ACTIVE,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {}
-                Err(SDK_ACTIVE) => return Err(MvsError::SdkInUse),
-                Err(SDK_TERMINATED) => return Err(MvsError::SdkTerminated),
-                Err(_) => unreachable!("SDK state only uses declared constants"),
-            }
-
-            match backend::Sdk::init() {
-                Ok(inner) => Ok(Self {
-                    inner,
-                    enumeration_lock: Mutex::new(()),
-                    active: true,
-                }),
-                Err(error) => {
-                    // 官方限定每进程只调用一次 Initialize；失败也不再重试。
-                    SDK_STATE.store(SDK_TERMINATED, Ordering::Release);
-                    Err(error)
-                }
+            }),
+            Err(error) => {
+                // 官方限定每进程只调用一次 Initialize；失败也不再重试。
+                SDK_STATE.store(SDK_TERMINATED, Ordering::Release);
+                Err(error)
             }
         }
     }
@@ -112,7 +122,7 @@ impl Sdk {
     ///
     /// 借用该 owner 的设备和相机会在编译期阻止本调用。无论 native 返回值如何，
     /// Finalize 都只尝试一次；存在未确认销毁的 handle 时返回
-    /// [`MvsError::NativeHandlesLive`]，调用方应按终止进程处理。
+    /// [`crate::MvsError::NativeHandlesLive`]，调用方应按终止进程处理。
     /// 本方法消费 `Sdk`，错误返回后不能使用同一 owner 重试。
     pub fn shutdown(mut self) -> MvsResult<()> {
         self.finalize()
@@ -122,10 +132,12 @@ impl Sdk {
         if !self.active {
             return Ok(());
         }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
         if native_handles_live() {
-            return Err(MvsError::NativeHandlesLive);
+            return Err(crate::MvsError::NativeHandlesLive);
         }
         self.active = false;
+        #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
         SDK_STATE.store(SDK_TERMINATED, Ordering::Release);
         self.inner.finalize()
     }

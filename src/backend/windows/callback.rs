@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::os::raw::{c_uint, c_void};
 use std::slice;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
 use crate::frame::Frame;
@@ -51,12 +51,12 @@ fn drop_without_unwind<T>(value: T) {
     catch_and_forget_panic(|| drop(value));
 }
 
-/// SDK 仅保存 `pUser`，Arc 的 native strong ref 使地址稳定到 DestroyHandle。
+/// Camera-owned Box 提供稳定的 `pUser` 地址，closure Arc 保护在途调用。
 pub(super) struct CallbackSlot<C> {
-    callback: Mutex<Option<Arc<C>>>,
+    callback: Mutex<Option<C>>,
 }
 
-impl<C> CallbackSlot<C> {
+impl<C: Clone> CallbackSlot<C> {
     pub(super) fn new() -> Self {
         Self {
             callback: Mutex::new(None),
@@ -65,7 +65,7 @@ impl<C> CallbackSlot<C> {
 
     /// 安装一次 closure；旧的 in-flight closure 由其临时 Arc 保活。
     pub(super) fn set(&self, callback: C) {
-        let previous = self.lock().replace(Arc::new(callback));
+        let previous = self.lock().replace(callback);
         drop_without_unwind(previous);
     }
 
@@ -75,11 +75,11 @@ impl<C> CallbackSlot<C> {
         drop_without_unwind(callback);
     }
 
-    fn load(&self) -> Option<Arc<C>> {
+    fn load(&self) -> Option<C> {
         self.lock().clone()
     }
 
-    fn lock(&self) -> MutexGuard<'_, Option<Arc<C>>> {
+    fn lock(&self) -> MutexGuard<'_, Option<C>> {
         self.callback
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -143,7 +143,7 @@ pub(super) unsafe extern "C" fn event_trampoline(
     }
 }
 
-unsafe fn invoke_slot<C>(user: *mut c_void, invoke: impl FnOnce(&C)) {
+unsafe fn invoke_slot<C: Clone>(user: *mut c_void, invoke: impl FnOnce(&C)) {
     if user.is_null() {
         return;
     }
@@ -151,21 +151,17 @@ unsafe fn invoke_slot<C>(user: *mut c_void, invoke: impl FnOnce(&C)) {
     // slot 操作和用户 closure 都留在最外层 boundary 内，禁止 Rust panic 穿过 FFI。
     catch_and_forget_panic(|| {
         let _depth = CallbackDepthGuard::enter();
-        let ptr = user.cast::<CallbackSlot<C>>();
-        // SAFETY: 注册时为 SDK 单独保留一个 raw Arc strong ref。
-        unsafe { Arc::increment_strong_count(ptr) };
-        // SAFETY: 上一步为本次调用增加了一个 strong ref。
-        let slot = unsafe { Arc::from_raw(ptr) };
+        // SAFETY: pUser 指向 Camera 持有或 DestroyHandle 失败后泄漏的 Box slot。
+        let slot = unsafe { &*user.cast::<CallbackSlot<C>>() };
         let callback = slot.load();
 
         if let Some(callback) = callback {
-            if catch_and_forget_panic(|| invoke(callback.as_ref())) {
+            if catch_and_forget_panic(|| invoke(&callback)) {
                 // panic 后静默该 slot，避免 SDK thread 重复进入同一异常 closure。
                 slot.clear();
             }
             drop_without_unwind(callback);
         }
-        drop_without_unwind(slot);
     });
 }
 
@@ -185,21 +181,39 @@ mod tests {
     fn callback_panic_is_contained_at_ffi_boundary() {
         let calls = Arc::new(AtomicUsize::new(0));
         let callback_calls = Arc::clone(&calls);
-        let slot = Arc::new(CallbackSlot::<ExceptionCallback>::new());
-        slot.set(Box::new(move |_| {
+        let slot = Box::new(CallbackSlot::<ExceptionCallback>::new());
+        slot.set(Arc::new(move |_| {
             callback_calls.fetch_add(1, Ordering::Relaxed);
             panic!("callback panic");
         }));
-        let native = Arc::into_raw(Arc::clone(&slot));
+        let user = std::ptr::from_ref(slot.as_ref())
+            .cast_mut()
+            .cast::<c_void>();
 
-        // SAFETY: native 是本测试为 trampoline 保留的匹配 Arc strong ref。
-        unsafe { exception_trampoline(1, native.cast_mut().cast::<c_void>()) };
+        // SAFETY: Box slot 在同步 trampoline 调用期间地址稳定。
+        unsafe { exception_trampoline(1, user) };
         // 首次 panic 后 slot 已静默，后续 native callback 不再调用用户 closure。
-        unsafe { exception_trampoline(1, native.cast_mut().cast::<c_void>()) };
+        unsafe { exception_trampoline(1, user) };
 
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-        // SAFETY: 测试结束且不会再次调用 trampoline，回收 native strong ref。
-        unsafe { drop(Arc::from_raw(native)) };
+    }
+
+    // 注销清空 slot 后，已取得的 closure Arc 仍能完成在途调用。
+    #[test]
+    fn loaded_callback_outlives_slot_clear() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&calls);
+        let slot = CallbackSlot::<ExceptionCallback>::new();
+        slot.set(Arc::new(move |_| {
+            callback_calls.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        let callback = slot.load().expect("callback installed");
+        slot.clear();
+        callback(1);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(slot.load().is_none());
     }
 
     // 核心转换：event name 有界读取，timestamp 合并高低位。
@@ -207,12 +221,14 @@ mod tests {
     fn event_trampoline_converts_name_and_timestamp() {
         let observed = Arc::new(Mutex::new(None::<(String, u64)>));
         let callback_observed = Arc::clone(&observed);
-        let slot = Arc::new(CallbackSlot::<EventCallback>::new());
-        slot.set(Box::new(move |event| {
+        let slot = Box::new(CallbackSlot::<EventCallback>::new());
+        slot.set(Arc::new(move |event| {
             *callback_observed.lock().unwrap() =
                 Some((event.name().into_owned(), event.timestamp()));
         }));
-        let native = Arc::into_raw(Arc::clone(&slot));
+        let user = std::ptr::from_ref(slot.as_ref())
+            .cast_mut()
+            .cast::<c_void>();
         let mut raw = sys::MV_EVENT_OUT_INFO {
             nTimestampHigh: 0x1020_3040,
             nTimestampLow: 0x5060_7080,
@@ -222,14 +238,12 @@ mod tests {
             *target = *source as _;
         }
 
-        // SAFETY: raw 与匹配的 native Arc 在同步调用期间有效。
-        unsafe { event_trampoline(&mut raw, native.cast_mut().cast::<c_void>()) };
+        // SAFETY: raw 与 Box slot 在同步调用期间有效。
+        unsafe { event_trampoline(&mut raw, user) };
 
         assert_eq!(
             *observed.lock().unwrap(),
             Some(("ExposureEnd".into(), 0x1020_3040_5060_7080))
         );
-        // SAFETY: 测试结束且不会再次调用 trampoline。
-        unsafe { drop(Arc::from_raw(native)) };
     }
 }
