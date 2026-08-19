@@ -14,23 +14,27 @@ sequenceDiagram
     Camera-->>App: Polling
 
     loop 按需取图
-        App->>Camera: get_image_buffer(timeout_ms)
-        Camera->>Native: MV_CC_GetImageBuffer(...)
-        Native-->>Guard: MV_FRAME_OUT
-        Guard-->>App: FrameGuard<'cam>
-        App->>Guard: frame()
-        Guard-->>App: Frame<'_>
-        opt 跨 buffer 生命周期使用
-            App->>Guard: to_owned()
-            Guard-->>App: OwnedFrame
-        end
-        alt 显式归还并观察错误
-            App->>Guard: release(self)
-            Guard->>Native: MV_CC_FreeImageBuffer(...)
-            Native-->>Guard: Ok 或 native MvsError
-            Guard-->>App: 返回本次结果
-        else RAII 兜底
-            Guard->>Native: Drop → MV_CC_FreeImageBuffer(...)
+        alt 零拷贝 guard
+            App->>Camera: get_image_buffer(timeout_ms)
+            Camera->>Native: MV_CC_GetImageBuffer(...)
+            Native-->>Guard: MV_FRAME_OUT
+            Guard-->>App: FrameGuard<'cam>
+            App->>Guard: frame() / to_owned()
+            alt 显式归还并观察错误
+                App->>Guard: release(self)
+                Guard->>Native: MV_CC_FreeImageBuffer(...)
+                Native-->>Guard: Ok 或 native MvsError
+                Guard-->>App: 返回本次结果
+            else RAII 兜底
+                Guard->>Native: Drop → MV_CC_FreeImageBuffer(...)
+            end
+        else owned 便捷入口
+            App->>Camera: get_owned_frame(timeout_ms)
+            Camera->>Native: MV_CC_GetImageBuffer(...)
+            Native-->>Camera: MV_FRAME_OUT
+            Camera->>Camera: 复制 OwnedFrame
+            Camera->>Native: MV_CC_FreeImageBuffer(...)
+            Camera-->>App: OwnedFrame 或 release MvsError
         end
     end
 
@@ -41,4 +45,5 @@ sequenceDiagram
 每个 `FrameGuard` 唯一负责一份 `MV_FRAME_OUT` 的归还凭据，并借用 `Camera`，防止 buffer
 仍在使用时停止或关闭相机。`release(self)` 会消费 guard 并只尝试一次，错误用于诊断和宿主
 策略；`Drop` 只做一次兜底并忽略错误。归还结束后，`Camera` 再按 Stop → callback 注销 →
-Close → Destroy 顺序清理；Destroy 未确认成功时，live handle 会阻止 SDK Finalize。
+Close → Destroy 顺序清理。`get_owned_frame` 复用相同 guard，复制后显式归还并传播 release
+错误。Destroy 未确认成功时，live handle 会阻止 SDK Finalize。

@@ -6,17 +6,19 @@ sequenceDiagram
     actor App as 应用
     participant Sdk as Sdk owner
     participant Camera as Camera
+    participant Runtime as Arc RuntimeCore
     participant Slot as Box callback slot
     participant Native as MVS SDK
 
-    App->>Sdk: Sdk::init()
+    App->>Sdk: Sdk::initialize()
     Sdk->>Native: MV_CC_Initialize()
-    App->>Sdk: enumerate_devices(layers)
+    App->>Sdk: devices(layers)
     Sdk->>Native: MV_CC_EnumDevices(...)
     Native-->>Sdk: SDK-owned 临时列表
-    Sdk-->>App: 深拷贝 DeviceList<'sdk>
+    Sdk-->>App: 深拷贝 Vec<DeviceInfo>
 
-    App->>Camera: DeviceInfo::open(mode, key)
+    App->>Sdk: open(&device, mode, key)
+    Sdk->>Camera: clone RuntimeCore lease
     Camera->>Native: CreateHandle → OpenDevice
     Note over Camera,Native: MV_OK + NULL → MvsError::NullHandleAfterCreate；回滚失败 → MvsError::OpenRollback
     App->>Camera: register_image_callback(closure)
@@ -53,14 +55,18 @@ sequenceDiagram
     Camera->>Native: Stop → 注销 → Close → Destroy
     alt Destroy 成功
         Camera->>Slot: 释放 Box slot
+        Camera->>Runtime: 释放 session lease
     else Destroy 失败
         Camera->>Slot: 遗留空 Box slot，防止 pUser 悬垂
+        Camera->>Runtime: 释放 session lease；live handle 计数继续生效
         Camera-->>App: CleanupError（保留 Destroy 错误）
     end
     App->>Sdk: shutdown()
-    alt handle 已确认 Destroy
+    alt 仍有 Camera session owner
+        Sdk-->>App: MvsError::InvalidState，不调用 Finalize
+    else owner 已释放且 handle 已确认 Destroy
         Sdk->>Native: MV_CC_Finalize()
-    else handle 仍为 live
+    else owner 已消费但 handle 仍为 live
         Sdk-->>App: MvsError::NativeHandlesLive，不调用 Finalize
     end
 ```
@@ -68,6 +74,7 @@ sequenceDiagram
 callback 只做通知或复制数据，停止、关闭和重连交给 `Camera` owner。callback 内的
 生命周期变更以本地 `MvsError::InvalidState(..)` 拒绝，不会进入 native SDK；业务错误通过 channel
 交给 owner。closure panic 在 trampoline 最外层截获并静默该 closure，不进入 `MvsResult`；
-owner 注销后可重新注册，Arc 的析构不会跨越 FFI 边界。Camera 本地状态只在调用返回
+owner 注销后可重新注册，closure Arc 的析构不会跨越 FFI 边界。Camera 本地状态只在调用返回
 `MV_OK` 后更新；Start、Stop、注册和注销失败时 owner 仍在，由调用方决定是否重试。
-`close(self)` 与 `shutdown(self)` 都会消费 owner 并只尝试一次，错误只用于诊断和宿主策略。
+`Camera` 内部 session lease 与 callback closure Arc 职责独立。`close(self)` 与
+`shutdown(self)` 都会消费 owner 并只尝试一次，错误只用于诊断和宿主策略。

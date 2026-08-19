@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::io;
 
-use mvs_sdk_rs::{Camera, DeviceInfo, DeviceList};
+use mvs_sdk_rs::{Camera, DeviceInfo};
 
 pub(crate) const FRAME_TIMEOUT_MS: u32 = 3_000;
 
@@ -16,9 +16,7 @@ fn test_camera_serial() -> Result<String, io::Error> {
 }
 
 /// 从枚举结果中查找专用测试相机。
-pub(crate) fn test_device<'list, 'sdk>(
-    devices: &'list DeviceList<'sdk>,
-) -> Result<&'list DeviceInfo<'sdk>, Box<dyn Error>> {
+pub(crate) fn test_device(devices: &[DeviceInfo]) -> Result<&DeviceInfo, Box<dyn Error>> {
     let serial = test_camera_serial()?;
     devices
         .iter()
@@ -33,7 +31,7 @@ pub(crate) fn test_device<'list, 'sdk>(
 }
 
 /// 要求相机处于 free-run，防止等待外部 trigger 导致测试超时。
-pub(crate) fn require_trigger_off(camera: &Camera<'_>) -> Result<(), Box<dyn Error>> {
+pub(crate) fn require_trigger_off(camera: &Camera) -> Result<(), Box<dyn Error>> {
     if camera.get_enum("TriggerMode")?.current == 0 {
         return Ok(());
     }

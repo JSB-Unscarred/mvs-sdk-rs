@@ -2,23 +2,24 @@
 //!
 //! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate. This
 //! crate exposes one platform-independent API backed by the native SDK on
-//! Windows x86_64 MSVC. On other targets, [`Sdk::init`] returns
+//! Windows x86_64 MSVC. On other targets, [`Sdk::initialize`] returns
 //! [`MvsError::UnsupportedPlatform`]. Building and linking Windows MSVC applications
 //! requires the MVS SDK and `MVCAM_COMMON_RUNENV`; at runtime, the SDK DLL
 //! directory must be discoverable by the Windows loader, typically via `PATH`.
 //!
 //! # Workflow
 //!
-//! Initialize [`Sdk`], enumerate the desired [`TransportLayer`] values, open a
-//! [`DeviceInfo`], configure GenICam nodes through [`Camera`], then choose one
-//! acquisition mode:
+//! Initialize [`Sdk`], discover owned [`DeviceInfo`] snapshots with
+//! [`Sdk::devices`], open one through [`Sdk::open`], configure GenICam nodes
+//! through [`Camera`], then choose one acquisition mode:
 //!
 //! - Register an image callback before [`Camera::start_grabbing`] for callback
 //!   mode. The SDK invokes it on a streaming thread and each [`Frame`] is
 //!   borrowed only for that invocation.
 //! - Start without an image callback for polling mode, then call
 //!   [`Camera::get_image_buffer`]. Its [`FrameGuard`] releases the native buffer
-//!   on drop; call [`FrameGuard::release`] to observe release errors.
+//!   on drop; call [`FrameGuard::release`] to observe release errors, or use
+//!   [`Camera::get_owned_frame`] to copy and explicitly release in one call.
 //!
 //! Stop acquisition before registering or unregistering the image
 //! callback, and before switching acquisition modes. To keep pixels beyond a
@@ -30,16 +31,16 @@
 //!
 //! # Lifetimes and shutdown
 //!
-//! [`Camera`] borrows its unique [`Sdk`] owner and is `Send` but not `Sync`;
-//! move it to a scoped thread when needed and serialize access to one handle.
+//! [`Camera`] owns an internal lease on the process-wide session and is `Send` but not `Sync`;
+//! move its unique owner to a worker thread and serialize access to one handle.
 //! Prefer [`Camera::close`] over relying on `Drop`, because explicit close can
 //! preserve the first pre-destroy operation/error and the Destroy error in
 //! `CleanupError`. `Camera::close`, [`FrameGuard::release`] and [`Sdk::shutdown`]
 //! consume their owner and attempt cleanup once; their errors are diagnostic
 //! input for host policy, not retry handles.
-//! Consuming [`Sdk`] with [`Sdk::shutdown`] is accepted only after its camera
-//! and device borrows end.
-//! A native handle whose destruction was not confirmed also blocks Finalize.
+//! Consuming [`Sdk`] with [`Sdk::shutdown`] succeeds only after all cameras are closed or dropped.
+//! A native handle whose destruction was not confirmed also blocks Finalize after its Rust owner
+//! is consumed.
 //! Finalization is terminal for the process, as required by the vendor
 //! documentation.
 //!
@@ -66,7 +67,7 @@ mod types;
 
 pub use callback::EventInfo;
 pub use camera::Camera;
-pub use device::{DeviceInfo, DeviceList};
+pub use device::DeviceInfo;
 pub use error::{CleanupError, MvsError, MvsResult};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;

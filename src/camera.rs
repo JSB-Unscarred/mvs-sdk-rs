@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::backend;
 use crate::callback::EventInfo;
 use crate::frame::{Frame, FrameGuard};
-use crate::library::Sdk;
+use crate::library::RuntimeCore;
 use crate::{AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsResult};
 
 pub(crate) type ImageCallback = Arc<dyn Fn(&Frame<'_>) + Send + Sync + 'static>;
@@ -18,28 +18,28 @@ pub(crate) type EventCallback = Arc<dyn Fn(&EventInfo<'_>) + Send + Sync + 'stat
 
 /// 已打开的 MVS 相机。
 ///
-/// `Camera` 借用唯一 [`Sdk`] owner，因而 SDK 必定晚于 native handle 销毁。
-/// 它可以移动到 scoped thread，但不实现 `Sync`；同一 handle 的调用由 owner
+/// `Camera` 内部持有进程级 SDK session lease，因而不借用 [`crate::Sdk`]。
+/// 它可以移动到普通 worker thread，但不实现 `Sync`；同一 handle 的调用由 owner
 /// 串行发起。`Drop` 只做忽略错误的兜底，正常路径使用 [`Camera::close`]。
 /// 取流与 callback 注册状态只在对应 native 调用返回 `MV_OK` 后更新；
 /// native 失败保留调用前状态并返回原错误，本地顺序冲突返回
 /// [`crate::MvsError::InvalidState`]。
-pub struct Camera<'sdk> {
+pub struct Camera {
     inner: backend::Camera,
-    _sdk: &'sdk Sdk,
+    _runtime: Arc<RuntimeCore>,
     _not_sync: PhantomData<Cell<()>>,
 }
 
-impl<'sdk> Camera<'sdk> {
+impl Camera {
     pub(crate) fn open(
+        runtime: Arc<RuntimeCore>,
         device: backend::DeviceInfo,
-        sdk: &'sdk Sdk,
         mode: AccessMode,
         switchover_key: u16,
     ) -> MvsResult<Self> {
         Ok(Self {
             inner: backend::Camera::open(device, mode, switchover_key)?,
-            _sdk: sdk,
+            _runtime: runtime,
             _not_sync: PhantomData,
         })
     }
@@ -71,7 +71,7 @@ impl<'sdk> Camera<'sdk> {
     /// use std::rc::Rc;
     /// use mvs_sdk_rs::Camera;
     ///
-    /// fn register_non_send(camera: &mut Camera<'_>) {
+    /// fn register_non_send(camera: &mut Camera) {
     ///     let state = Rc::new(());
     ///     let _ = camera.register_image_callback(move |_| drop(Rc::clone(&state)));
     /// }
@@ -106,6 +106,17 @@ impl<'sdk> Camera<'sdk> {
     /// guard 借用相机并在 [`FrameGuard::release`] 或 `Drop` 时归还 buffer。
     pub fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
         self.inner.get_image_buffer(timeout_ms).map(FrameGuard::new)
+    }
+
+    /// polling 模式下获取并复制一帧，同时显式归还 SDK buffer。
+    ///
+    /// buffer release 失败会覆盖已完成的 owned copy 并返回对应错误，避免调用方误以为
+    /// 本次 native buffer 已正常归还。
+    pub fn get_owned_frame(&self, timeout_ms: u32) -> MvsResult<crate::OwnedFrame> {
+        let frame = self.get_image_buffer(timeout_ms)?;
+        let owned = frame.to_owned();
+        frame.release()?;
+        Ok(owned)
     }
 
     /// 获取 Integer 节点当前值、范围和步长。
@@ -216,7 +227,7 @@ impl<'sdk> Camera<'sdk> {
     }
 }
 
-impl fmt::Debug for Camera<'_> {
+impl fmt::Debug for Camera {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.inner, f)
     }

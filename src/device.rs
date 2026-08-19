@@ -1,69 +1,36 @@
-//! 设备枚举结果与设备 metadata。
+//! Rust-owned 设备 metadata snapshot。
 
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::os::raw::c_void;
 
+use crate::AccessMode;
 use crate::backend;
-use crate::camera::Camera;
-use crate::library::Sdk;
-use crate::{AccessMode, MvsResult, TransportLayer};
 
-/// Rust-owned 设备 snapshot 列表。
+/// 从 SDK 枚举结果深拷贝得到的设备 snapshot。
 ///
-/// 列表借用 [`Sdk`]，保证其条目传回 native API 时 SDK 仍处于活动期。
-pub struct DeviceList<'sdk> {
-    devices: Vec<DeviceInfo<'sdk>>,
-}
-
-impl<'sdk> DeviceList<'sdk> {
-    pub(crate) fn enumerate(sdk: &'sdk Sdk, layers: TransportLayer) -> MvsResult<Self> {
-        let devices = backend::enumerate_devices(layers)?
-            .into_iter()
-            .map(|inner| DeviceInfo { inner, sdk })
-            .collect();
-        Ok(Self { devices })
-    }
-
-    /// 返回设备数量。
-    pub fn len(&self) -> usize {
-        self.devices.len()
-    }
-
-    /// 返回列表是否为空。
-    pub fn is_empty(&self) -> bool {
-        self.devices.is_empty()
-    }
-
-    /// 按枚举顺序借用设备 snapshot。
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = &DeviceInfo<'sdk>> {
-        self.devices.iter()
-    }
-
-    /// 借用指定位置的设备 snapshot。
-    pub fn get(&self, index: usize) -> Option<&DeviceInfo<'sdk>> {
-        self.devices.get(index)
-    }
-}
-
-impl fmt::Debug for DeviceList<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DeviceList")
-            .field("count", &self.len())
-            .finish()
-    }
-}
-
-/// 从 SDK 枚举结果深拷贝得到的单个设备 snapshot。
+/// 本值不持有 SDK session lease；需要 native session 的可访问性查询与打开操作由
+/// [`crate::Sdk`] 提供。
 #[derive(Clone)]
-pub struct DeviceInfo<'sdk> {
+pub struct DeviceInfo {
     inner: backend::DeviceInfo,
-    sdk: &'sdk Sdk,
 }
 
-impl<'sdk> DeviceInfo<'sdk> {
+impl DeviceInfo {
+    pub(crate) fn from_backend(inner: backend::DeviceInfo) -> Self {
+        Self { inner }
+    }
+
+    pub(crate) fn clone_backend(&self) -> backend::DeviceInfo {
+        self.inner.clone()
+    }
+
+    pub(crate) fn is_accessible(&self, mode: AccessMode) -> bool {
+        self.inner.is_accessible(mode)
+    }
+
     /// 返回 SDK 报告的 transport layer。
-    pub fn transport_layer(&self) -> TransportLayer {
+    pub fn transport_layer(&self) -> crate::TransportLayer {
         self.inner.transport_layer()
     }
 
@@ -107,18 +74,6 @@ impl<'sdk> DeviceInfo<'sdk> {
         self.inner.host_nic_ip()
     }
 
-    /// 查询设备是否可按指定权限打开。
-    pub fn is_accessible(&self, mode: AccessMode) -> bool {
-        self.inner.is_accessible(mode)
-    }
-
-    /// 按官方 `OpenDevice` 的 access mode 与 switchover key 打开设备。
-    ///
-    /// key 仅对 native GigE 设备有意义；其它 transport 由 SDK 忽略。
-    pub fn open(&self, mode: AccessMode, switchover_key: u16) -> MvsResult<Camera<'sdk>> {
-        Camera::open(self.inner.clone(), self.sdk, mode, switchover_key)
-    }
-
     /// 借出当前 owned snapshot 的 opaque pointer。
     ///
     /// pointer 只在本值存活期间有效；调用 raw SDK 仍属于 `unsafe` 操作。
@@ -127,7 +82,7 @@ impl<'sdk> DeviceInfo<'sdk> {
     }
 }
 
-impl fmt::Debug for DeviceInfo<'_> {
+impl fmt::Debug for DeviceInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceInfo")
             .field("transport", &self.transport_layer())

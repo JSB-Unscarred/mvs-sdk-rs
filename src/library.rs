@@ -1,24 +1,38 @@
-//! SDK 初始化、反初始化与设备枚举。
+//! SDK 初始化、反初始化与设备发现。
 
-use std::sync::Mutex;
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+#[cfg(any(
+    test,
+    all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
+))]
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::backend;
-use crate::device::DeviceList;
-use crate::{MvsResult, TransportLayer};
+use crate::camera::Camera;
+use crate::device::DeviceInfo;
+use crate::{AccessMode, MvsError, MvsResult, TransportLayer};
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-const SDK_UNUSED: u8 = 0;
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-const SDK_ACTIVE: u8 = 1;
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-const SDK_TERMINATED: u8 = 2;
-
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-static SDK_STATE: AtomicU8 = AtomicU8::new(SDK_UNUSED);
+static INITIALIZE_CLAIMED: AtomicBool = AtomicBool::new(false);
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 static LIVE_NATIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
+
+/// 声明一次进程级 Initialize 机会，成功后不复位。
+#[cfg(any(
+    test,
+    all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
+))]
+fn claim_initialization(claimed: &AtomicBool) -> MvsResult<()> {
+    if claimed.swap(true, Ordering::AcqRel) {
+        Err(MvsError::InvalidState(
+            "SDK initialization has already been attempted in this process",
+        ))
+    } else {
+        Ok(())
+    }
+}
 
 /// 记录 CreateHandle 已写出的非空 handle。
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
@@ -35,21 +49,27 @@ pub(crate) fn native_handle_destroyed() {
     debug_assert!(previous.is_ok(), "native handle count underflowed");
 }
 
-/// 返回进程内是否仍有 native handle 未确认销毁。
+/// 返回 Rust owner 已消费但仍未确认销毁的 native handle 是否存在。
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-pub(crate) fn native_handles_live() -> bool {
+fn orphaned_native_handles_live() -> bool {
     LIVE_NATIVE_HANDLES.load(Ordering::Acquire) != 0
 }
 
-/// 进程内唯一的 MVS SDK owner。
+/// 由 `Sdk` 与已打开相机共享的一次性 native session。
 ///
-/// `DeviceList`、`DeviceInfo` 和 `Camera` 均借用该值，因此 Rust 会阻止相机
-/// 资源存活时执行 [`Sdk::shutdown`]。官方文档限定单进程只调用一次 Initialize
-/// 与 Finalize，成功初始化后的状态不会回到未初始化。
-pub struct Sdk {
+/// `Arc` 只表达 session lease；相机 handle 仍由对应 `Camera` 唯一拥有。
+pub(crate) struct RuntimeCore {
     inner: backend::Sdk,
     enumeration_lock: Mutex<()>,
-    active: bool,
+}
+
+/// 进程级 MVS SDK session 的唯一显式 Finalize 入口。
+///
+/// `Camera` 内部持有同一 session 的 lease，因此不借用本值。Initialize 每个进程
+/// 最多尝试一次；普通 Drop 跳过 Finalize，正常路径应在其它 session owner 释放后调用
+/// [`Sdk::shutdown`]。
+pub struct Sdk {
+    runtime: Arc<RuntimeCore>,
 }
 
 impl Sdk {
@@ -57,95 +77,112 @@ impl Sdk {
     ///
     /// # Errors
     ///
-    /// SDK owner 已存在时返回 [`crate::MvsError::SdkInUse`]；反初始化已执行时返回
-    /// [`crate::MvsError::SdkTerminated`]。
-    pub fn init() -> MvsResult<Self> {
-        Self::init_platform()
+    /// 支持的 native 进程重复调用时返回 [`MvsError::InvalidState`]；Initialize 失败也会
+    /// 消费本进程唯一的一次尝试。
+    pub fn initialize() -> MvsResult<Self> {
+        Self::initialize_platform()
     }
 
-    /// unsupported backend 不执行 native 初始化，也不改变进程状态。
+    /// unsupported backend 不执行 native 初始化，也不消费进程级尝试。
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
-    fn init_platform() -> MvsResult<Self> {
+    fn initialize_platform() -> MvsResult<Self> {
         backend::Sdk::init().map(|inner| Self {
-            inner,
-            enumeration_lock: Mutex::new(()),
-            active: true,
+            runtime: Arc::new(RuntimeCore {
+                inner,
+                enumeration_lock: Mutex::new(()),
+            }),
         })
     }
 
-    /// Windows x86_64 MSVC backend 串行执行唯一一次 native Initialize。
+    /// Windows x86_64 MSVC backend 串行声明唯一一次 native Initialize。
     #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-    fn init_platform() -> MvsResult<Self> {
-        match SDK_STATE.compare_exchange(
-            SDK_UNUSED,
-            SDK_ACTIVE,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
-            Ok(_) => {}
-            Err(SDK_ACTIVE) => return Err(crate::MvsError::SdkInUse),
-            Err(SDK_TERMINATED) => return Err(crate::MvsError::SdkTerminated),
-            Err(_) => unreachable!("SDK state only uses declared constants"),
-        }
+    fn initialize_platform() -> MvsResult<Self> {
+        claim_initialization(&INITIALIZE_CLAIMED)?;
 
-        match backend::Sdk::init() {
-            Ok(inner) => Ok(Self {
+        let inner = backend::Sdk::init()?;
+        Ok(Self {
+            runtime: Arc::new(RuntimeCore {
                 inner,
                 enumeration_lock: Mutex::new(()),
-                active: true,
             }),
-            Err(error) => {
-                // 官方限定每进程只调用一次 Initialize；失败也不再重试。
-                SDK_STATE.store(SDK_TERMINATED, Ordering::Release);
-                Err(error)
-            }
-        }
+        })
     }
 
     /// 无需初始化即可查询已安装 SDK 的版本。
-    pub fn sdk_version() -> MvsResult<u32> {
+    pub fn version() -> MvsResult<u32> {
         backend::Sdk::sdk_version()
     }
 
-    /// 枚举设备并立即复制 SDK 管理的记录。
+    /// 枚举设备并返回 Rust-owned snapshot。
     ///
-    /// 枚举锁只保护厂商会在下一次枚举时重建的内部列表，复制完成后即释放。
-    pub fn enumerate_devices(&self, layers: TransportLayer) -> MvsResult<DeviceList<'_>> {
+    /// 枚举锁只覆盖厂商内部列表的生成与复制，返回的设备信息不持有 session lease。
+    pub fn devices(&self, layers: TransportLayer) -> MvsResult<Vec<DeviceInfo>> {
         let _enumeration = self
+            .runtime
             .enumeration_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        DeviceList::enumerate(self, layers)
+        backend::enumerate_devices(layers)
+            .map(|devices| devices.into_iter().map(DeviceInfo::from_backend).collect())
     }
 
-    /// 消费唯一 owner 并反初始化 SDK。
+    /// 查询 owned 设备 snapshot 是否可按指定权限打开。
+    pub fn is_accessible(&self, device: &DeviceInfo, mode: AccessMode) -> bool {
+        device.is_accessible(mode)
+    }
+
+    /// 从 owned 设备 snapshot 创建并打开相机。
     ///
-    /// 借用该 owner 的设备和相机会在编译期阻止本调用。无论 native 返回值如何，
-    /// Finalize 都只尝试一次；存在未确认销毁的 handle 时返回
-    /// [`crate::MvsError::NativeHandlesLive`]，调用方应按终止进程处理。
-    /// 本方法消费 `Sdk`，错误返回后不能使用同一 owner 重试。
-    pub fn shutdown(mut self) -> MvsResult<()> {
-        self.finalize()
+    /// key 仅对 native GigE 设备有意义；其它 transport 由 SDK 忽略。
+    pub fn open(
+        &self,
+        device: &DeviceInfo,
+        mode: AccessMode,
+        switchover_key: u16,
+    ) -> MvsResult<Camera> {
+        Camera::open(
+            Arc::clone(&self.runtime),
+            device.clone_backend(),
+            mode,
+            switchover_key,
+        )
     }
 
-    fn finalize(&mut self) -> MvsResult<()> {
-        if !self.active {
-            return Ok(());
-        }
+    /// 消费唯一入口并反初始化 SDK。
+    ///
+    /// 其它 session owner 存在时返回 [`MvsError::InvalidState`]。owner 已消费但
+    /// `DestroyHandle` 未确认成功时返回 [`MvsError::NativeHandlesLive`]。两种错误均不
+    /// 调用 Finalize，调用方应按终止进程处理；本方法消费 `Sdk`，不能重试。
+    pub fn shutdown(self) -> MvsResult<()> {
+        let runtime = Arc::try_unwrap(self.runtime).map_err(|_| {
+            MvsError::InvalidState("all cameras must be dropped before SDK shutdown")
+        })?;
+
         #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-        if native_handles_live() {
-            return Err(crate::MvsError::NativeHandlesLive);
+        if orphaned_native_handles_live() {
+            return Err(MvsError::NativeHandlesLive);
         }
-        self.active = false;
-        #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-        SDK_STATE.store(SDK_TERMINATED, Ordering::Release);
-        self.inner.finalize()
+
+        runtime.inner.finalize()
     }
 }
 
-impl Drop for Sdk {
-    /// 显式 shutdown 可报告错误；Drop 只负责本 owner 的兜底反初始化。
-    fn drop(&mut self) {
-        let _ = self.finalize();
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use crate::MvsError;
+
+    use super::claim_initialization;
+
+    /// 验证进程级 Initialize claim 只允许一次成功声明。
+    #[test]
+    fn initialization_claim_is_one_shot() {
+        let claimed = AtomicBool::new(false);
+        assert!(claim_initialization(&claimed).is_ok());
+        assert!(matches!(
+            claim_initialization(&claimed),
+            Err(MvsError::InvalidState(_))
+        ));
     }
 }

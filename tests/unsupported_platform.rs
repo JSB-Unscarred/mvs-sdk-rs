@@ -6,9 +6,9 @@ use mvs_sdk_rs::{MvsError, Sdk};
 
 // unsupported backend 未调用 native Initialize，重复调用均返回平台错误。
 #[test]
-fn sdk_init_repeatedly_reports_unsupported_platform() {
+fn sdk_initialize_repeatedly_reports_unsupported_platform() {
     for _ in 0..2 {
-        let Err(error) = Sdk::init() else {
+        let Err(error) = Sdk::initialize() else {
             panic!("unsupported targets must not construct an SDK");
         };
 

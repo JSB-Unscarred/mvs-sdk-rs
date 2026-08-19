@@ -307,14 +307,9 @@ pub enum MvsError {
     #[error("MVS SDK is only available on Windows x86_64 MSVC")]
     UnsupportedPlatform,
 
-    /// The process-wide SDK lifecycle is already terminal.
-    #[error("MVS SDK lifecycle is already terminal for this process")]
-    SdkTerminated,
-    /// The process-wide SDK owner already exists.
-    #[error("MVS SDK already has an active owner")]
-    SdkInUse,
-    /// SDK finalization is blocked by a native handle that was not destroyed.
-    #[error("native camera handles are still live")]
+    /// SDK finalization is blocked by a native handle whose owner was consumed without a
+    /// confirmed DestroyHandle success.
+    #[error("orphaned native camera handles are still live")]
     NativeHandlesLive,
 
     /// Creating or opening a camera failed and rollback destruction also failed.
@@ -343,8 +338,6 @@ macro_rules! define_sdk_error_codes {
                     | Self::InvalidState(_)
                     | Self::NullHandleAfterCreate
                     | Self::UnsupportedPlatform
-                    | Self::SdkTerminated
-                    | Self::SdkInUse
                     | Self::NativeHandlesLive
                     | Self::OpenRollback { .. } => None,
                 }

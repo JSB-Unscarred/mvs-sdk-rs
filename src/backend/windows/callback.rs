@@ -36,6 +36,12 @@ impl Drop for CallbackDepthGuard {
     }
 }
 
+#[cfg(test)]
+pub(super) fn with_callback_context<T>(function: impl FnOnce() -> T) -> T {
+    let _depth = CallbackDepthGuard::enter();
+    function()
+}
+
 /// FFI callback 内只能吞掉 panic；forget payload 可避免其 Drop 再次 panic。
 fn catch_and_forget_panic(function: impl FnOnce()) -> bool {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(function)) {

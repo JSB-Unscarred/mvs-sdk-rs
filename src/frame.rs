@@ -198,6 +198,16 @@ impl fmt::Debug for OwnedFrame {
 /// The guard keeps the camera borrowed and the SDK buffer valid.
 /// Dropping the guard makes one best-effort release attempt and cannot report
 /// an error, so use [`FrameGuard::release`] when release failures matter.
+///
+/// ```compile_fail
+/// use mvs_sdk_rs::Camera;
+///
+/// fn close_with_live_buffer(camera: Camera) {
+///     let frame = camera.get_image_buffer(0).unwrap();
+///     drop(camera);
+///     drop(frame);
+/// }
+/// ```
 pub struct FrameGuard<'cam> {
     inner: backend::FrameGuard<'cam>,
 }

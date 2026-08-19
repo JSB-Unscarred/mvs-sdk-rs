@@ -14,7 +14,7 @@ impl Sdk {
     }
 
     pub(crate) fn finalize(&self) -> MvsResult<()> {
-        // SAFETY: Sdk 是唯一 owner，借用生命周期保证相机资源已结束。
+        // SAFETY: Arc session owner 与 orphan handle 门禁保证相机资源已结束。
         check(unsafe { sys::MV_CC_Finalize() })
     }
 

@@ -513,8 +513,12 @@ impl Camera {
             if self.handle.is_none() {
                 return Ok(());
             }
-            // callback 内不重入 native teardown；live handle 计数会阻止 Finalize。
+            // callback 内不重入 native teardown；消费 handle owner 后由 live 计数阻止
+            // Finalize，并封存 native 仍可能引用的 pUser slot。
             self.silence_callbacks();
+            let _orphaned_handle = self.handle.take();
+            self.grabbing = false;
+            self.leak_callback_slots();
             return Err(CleanupError::new(
                 Some((
                     "Camera::close",
@@ -722,13 +726,39 @@ fn record_first_error(
 #[cfg(test)]
 mod tests {
     use std::os::raw::c_int;
+    use std::ptr::NonNull;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::camera::ExceptionCallback;
     use crate::{MvsError, sys};
 
-    use super::{exception_trampoline, register_callback};
+    use super::super::callback::with_callback_context;
+    use super::{CallbackRecord, Camera, NativeHandle, exception_trampoline, register_callback};
+
+    // 验证 callback 中消费 Camera 会封存 slot 并放弃本地 handle owner。
+    #[test]
+    fn callback_context_cleanup_seals_native_backing() {
+        let mut camera = Camera {
+            handle: Some(NativeHandle(NonNull::dangling())),
+            grabbing: true,
+            image_cb: Some(CallbackRecord::new()),
+            exception_cb: None,
+            event_cbs: Vec::new(),
+        };
+
+        let error = with_callback_context(|| camera.cleanup())
+            .expect_err("callback 中不得进入 native teardown");
+
+        assert!(camera.handle.is_none());
+        assert!(!camera.grabbing);
+        assert!(camera.image_cb.is_none());
+        assert!(!error.native_handle_destroyed());
+        assert!(matches!(
+            error.prior_error(),
+            Some(MvsError::InvalidState(_))
+        ));
+    }
 
     // 一个状态测试覆盖同步派发、失败回滚、重复注册和注销后重注册。
     #[test]

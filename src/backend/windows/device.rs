@@ -8,7 +8,7 @@ use crate::{AccessMode, MvsResult, TransportLayer};
 /// 枚举设备并复制 SDK 管理的临时记录。
 pub(crate) fn enumerate_devices(layers: TransportLayer) -> MvsResult<Vec<DeviceInfo>> {
     let mut raw = sys::MV_CC_DEVICE_INFO_LIST::default();
-    // SAFETY: SDK 写入 raw；Sdk::enumerate_devices 在复制完成前持有枚举锁。
+    // SAFETY: SDK 写入 raw；Sdk::devices 在复制完成前持有枚举锁。
     check(unsafe { sys::MV_CC_EnumDevices(layers.raw(), &mut raw) })?;
 
     let device_count = (raw.nDeviceNum as usize).min(raw.pDeviceInfo.len());

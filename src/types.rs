@@ -5,7 +5,7 @@ use std::ops::{BitOr, BitOrAssign};
 
 use crate::sys;
 
-/// Device access mode passed to [`DeviceInfo::open`](crate::DeviceInfo::open).
+/// Device access mode passed to [`Sdk::open`](crate::Sdk::open).
 ///
 /// The vendor SDK applies these modes differently by transport. The mode and
 /// switchover key are meaningful for native GigE devices, although current
@@ -25,7 +25,7 @@ pub enum AccessMode {
     ControlWithSwitch,
     /// Enable control-owner switching without a key.
     ControlSwitchEnable,
-    /// Enable control-owner switching with a key supplied to `DeviceInfo::open`.
+    /// Enable control-owner switching with a key supplied to `Sdk::open`.
     ControlSwitchEnableWithKey,
     /// Read-only monitoring access.
     Monitor,
