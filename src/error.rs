@@ -16,7 +16,7 @@ pub type MvsResult<T> = Result<T, MvsError>;
 /// `Camera::close` 返回的清理结果。
 ///
 /// owner 线程的清理会继续执行到 `DestroyHandle`，因此分别保留 Destroy 前的首个
-/// 失败操作与错误，以及 Destroy 错误；callback 上下文则拒绝 native teardown。只有
+/// 失败操作与错误，以及 Destroy 错误。只有
 /// [`CleanupError::native_handle_destroyed`] 为 `true` 时，native handle 才已确认失效。
 #[derive(Debug)]
 pub struct CleanupError {

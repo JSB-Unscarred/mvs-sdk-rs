@@ -1,17 +1,21 @@
 //! Windows 相机 handle、采集状态与节点访问。
 
+use std::cell::Cell;
 use std::ffi::CString;
 use std::fmt;
+use std::marker::PhantomData;
 use std::os::raw::{c_float, c_int, c_void};
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use crate::camera::{
     EventCallback as EventCallbackFn, ExceptionCallback as ExceptionCallbackFn,
     ImageCallback as ImageCallbackFn,
 };
 use crate::error::check;
-use crate::library::{native_handle_created, native_handle_destroyed};
+use crate::library::RuntimeCore;
 use crate::sys;
+use crate::text::SdkText;
 use crate::{AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsError, MvsResult};
 
 use super::callback::{
@@ -124,9 +128,9 @@ struct NativeHandle(NonNull<c_void>);
 unsafe impl Send for NativeHandle {}
 
 impl NativeHandle {
-    fn new(raw: *mut c_void) -> Option<Self> {
+    fn new(raw: *mut c_void, runtime: &RuntimeCore) -> Option<Self> {
         NonNull::new(raw).map(|raw| {
-            native_handle_created();
+            runtime.native_handle_created();
             Self(raw)
         })
     }
@@ -136,26 +140,29 @@ impl NativeHandle {
     }
 
     /// 计数只在 SDK 确认 DestroyHandle 成功后解除。
-    fn destroy(self) -> MvsResult<()> {
+    fn destroy(self, runtime: &RuntimeCore) -> MvsResult<()> {
         // SAFETY: 本值是该 native handle 的唯一 Rust owner。
         check(unsafe { sys::MV_CC_DestroyHandle(self.as_ptr()) })?;
-        native_handle_destroyed();
+        runtime.native_handle_destroyed();
         Ok(())
     }
 }
 
 /// 已打开的 MVS 相机及其局部资源。
 pub(crate) struct Camera {
+    runtime: Arc<RuntimeCore>,
     handle: Option<NativeHandle>,
     grabbing: bool,
     image_cb: Option<CallbackRecord<ImageCallbackFn>>,
     exception_cb: Option<CallbackRecord<ExceptionCallbackFn>>,
     event_cbs: Vec<EventRecord>,
+    _not_sync: PhantomData<Cell<()>>,
 }
 
 impl Camera {
     /// 创建并打开 handle；回滚销毁失败时保留两项错误与 live handle 计数。
     pub(crate) fn open(
+        runtime: Arc<RuntimeCore>,
         device: DeviceInfo,
         mode: AccessMode,
         switchover_key: u16,
@@ -165,9 +172,9 @@ impl Camera {
         // SAFETY: 输出地址可写，device 是 Rust-owned SDK 结构体快照。
         let create = check(unsafe { sys::MV_CC_CreateHandle(&mut raw_handle, device.raw()) });
         if let Err(error) = create {
-            if let Some(handle) = NativeHandle::new(raw_handle) {
+            if let Some(handle) = NativeHandle::new(raw_handle, &runtime) {
                 // SAFETY: SDK 写出的非空 handle 尚未转移给其它 owner。
-                return match handle.destroy() {
+                return match handle.destroy(&runtime) {
                     Ok(()) => Err(error),
                     Err(destroy) => Err(MvsError::OpenRollback {
                         open: Box::new(error),
@@ -177,14 +184,15 @@ impl Camera {
             }
             return Err(error);
         }
-        let handle = NativeHandle::new(raw_handle).ok_or(MvsError::NullHandleAfterCreate)?;
+        let handle =
+            NativeHandle::new(raw_handle, &runtime).ok_or(MvsError::NullHandleAfterCreate)?;
 
         // SAFETY: handle 来自 CreateHandle，访问模式与切换 key 直接转发。
         let open =
             check(unsafe { sys::MV_CC_OpenDevice(handle.as_ptr(), mode.raw(), switchover_key) });
         if let Err(error) = open {
             // SAFETY: OpenDevice 失败后 handle 仍由本函数唯一持有。
-            return match handle.destroy() {
+            return match handle.destroy(&runtime) {
                 Ok(()) => Err(error),
                 Err(destroy) => Err(MvsError::OpenRollback {
                     open: Box::new(error),
@@ -194,11 +202,13 @@ impl Camera {
         }
 
         Ok(Self {
+            runtime,
             handle: Some(handle),
             grabbing: false,
             image_cb: None,
             exception_cb: None,
             event_cbs: Vec::new(),
+            _not_sync: PhantomData,
         })
     }
 
@@ -376,7 +386,7 @@ impl Camera {
         check(unsafe { sys::MV_CC_SetBoolValue(handle, key.as_ptr(), value) })
     }
 
-    pub(crate) fn get_string(&self, key: &str) -> MvsResult<String> {
+    pub(crate) fn get_string(&self, key: &str) -> MvsResult<SdkText> {
         let (handle, key) = self.handle_and_key(key)?;
         let mut value = sys::MVCC_STRINGVALUE::default();
         // SAFETY: value 是可写输出结构体。
@@ -389,10 +399,10 @@ impl Camera {
         // SAFETY: Windows c_char 为 i8，只重解释已初始化字段的前 end 个字节。
         let bytes =
             unsafe { std::slice::from_raw_parts(value.chCurValue.as_ptr().cast::<u8>(), end) };
-        Ok(String::from_utf8_lossy(bytes).into_owned())
+        Ok(SdkText::from_sdk_bytes(bytes.to_vec()))
     }
 
-    pub(crate) fn set_string(&self, key: &str, value: &str) -> MvsResult<()> {
+    pub(crate) fn set_string(&self, key: &str, value: &[u8]) -> MvsResult<()> {
         let (handle, key) = self.handle_and_key(key)?;
         let value = CString::new(value)?;
         // SAFETY: 两个字符串在调用期间有效。
@@ -508,25 +518,10 @@ impl Camera {
     }
 
     /// 尝试完整 teardown，分别保留前序首错与 DestroyHandle 错误。
+    /// callback 线程上的 close/Drop 会终止进程：厂商禁止从 callback 重入生命周期接口。
     pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
         if in_callback() {
-            if self.handle.is_none() {
-                return Ok(());
-            }
-            // callback 内不重入 native teardown；消费 handle owner 后由 live 计数阻止
-            // Finalize，并封存 native 仍可能引用的 pUser slot。
-            self.silence_callbacks();
-            let _orphaned_handle = self.handle.take();
-            self.grabbing = false;
-            self.leak_callback_slots();
-            return Err(CleanupError::new(
-                Some((
-                    "Camera::close",
-                    MvsError::InvalidState("camera cleanup cannot run from an MVS callback"),
-                )),
-                None,
-                false,
-            ));
+            std::process::abort();
         }
 
         let Some(handle) = self.handle.take() else {
@@ -596,7 +591,7 @@ impl Camera {
             "MV_CC_CloseDevice",
             check(unsafe { sys::MV_CC_CloseDevice(raw_handle) }),
         );
-        let destroy_error = handle.destroy().err();
+        let destroy_error = handle.destroy(&self.runtime).err();
         let destroyed = destroy_error.is_none();
 
         self.grabbing = false;
@@ -726,39 +721,13 @@ fn record_first_error(
 #[cfg(test)]
 mod tests {
     use std::os::raw::c_int;
-    use std::ptr::NonNull;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::camera::ExceptionCallback;
     use crate::{MvsError, sys};
 
-    use super::super::callback::with_callback_context;
-    use super::{CallbackRecord, Camera, NativeHandle, exception_trampoline, register_callback};
-
-    // 验证 callback 中消费 Camera 会封存 slot 并放弃本地 handle owner。
-    #[test]
-    fn callback_context_cleanup_seals_native_backing() {
-        let mut camera = Camera {
-            handle: Some(NativeHandle(NonNull::dangling())),
-            grabbing: true,
-            image_cb: Some(CallbackRecord::new()),
-            exception_cb: None,
-            event_cbs: Vec::new(),
-        };
-
-        let error = with_callback_context(|| camera.cleanup())
-            .expect_err("callback 中不得进入 native teardown");
-
-        assert!(camera.handle.is_none());
-        assert!(!camera.grabbing);
-        assert!(camera.image_cb.is_none());
-        assert!(!error.native_handle_destroyed());
-        assert!(matches!(
-            error.prior_error(),
-            Some(MvsError::InvalidState(_))
-        ));
-    }
+    use super::{exception_trampoline, register_callback};
 
     // 一个状态测试覆盖同步派发、失败回滚、重复注册和注销后重注册。
     #[test]

@@ -11,11 +11,7 @@ sequenceDiagram
 
     Caller->>Camera: close()
     alt 当前线程位于任一 MVS callback
-        Camera->>Slots: 静默 closure 并封存 Box slots
-        Camera->>Camera: 消费 handle owner，保留 live 计数
-        Camera-->>Caller: CleanupError(MvsError::InvalidState(..))
-        Camera->>Runtime: 释放 session lease
-        Note over Camera,Native: 不调用 native teardown；orphan handle 阻止 Finalize
+        Note over Camera,Native: 终止进程
     else owner 线程
         Camera->>Slots: 清除 stored closure
         opt 正在取流
@@ -45,7 +41,6 @@ Destroy 错误和 handle 是否已确认销毁。返回错误后不能用同一 
 因 live handle 返回 `MvsError::NativeHandlesLive`，不调用 Finalize。
 
 `Drop` 在普通 owner 线程走相同 teardown 并忽略错误；若当前线程位于任一 MVS callback，
-则静默 closure、封存 native 可能引用的 slot，并消费本地 handle owner，不重入 native
-生命周期接口。live handle 继续阻止 Finalize。wrapper 不增加 callback drain；普通 owner
-teardown 依赖 SDK 的 Stop、Close、Destroy 同步约定，closure `Arc` 只保活已经进入 Rust
-的调用，RuntimeCore `Arc` 只表达 session lease。
+则终止进程。wrapper 不增加 callback drain；普通 owner teardown 依赖 SDK 的 Stop、Close、
+Destroy 同步约定，closure `Arc` 只保活已经进入 Rust 的调用，RuntimeCore `Arc` 只表达
+session lease。live handle 计数记在 `RuntimeCore` 上。

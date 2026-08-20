@@ -31,9 +31,9 @@ impl<'a> EventInfo<'a> {
         }
     }
 
-    /// Return the event name, replacing invalid UTF-8 sequences if necessary.
-    pub fn name(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(self.name)
+    /// Return the event name as SDK original bytes, valid only for this invocation.
+    pub fn name(&self) -> &[u8] {
+        self.name
     }
 
     /// Return the vendor event identifier.
@@ -60,7 +60,7 @@ impl<'a> EventInfo<'a> {
 impl std::fmt::Debug for EventInfo<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EventInfo")
-            .field("name", &self.name())
+            .field("name", &String::from_utf8_lossy(self.name))
             .field("event_id", &self.event_id())
             .field("block_id", &self.block_id())
             .finish()

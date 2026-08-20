@@ -1,8 +1,10 @@
 use std::net::Ipv4Addr;
 use std::os::raw::c_void;
 
+use crate::device::DecodedDevice;
 use crate::error::check;
 use crate::sys;
+use crate::text::{SdkText, sdk_bytes_from_cstr_array};
 use crate::{AccessMode, MvsResult, TransportLayer};
 
 /// 枚举设备并复制 SDK 管理的临时记录。
@@ -43,6 +45,8 @@ struct DeviceMetadata<'a> {
     model: &'a [u8],
     serial: &'a [u8],
     user_defined_name: &'a [u8],
+    device_version: &'a [u8],
+    manufacturer_specific_info: &'a [u8],
 }
 
 impl DeviceInfo {
@@ -50,18 +54,38 @@ impl DeviceInfo {
         &self.raw
     }
 
-    pub(crate) fn transport_layer(&self) -> TransportLayer {
-        TransportLayer::from_raw(self.raw.nTLayerType)
+    pub(crate) fn decode(&self) -> DecodedDevice {
+        let metadata = self.metadata();
+        let (current_ip, current_subnet_mask, default_gateway, host_nic_ip) = self.gige_addresses();
+        DecodedDevice {
+            major_version: self.raw.nMajorVer,
+            minor_version: self.raw.nMinorVer,
+            mac_address: mac_from_parts(self.raw.nMacAddrHigh, self.raw.nMacAddrLow),
+            transport_layer: TransportLayer::from_raw(self.raw.nTLayerType),
+            device_type_info: self.raw.nDevTypeInfo,
+            manufacturer: sdk_text(metadata.as_ref().map(|metadata| metadata.manufacturer)),
+            model: sdk_text(metadata.as_ref().map(|metadata| metadata.model)),
+            device_version: sdk_text(metadata.as_ref().map(|metadata| metadata.device_version)),
+            manufacturer_specific_info: sdk_text(
+                metadata
+                    .as_ref()
+                    .map(|metadata| metadata.manufacturer_specific_info),
+            ),
+            serial: sdk_text(metadata.as_ref().map(|metadata| metadata.serial)),
+            user_defined_name: sdk_text(
+                metadata.as_ref().map(|metadata| metadata.user_defined_name),
+            ),
+            current_ip,
+            current_subnet_mask,
+            default_gateway,
+            host_nic_ip,
+        }
     }
 
-    pub(crate) fn is_gige(&self) -> bool {
+    fn is_gige_transport(&self) -> bool {
         self.raw.nTLayerType == sys::MV_GIGE_DEVICE
             || self.raw.nTLayerType == sys::MV_VIR_GIGE_DEVICE
             || self.raw.nTLayerType == sys::MV_GENTL_GIGE_DEVICE
-    }
-
-    pub(crate) fn is_usb(&self) -> bool {
-        self.raw.nTLayerType == sys::MV_USB_DEVICE || self.raw.nTLayerType == sys::MV_VIR_USB_DEVICE
     }
 
     fn metadata(&self) -> Option<DeviceMetadata<'_>> {
@@ -74,6 +98,8 @@ impl DeviceInfo {
                     model: &info.chModelName,
                     serial: &info.chSerialNumber,
                     user_defined_name: &info.chUserDefinedName,
+                    device_version: &info.chDeviceVersion,
+                    manufacturer_specific_info: &info.chManufacturerSpecificInfo,
                 })
             }
             sys::MV_USB_DEVICE | sys::MV_VIR_USB_DEVICE => {
@@ -84,6 +110,8 @@ impl DeviceInfo {
                     model: &info.chModelName,
                     serial: &info.chSerialNumber,
                     user_defined_name: &info.chUserDefinedName,
+                    device_version: &info.chDeviceVersion,
+                    manufacturer_specific_info: &[],
                 })
             }
             sys::MV_CAMERALINK_DEVICE => {
@@ -94,6 +122,8 @@ impl DeviceInfo {
                     model: &info.chModelName,
                     serial: &info.chSerialNumber,
                     user_defined_name: &[],
+                    device_version: &info.chDeviceVersion,
+                    manufacturer_specific_info: &[],
                 })
             }
             sys::MV_GENTL_CAMERALINK_DEVICE => {
@@ -104,6 +134,8 @@ impl DeviceInfo {
                     model: &info.chModelName,
                     serial: &info.chSerialNumber,
                     user_defined_name: &info.chUserDefinedName,
+                    device_version: &info.chDeviceVersion,
+                    manufacturer_specific_info: &info.chManufacturerInfo,
                 })
             }
             sys::MV_GENTL_CXP_DEVICE => {
@@ -114,6 +146,8 @@ impl DeviceInfo {
                     model: &info.chModelName,
                     serial: &info.chSerialNumber,
                     user_defined_name: &info.chUserDefinedName,
+                    device_version: &info.chDeviceVersion,
+                    manufacturer_specific_info: &info.chManufacturerInfo,
                 })
             }
             sys::MV_GENTL_XOF_DEVICE => {
@@ -124,6 +158,8 @@ impl DeviceInfo {
                     model: &info.chModelName,
                     serial: &info.chSerialNumber,
                     user_defined_name: &info.chUserDefinedName,
+                    device_version: &info.chDeviceVersion,
+                    manufacturer_specific_info: &info.chManufacturerInfo,
                 })
             }
             sys::MV_GENTL_VIR_DEVICE => {
@@ -134,54 +170,33 @@ impl DeviceInfo {
                     model: &info.chModelName,
                     serial: &info.chSerialNumber,
                     user_defined_name: &info.chUserDefinedName,
+                    device_version: &info.chDeviceVersion,
+                    manufacturer_specific_info: &info.chManufacturerInfo,
                 })
             }
             _ => None,
         }
     }
 
-    pub(crate) fn manufacturer(&self) -> String {
-        self.metadata()
-            .map(|metadata| cstr_array_to_string(metadata.manufacturer))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn model(&self) -> String {
-        self.metadata()
-            .map(|metadata| cstr_array_to_string(metadata.model))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn serial(&self) -> String {
-        self.metadata()
-            .map(|metadata| cstr_array_to_string(metadata.serial))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn user_defined_name(&self) -> String {
-        self.metadata()
-            .map(|metadata| cstr_array_to_string(metadata.user_defined_name))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn ip(&self) -> Option<Ipv4Addr> {
-        if self.is_gige() {
-            // SAFETY: is_gige 只接受 GigE union arm 对应的 transport type。
-            let info = unsafe { &self.raw.SpecialInfo.stGigEInfo };
-            Some(Ipv4Addr::from(info.nCurrentIp.to_be_bytes()))
-        } else {
-            None
+    fn gige_addresses(
+        &self,
+    ) -> (
+        Option<Ipv4Addr>,
+        Option<Ipv4Addr>,
+        Option<Ipv4Addr>,
+        Option<Ipv4Addr>,
+    ) {
+        if !self.is_gige_transport() {
+            return (None, None, None, None);
         }
-    }
-
-    pub(crate) fn host_nic_ip(&self) -> Option<Ipv4Addr> {
-        if self.is_gige() {
-            // SAFETY: is_gige 只接受 GigE union arm 对应的 transport type。
-            let info = unsafe { &self.raw.SpecialInfo.stGigEInfo };
-            Some(Ipv4Addr::from(info.nNetExport.to_be_bytes()))
-        } else {
-            None
-        }
+        // SAFETY: is_gige_transport 只接受 GigE union arm 对应的 transport type。
+        let info = unsafe { &self.raw.SpecialInfo.stGigEInfo };
+        (
+            Some(ipv4_from_sdk(info.nCurrentIp)),
+            Some(ipv4_from_sdk(info.nCurrentSubNetMask)),
+            Some(ipv4_from_sdk(info.nDefultGateWay)),
+            Some(ipv4_from_sdk(info.nNetExport)),
+        )
     }
 
     pub(crate) fn is_accessible(&self, mode: AccessMode) -> bool {
@@ -196,7 +211,17 @@ impl DeviceInfo {
     }
 }
 
-fn cstr_array_to_string(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|&c| c == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
+fn sdk_text(bytes: Option<&[u8]>) -> SdkText {
+    SdkText::from_sdk_bytes(bytes.map(sdk_bytes_from_cstr_array).unwrap_or_default())
+}
+
+fn mac_from_parts(high: u32, low: u32) -> [u8; 8] {
+    let mut mac = [0_u8; 8];
+    mac[..4].copy_from_slice(&high.to_be_bytes());
+    mac[4..].copy_from_slice(&low.to_be_bytes());
+    mac
+}
+
+fn ipv4_from_sdk(value: u32) -> Ipv4Addr {
+    Ipv4Addr::from(value.to_be_bytes())
 }

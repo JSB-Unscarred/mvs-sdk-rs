@@ -35,9 +35,11 @@ sequenceDiagram
         Slot->>App: closure(&Frame)
         Note over Slot,App: Frame 仅在本次 callback 有效；跨调用使用 to_owned()
         opt callback 内请求停止、关闭或改注册
-            App->>Camera: 生命周期变更
-            Camera-->>App: 本地 MvsError::InvalidState(..)（close 通过 CleanupError 报告）
+            App->>Camera: start/stop/register
+            Camera-->>App: 本地 MvsError::InvalidState(..)
             Note over Camera,Native: 不调用 native；通过 channel 通知 owner 线程处理
+            App->>Camera: close / Drop
+            Note over Camera,Native: 终止进程
         end
         App-->>Slot: 返回
     end
@@ -72,9 +74,9 @@ sequenceDiagram
 ```
 
 callback 只做通知或复制数据，停止、关闭和重连交给 `Camera` owner。callback 内的
-生命周期变更以本地 `MvsError::InvalidState(..)` 拒绝，不会进入 native SDK；业务错误通过 channel
-交给 owner。closure panic 在 trampoline 最外层截获并静默该 closure，不进入 `MvsResult`；
-owner 注销后可重新注册，closure Arc 的析构不会跨越 FFI 边界。Camera 本地状态只在调用返回
-`MV_OK` 后更新；Start、Stop、注册和注销失败时 owner 仍在，由调用方决定是否重试。
-`Camera` 内部 session lease 与 callback closure Arc 职责独立。`close(self)` 与
-`shutdown(self)` 都会消费 owner 并只尝试一次，错误只用于诊断和宿主策略。
+start/stop/register 以本地 `MvsError::InvalidState(..)` 拒绝，不会进入 native SDK；
+`close` / `Drop` 终止进程。业务错误通过 channel 交给 owner。closure panic 在 trampoline
+终止进程。Camera 本地状态只在调用返回 `MV_OK` 后更新；Start、Stop、注册和注销失败时
+owner 仍在，由调用方决定是否重试。`Camera` 内部 session lease 与 callback closure Arc
+职责独立。`close(self)` 与 `shutdown(self)` 都会消费 owner 并只尝试一次，错误只用于诊断
+和宿主策略。

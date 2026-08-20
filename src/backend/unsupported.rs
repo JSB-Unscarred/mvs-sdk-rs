@@ -1,9 +1,13 @@
 use std::marker::PhantomData;
 use std::net::Ipv4Addr;
 use std::os::raw::c_void;
+use std::sync::Arc;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
+use crate::device::DecodedDevice;
 use crate::frame::{Frame, FrameInfo};
+use crate::library::RuntimeCore;
+use crate::text::SdkText;
 use crate::{
     AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsError, MvsResult, TransportLayer,
 };
@@ -36,40 +40,24 @@ pub(crate) fn enumerate_devices(_layers: TransportLayer) -> MvsResult<Vec<Device
 pub(crate) struct DeviceInfo;
 
 impl DeviceInfo {
-    pub(crate) fn transport_layer(&self) -> TransportLayer {
-        TransportLayer::UNKNOWN
-    }
-
-    pub(crate) fn is_gige(&self) -> bool {
-        false
-    }
-
-    pub(crate) fn is_usb(&self) -> bool {
-        false
-    }
-
-    pub(crate) fn manufacturer(&self) -> String {
-        String::new()
-    }
-
-    pub(crate) fn model(&self) -> String {
-        String::new()
-    }
-
-    pub(crate) fn serial(&self) -> String {
-        String::new()
-    }
-
-    pub(crate) fn user_defined_name(&self) -> String {
-        String::new()
-    }
-
-    pub(crate) fn ip(&self) -> Option<Ipv4Addr> {
-        None
-    }
-
-    pub(crate) fn host_nic_ip(&self) -> Option<Ipv4Addr> {
-        None
+    pub(crate) fn decode(&self) -> DecodedDevice {
+        DecodedDevice {
+            major_version: 0,
+            minor_version: 0,
+            mac_address: [0; 8],
+            transport_layer: TransportLayer::UNKNOWN,
+            device_type_info: 0,
+            manufacturer: SdkText::from_sdk_bytes(Vec::new()),
+            model: SdkText::from_sdk_bytes(Vec::new()),
+            device_version: SdkText::from_sdk_bytes(Vec::new()),
+            manufacturer_specific_info: SdkText::from_sdk_bytes(Vec::new()),
+            serial: SdkText::from_sdk_bytes(Vec::new()),
+            user_defined_name: SdkText::from_sdk_bytes(Vec::new()),
+            current_ip: None,
+            current_subnet_mask: None,
+            default_gateway: None,
+            host_nic_ip: None,
+        }
     }
 
     pub(crate) fn is_accessible(&self, _mode: AccessMode) -> bool {
@@ -86,6 +74,7 @@ pub(crate) struct Camera;
 
 impl Camera {
     pub(crate) fn open(
+        _runtime: Arc<RuntimeCore>,
         _device: DeviceInfo,
         _mode: AccessMode,
         _switchover_key: u16,
@@ -157,11 +146,11 @@ impl Camera {
         unsupported()
     }
 
-    pub(crate) fn get_string(&self, _key: &str) -> MvsResult<String> {
+    pub(crate) fn get_string(&self, _key: &str) -> MvsResult<SdkText> {
         unsupported()
     }
 
-    pub(crate) fn set_string(&self, _key: &str, _value: &str) -> MvsResult<()> {
+    pub(crate) fn set_string(&self, _key: &str, _value: &[u8]) -> MvsResult<()> {
         unsupported()
     }
 

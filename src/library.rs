@@ -1,12 +1,11 @@
 //! SDK 初始化、反初始化与设备发现。
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-use std::sync::atomic::AtomicUsize;
 #[cfg(any(
     test,
     all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
 ))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::backend;
@@ -16,8 +15,6 @@ use crate::{AccessMode, MvsError, MvsResult, TransportLayer};
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 static INITIALIZE_CLAIMED: AtomicBool = AtomicBool::new(false);
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-static LIVE_NATIVE_HANDLES: AtomicUsize = AtomicUsize::new(0);
 
 /// 声明一次进程级 Initialize 机会，成功后不复位。
 #[cfg(any(
@@ -34,33 +31,43 @@ fn claim_initialization(claimed: &AtomicBool) -> MvsResult<()> {
     }
 }
 
-/// 记录 CreateHandle 已写出的非空 handle。
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-pub(crate) fn native_handle_created() {
-    LIVE_NATIVE_HANDLES.fetch_add(1, Ordering::AcqRel);
-}
-
-/// 记录 DestroyHandle 已确认销毁的 handle。
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-pub(crate) fn native_handle_destroyed() {
-    let previous = LIVE_NATIVE_HANDLES.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-        count.checked_sub(1)
-    });
-    debug_assert!(previous.is_ok(), "native handle count underflowed");
-}
-
-/// 返回 Rust owner 已消费但仍未确认销毁的 native handle 是否存在。
-#[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-fn orphaned_native_handles_live() -> bool {
-    LIVE_NATIVE_HANDLES.load(Ordering::Acquire) != 0
-}
-
 /// 由 `Sdk` 与已打开相机共享的一次性 native session。
 ///
 /// `Arc` 只表达 session lease；相机 handle 仍由对应 `Camera` 唯一拥有。
+/// `live_native_handles` 记录 CreateHandle 已写出、DestroyHandle 尚未确认的 handle。
 pub(crate) struct RuntimeCore {
     inner: backend::Sdk,
     enumeration_lock: Mutex<()>,
+    live_native_handles: AtomicUsize,
+}
+
+impl RuntimeCore {
+    fn new(inner: backend::Sdk) -> Self {
+        Self {
+            inner,
+            enumeration_lock: Mutex::new(()),
+            live_native_handles: AtomicUsize::new(0),
+        }
+    }
+
+    /// 记录 CreateHandle 已写出的非空 handle。
+    pub(crate) fn native_handle_created(&self) {
+        self.live_native_handles.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// 记录 DestroyHandle 已确认销毁的 handle。
+    pub(crate) fn native_handle_destroyed(&self) {
+        let previous =
+            self.live_native_handles
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_sub(1)
+                });
+        debug_assert!(previous.is_ok(), "native handle count underflowed");
+    }
+
+    fn orphaned_native_handles_live(&self) -> bool {
+        self.live_native_handles.load(Ordering::Acquire) != 0
+    }
 }
 
 /// 进程级 MVS SDK session 的唯一显式 Finalize 入口。
@@ -87,10 +94,7 @@ impl Sdk {
     #[cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
     fn initialize_platform() -> MvsResult<Self> {
         backend::Sdk::init().map(|inner| Self {
-            runtime: Arc::new(RuntimeCore {
-                inner,
-                enumeration_lock: Mutex::new(()),
-            }),
+            runtime: Arc::new(RuntimeCore::new(inner)),
         })
     }
 
@@ -101,10 +105,7 @@ impl Sdk {
 
         let inner = backend::Sdk::init()?;
         Ok(Self {
-            runtime: Arc::new(RuntimeCore {
-                inner,
-                enumeration_lock: Mutex::new(()),
-            }),
+            runtime: Arc::new(RuntimeCore::new(inner)),
         })
     }
 
@@ -158,8 +159,7 @@ impl Sdk {
             MvsError::InvalidState("all cameras must be dropped before SDK shutdown")
         })?;
 
-        #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-        if orphaned_native_handles_live() {
+        if runtime.orphaned_native_handles_live() {
             return Err(MvsError::NativeHandlesLive);
         }
 

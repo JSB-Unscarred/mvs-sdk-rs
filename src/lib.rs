@@ -20,14 +20,15 @@
 //!   [`Camera::get_image_buffer`]. Its [`FrameGuard`] releases the native buffer
 //!   on drop; call [`FrameGuard::release`] to observe release errors, or use
 //!   [`Camera::get_owned_frame`] to copy and explicitly release in one call.
+//!   Infinite wait uses [`Camera::get_image_buffer_blocking`] /
+//!   [`Camera::get_owned_frame_blocking`].
 //!
 //! Stop acquisition before registering or unregistering the image
 //! callback, and before switching acquisition modes. To keep pixels beyond a
 //! callback or guard lifetime, copy them with [`Frame::to_owned`].
 //! A callback must ask the [`Camera`] owner thread to change lifecycle state;
-//! while the current thread is in any MVS callback, direct lifecycle changes
-//! report a local [`MvsError::InvalidState`] without entering the native SDK
-//! (`Camera::close` reports it through `CleanupError`).
+//! while the current thread is in any MVS callback, start/stop/register return
+//! [`MvsError::InvalidState`], and `close` / `Drop` terminate the process.
 //!
 //! # Lifetimes and shutdown
 //!
@@ -63,6 +64,7 @@ mod device;
 pub mod error;
 mod frame;
 mod library;
+mod text;
 mod types;
 
 pub use callback::EventInfo;
@@ -71,4 +73,5 @@ pub use device::DeviceInfo;
 pub use error::{CleanupError, MvsError, MvsResult};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
+pub use text::SdkText;
 pub use types::{AccessMode, EnumValue, FloatValue, IntValue, PixelType, TransportLayer};

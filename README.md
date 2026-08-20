@@ -80,7 +80,7 @@ API，不扩展 safe 层。
 | 2 | `MV_CC_RegisterImageCallBackEx2` | `register_image_callback(F)` / `unregister_image_callback()` | `F: Fn(&Frame<'_>) + Send + Sync + 'static`；固定 `bAutoFree=true`。 |
 | 2 | `MV_CC_StartGrabbing` | `Camera::start_grabbing(&mut self) -> MvsResult<()>` | image callback 与 polling 二选一。 |
 | 2 | `MV_CC_StopGrabbing` | `Camera::stop_grabbing(&mut self) -> MvsResult<()>` | 变更 image callback 或切换取流方式前先停止。 |
-| 2 | `MV_CC_GetImageBuffer` | `Camera::get_image_buffer(u32)`、`get_owned_frame(u32)` | 前者返回零拷贝 guard；后者复制 owned frame 后显式归还 buffer。 |
+| 2 | `MV_CC_GetImageBuffer` | `Camera::get_image_buffer(u32)`、`get_image_buffer_blocking()`、`get_owned_frame(u32)`、`get_owned_frame_blocking()` | 有限等待拒绝 `u32::MAX`；blocking 入口转发 SDK 无限等待哨兵。零拷贝 guard 借用相机；owned 入口复制后显式归还。 |
 | 2 | `MV_CC_FreeImageBuffer` | `FrameGuard::release(self)`、`Camera::get_owned_frame`、`Drop` 兜底 | 显式路径传播归还错误；`Drop` 忽略错误。 |
 | 4 | `MV_CC_GetIntValueEx` | `Camera::get_int(&self, &str) -> MvsResult<IntValue>` | 返回当前值、上下界和步长。 |
 | 4 | `MV_CC_SetIntValueEx` | `Camera::set_int(&self, &str, i64) -> MvsResult<()>` | 直接转发 `i64`。 |
@@ -91,8 +91,8 @@ API，不扩展 safe 层。
 | 4 | `MV_CC_SetFloatValue` | `Camera::set_float(&self, &str, f32) -> MvsResult<()>` | 直接转发 `f32`。 |
 | 4 | `MV_CC_GetBoolValue` | `Camera::get_bool(&self, &str) -> MvsResult<bool>` | 转换 SDK `bool_`。 |
 | 4 | `MV_CC_SetBoolValue` | `Camera::set_bool(&self, &str, bool) -> MvsResult<()>` | 转换 Rust `bool`。 |
-| 4 | `MV_CC_GetStringValue` | `Camera::get_string(&self, &str) -> MvsResult<String>` | 返回 owned `String`。 |
-| 4 | `MV_CC_SetStringValue` | `Camera::set_string(&self, &str, &str) -> MvsResult<()>` | 检查内部 NUL。 |
+| 4 | `MV_CC_GetStringValue` | `Camera::get_string(&self, &str) -> MvsResult<SdkText>` | 保留 SDK 原始字节。 |
+| 4 | `MV_CC_SetStringValue` | `Camera::set_string(&self, &str, &[u8]) -> MvsResult<()>` | 检查内部 NUL。 |
 | 4 | `MV_CC_SetCommandValue` | `Camera::exec_command(&self, &str) -> MvsResult<()>` | 执行 GenICam command 节点。 |
 | 6 | `MV_CC_RegisterExceptionCallBack` | `register_exception_callback(F)` / `unregister_exception_callback()` | `F: Fn(u32) + Send + Sync + 'static`。 |
 | 6 | `MV_CC_RegisterEventCallBackEx` | `register_event_callback(&str, F)` / `unregister_event_callback(&str)` | `F: Fn(&EventInfo<'_>) + Send + Sync + 'static`。 |
@@ -104,14 +104,14 @@ API，不扩展 safe 层。
 | MVS SDK 结构体 | Rust 定义 | 转换与生命周期 |
 | --- | --- | --- |
 | `MV_CC_DEVICE_INFO_LIST` | `Vec<DeviceInfo>` | 枚举锁内复制全部有效设备项，返回后独立于 SDK 临时列表。 |
-| `MV_CC_DEVICE_INFO` 及 `SpecialInfo` | `DeviceInfo`、`TransportLayer` | 保存 Rust-owned snapshot，不持有 session lease。 |
+| `MV_CC_DEVICE_INFO` 及 `SpecialInfo` | `DeviceInfo`、`TransportLayer`、`SdkText` | 公开常用字段；字符串保留原始字节。CreateHandle 仍使用内部 C 快照。 |
 | `MV_FRAME_OUT` | `FrameGuard<'cam>`、`Frame<'_>` | guard 保存释放凭据并借用相机；`Frame` 借用像素区。 |
 | `MV_FRAME_OUT_INFO_EX` | `FrameInfo`、`PixelType` | 复制常用字段子集：尺寸、长度、编号、像素格式、增益、曝光和时间戳等。 |
-| `MV_EVENT_OUT_INFO` | `EventInfo<'_>` | callback 期间借用事件名并复制数值字段。 |
+| `MV_EVENT_OUT_INFO` | `EventInfo<'_>` | callback 期间借用事件名原始字节并复制数值字段。 |
 | `MVCC_INTVALUE_EX` | `IntValue` | 复制当前值、上下界和步长。 |
 | `MVCC_FLOATVALUE` | `FloatValue` | 复制当前值和上下界。 |
 | `MVCC_ENUMVALUE_EX` | `EnumValue` | 复制当前值和最多 256 个候选值。 |
-| `MVCC_STRINGVALUE` | `String` | 按字段容量读取并生成 owned 字符串。 |
+| `MVCC_STRINGVALUE` | `SdkText` | 按字段容量读取原始字节。 |
 
 `OwnedFrame` 是 `Frame` 的 Rust-owned 像素副本，生命周期独立于 SDK buffer；
 `Camera::get_owned_frame` 提供 polling 获取、复制和显式归还的一步入口。
@@ -127,17 +127,18 @@ API，不扩展 safe 层。
 - `Sdk` 是唯一显式 Finalize 入口；`Sdk` 与每个 `Camera` 通过 `Arc<RuntimeCore>` 持有 session lease，`shutdown(self)` 先以 `Arc::try_unwrap` 检查其它 owner。`DeviceInfo` 是纯 owned snapshot，不参与 session 生命周期。
 - 官方 CHM 限定单进程只执行一次 Initialize 与 Finalize；Windows x86_64 MSVC 的 Initialize 机会一经声明即不复位，Initialize 失败、`Sdk` 普通 Drop、shutdown 成功或失败后均不支持同进程重启。unsupported 目标不调用 native 接口，每次均返回 `UnsupportedPlatform`。
 - `Sdk` 普通 Drop 跳过 Finalize；显式 `shutdown(self)` 在其它 session owner 存活时返回 `MvsError::InvalidState`，调用方按终止进程处理。
-- `CreateHandle` 写出非空 handle 后即计为 live，只有 `DestroyHandle` 成功才解除。普通 Camera owner 由 Arc 门禁；owner 已消费而计数仍为 live 时，`Sdk::shutdown` 返回 `MvsError::NativeHandlesLive`。
+- `CreateHandle` 写出非空 handle 后即计为 live，计数记在 `RuntimeCore` 上，只有 `DestroyHandle` 成功才解除。普通 Camera owner 由 Arc 门禁；owner 已消费而计数仍为 live 时，`Sdk::shutdown` 返回 `MvsError::NativeHandlesLive`。
 - Stop、callback 注销或 `CloseDevice` 失败不阻断后续 `DestroyHandle`；Destroy 成功后允许 Finalize，Destroy 失败才进入进程终止分支。这与只有 Close 终点的 3dmvs wrapper 是厂商契约导致的合理差异。
 - image callback 使用 `RegisterImageCallBackEx2` 且 `bAutoFree=true`，`Frame` 只在 callback 调用期间有效。
 - image callback 与 polling 互斥；注册、注销或切换方式前停止采集。
-- callback 使用 `Fn + Send + Sync`。Camera-owned `Box` 固定 `pUser` 地址；注销返回时，已进入的 callback 可能仍在执行，closure `Arc` 保活到该次调用结束。当前线程位于任一 MVS callback 时不得修改 `Camera` 生命周期，需要通过 channel 通知 owner 线程处理；若 Camera 仍在 callback 中被消费，wrapper 静默 closure、封存 native 可能引用的 slot，并以 live handle 门禁阻止 Finalize。
+- callback 使用 `Fn + Send + Sync`。Camera-owned `Box` 固定 `pUser` 地址；注销返回时，已进入的 callback 可能仍在执行，closure `Arc` 保活到该次调用结束。当前线程位于任一 MVS callback 时，start/stop/register 返回 `InvalidState`；`close` / `Drop` 终止进程。生命周期变更通过 channel 通知 owner 线程处理。
 - wrapper 不增加 callback drain；普通 owner teardown 依赖 SDK 的 Stop、Close、Destroy 同步约定，`Arc` 只保活已经进入 Rust 的 closure。
 - 取流与 callback 注册状态只在 native 返回 `MV_OK` 后更新；失败保留调用前的本地状态并返回原错误。仍持有 owner 的普通操作由调用方决定重试；首次注册失败回收新建 slot，已有 record 注册失败时清空 closure，注销后可重新注册。
-- callback 的业务错误通过 channel 交给 owner；panic 在 FFI 边界截获并静默 closure，不进入 `MvsResult`，owner 注销后可重新注册。
+- callback 的业务错误通过 channel 交给 owner；panic 在 FFI 边界终止进程。
+- polling 有限等待使用 `u32` 毫秒并拒绝 `u32::MAX`；无限等待使用 `get_image_buffer_blocking` / `get_owned_frame_blocking`。
 - polling buffer 由 `FrameGuard` 唯一归还；`release(self)` 单次尝试并返回错误，`Drop` 兜底时忽略错误。`get_owned_frame` 复用该流程并传播 release 错误。
 - `Camera::close(self)` 与 `Sdk::shutdown(self)` 都会消费 owner 并只尝试一次，错误用于诊断和宿主退出策略，不能用同一 owner 重试。Camera 的 Drop 执行局部清理兜底；Sdk 的 Drop 跳过 Finalize。`OpenRollback` 保留 open/create 与回滚销毁错误；`CleanupError` 保留首个失败操作、对应错误与独立的 DestroyHandle 错误。
-- `Camera::as_raw_handle` 与 `DeviceInfo::as_raw` 只借出指针；raw 调用不得改变 safe 层维护的取流、callback 或 handle 生命周期。
+- `unsafe Camera::as_raw_handle` 与 `unsafe DeviceInfo::as_raw` 只借出指针；raw 调用不得改变 safe 层维护的取流、callback 或 handle 生命周期。
 
 ## 文档与验证
 
