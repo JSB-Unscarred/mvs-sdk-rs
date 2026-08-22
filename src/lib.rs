@@ -20,8 +20,7 @@
 //!   [`Camera::get_image_buffer`]. Its [`FrameGuard`] releases the native buffer
 //!   on drop; call [`FrameGuard::release`] to observe release errors, or use
 //!   [`Camera::get_owned_frame`] to copy and explicitly release in one call.
-//!   Infinite wait uses [`Camera::get_image_buffer_blocking`] /
-//!   [`Camera::get_owned_frame_blocking`].
+//!   Both take a [`Timeout`]; infinite wait is [`Timeout::Infinite`].
 //!
 //! Stop acquisition before registering or unregistering the image
 //! callback, and before switching acquisition modes. To keep pixels beyond a
@@ -39,9 +38,11 @@
 //! `CleanupError`. `Camera::close`, [`FrameGuard::release`] and [`Sdk::shutdown`]
 //! consume their owner and attempt cleanup once; their errors are diagnostic
 //! input for host policy, not retry handles.
-//! Consuming [`Sdk`] with [`Sdk::shutdown`] succeeds only after all cameras are closed or dropped.
+//! Consuming [`Sdk`] with [`Sdk::shutdown`] succeeds only after all cameras are closed or dropped;
+//! while a camera is still alive the call returns the [`Sdk`] through
+//! [`ShutdownError::into_sdk`] so the caller can close it and retry.
 //! A native handle whose destruction was not confirmed also blocks Finalize after its Rust owner
-//! is consumed.
+//! is consumed, and that rejection is terminal.
 //! Finalization is terminal for the process, as required by the vendor
 //! documentation.
 //!
@@ -69,9 +70,9 @@ mod types;
 
 pub use callback::EventInfo;
 pub use camera::Camera;
-pub use device::DeviceInfo;
-pub use error::{CleanupError, MvsError, MvsResult};
+pub use device::{DeviceInfo, DeviceProperties};
+pub use error::{CleanupError, MvsError, MvsResult, ShutdownError};
 pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
 pub use library::Sdk;
 pub use text::SdkText;
-pub use types::{AccessMode, EnumValue, FloatValue, IntValue, PixelType, TransportLayer};
+pub use types::{AccessMode, EnumValue, FloatValue, IntValue, PixelType, Timeout, TransportLayer};

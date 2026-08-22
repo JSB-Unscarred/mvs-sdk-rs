@@ -5,6 +5,28 @@ use std::ops::{BitOr, BitOrAssign};
 
 use crate::sys;
 
+/// 取图等待时长。
+///
+/// SDK 用 `u32::MAX` 表示无限等待，本类型把该哨兵与有限毫秒分开表达，
+/// 非法组合在编译期不可构造。
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Timeout {
+    /// 有限等待毫秒数。`u32::MAX` 归一到最大有限值，防止退化成无限等待。
+    Finite(u32),
+    /// 等待到有帧或出错为止。
+    Infinite,
+}
+
+impl Timeout {
+    /// 映射到 SDK 的等待参数；无限等待哨兵只在此处产生。
+    pub(crate) fn raw(self) -> u32 {
+        match self {
+            Self::Finite(milliseconds) => milliseconds.min(u32::MAX - 1),
+            Self::Infinite => u32::MAX,
+        }
+    }
+}
+
 /// Device access mode passed to [`Sdk::open`](crate::Sdk::open).
 ///
 /// The vendor SDK applies these modes differently by transport. The mode and
@@ -127,6 +149,23 @@ impl TransportLayer {
     pub const fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
+
+    /// 是否包含 GigE 系 transport，含虚拟设备与 GenTL 设备。
+    ///
+    /// 位集语义。设备快照的 `nTLayerType` 由 SDK 写为单一 device type 值，
+    /// 因此对 [`crate::DeviceProperties::transport_layer`] 与逐值比较等价。
+    #[inline]
+    pub const fn is_gige(self) -> bool {
+        self.contains(Self::GIGE)
+            || self.contains(Self::VIR_GIGE)
+            || self.contains(Self::GENTL_GIGE)
+    }
+
+    /// 是否包含 USB 系 transport，含虚拟设备。
+    #[inline]
+    pub const fn is_usb(self) -> bool {
+        self.contains(Self::USB) || self.contains(Self::VIR_USB)
+    }
 }
 
 impl BitOr for TransportLayer {
@@ -240,5 +279,27 @@ impl PixelType {
 impl fmt::Debug for PixelType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "PixelType(0x{:08X})", self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Timeout, TransportLayer};
+
+    // 有限等待不得退化成 SDK 的无限等待哨兵。
+    #[test]
+    fn finite_timeout_never_selects_infinite_wait() {
+        assert_eq!(Timeout::Infinite.raw(), u32::MAX);
+        assert_eq!(Timeout::Finite(0).raw(), 0);
+        assert_eq!(Timeout::Finite(u32::MAX).raw(), u32::MAX - 1);
+    }
+
+    // transport 判定是位集语义，公开接口与 backend 共用同一实现。
+    #[test]
+    fn transport_predicates_cover_virtual_and_gentl_variants() {
+        assert!(TransportLayer::VIR_GIGE.is_gige());
+        assert!(TransportLayer::GENTL_GIGE.is_gige());
+        assert!(!TransportLayer::USB.is_gige());
+        assert!(TransportLayer::VIR_USB.is_usb());
     }
 }

@@ -20,14 +20,14 @@ sequenceDiagram
     App->>Sdk: open(&device, mode, key)
     Sdk->>Camera: clone RuntimeCore lease
     Camera->>Native: CreateHandle → OpenDevice
-    Note over Camera,Native: MV_OK + NULL → MvsError::NullHandleAfterCreate；回滚失败 → MvsError::OpenRollback
+    Note over Camera,Native: CreateHandle 返回 MV_OK + NULL → MvsError::NullHandleAfterCreate；OpenDevice 失败回滚 Destroy，回滚也失败 → MvsError::OpenRollback
     App->>Camera: register_image_callback(closure)
     Camera->>Slot: 保存 Box slot 与 Arc(closure)
     Camera->>Native: RegisterImageCallBackEx2(trampoline, slot, true)
     App->>Camera: start_grabbing()
     Camera->>Native: MV_CC_StartGrabbing()
     Note over Camera,Native: 仅 MV_OK 提交 Camera 本地状态；失败返回原错误，不调用 Stop/NULL callback
-    Note over Camera,Slot: 首次注册失败回收新建 slot；已有 record 失败时清空 closure
+    Note over Camera,Slot: slot 在 open 时预分配并复用；注册失败清空 closure 并保留未注册 slot
 
     loop 每帧
         Native-->>Slot: image_trampoline(MV_FRAME_OUT, slot, true)
@@ -65,11 +65,11 @@ sequenceDiagram
     end
     App->>Sdk: shutdown()
     alt 仍有 Camera session owner
-        Sdk-->>App: MvsError::InvalidState，不调用 Finalize
+        Sdk-->>App: ShutdownError 归还 Sdk，可关闭相机后重试，不调用 Finalize
     else owner 已释放且 handle 已确认 Destroy
         Sdk->>Native: MV_CC_Finalize()
     else owner 已消费但 handle 仍为 live
-        Sdk-->>App: MvsError::NativeHandlesLive，不调用 Finalize
+        Sdk-->>App: ShutdownError 终态，携 MvsError::NativeHandlesLive，不调用 Finalize
     end
 ```
 
@@ -79,4 +79,4 @@ start/stop/register 以本地 `MvsError::InvalidState(..)` 拒绝，不会进入
 终止进程。Camera 本地状态只在调用返回 `MV_OK` 后更新；Start、Stop、注册和注销失败时
 owner 仍在，由调用方决定是否重试。`Camera` 内部 session lease 与 callback closure Arc
 职责独立。`close(self)` 与 `shutdown(self)` 都会消费 owner 并只尝试一次，错误只用于诊断
-和宿主策略。
+和宿主策略；其中 shutdown 的"相机未关闭"分支归还 `Sdk` 供重试。

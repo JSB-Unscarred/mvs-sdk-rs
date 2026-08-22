@@ -8,6 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
 use crate::frame::Frame;
 use crate::sys;
+use crate::text::sdk_bytes_from_chars;
 
 use super::frame::{data_len_from_raw, info_from_raw};
 use crate::callback::EventInfo;
@@ -110,12 +111,7 @@ pub(super) unsafe extern "C" fn event_trampoline(
             let Some(raw) = info.as_ref() else {
                 return;
             };
-            let name_len = raw
-                .EventName
-                .iter()
-                .position(|&byte| byte == 0)
-                .unwrap_or(raw.EventName.len());
-            let name = slice::from_raw_parts(raw.EventName.as_ptr().cast::<u8>(), name_len);
+            let name = sdk_bytes_from_chars(&raw.EventName);
             let event = EventInfo::new(
                 name,
                 raw.nEventID,

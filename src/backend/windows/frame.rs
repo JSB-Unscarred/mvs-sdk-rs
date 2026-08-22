@@ -8,39 +8,36 @@ use crate::sys;
 use crate::{MvsResult, PixelType};
 
 /// 持有 `MV_CC_GetImageBuffer` 返回的 buffer，并负责一次归还。
+///
+/// metadata 现算自 `raw.stFrameInfo`，不另存副本。
 pub(crate) struct FrameGuard<'cam> {
     raw: sys::MV_FRAME_OUT,
     handle: *mut c_void,
-    info: FrameInfo,
-    data_len: usize,
     _marker: PhantomData<&'cam ()>,
 }
 
 impl<'cam> FrameGuard<'cam> {
     pub(crate) fn new(handle: *mut c_void, raw: sys::MV_FRAME_OUT) -> Self {
-        let info = info_from_raw(&raw.stFrameInfo);
-        let data_len = data_len_from_raw(&raw.stFrameInfo);
         Self {
             raw,
             handle,
-            info,
-            data_len,
             _marker: PhantomData,
         }
     }
 
     pub(crate) fn frame(&self) -> Frame<'_> {
-        let data = if self.data_len == 0 {
+        let data_len = data_len_from_raw(&self.raw.stFrameInfo);
+        let data = if data_len == 0 {
             &[]
         } else {
             // SAFETY: 成功的 GetImageBuffer 按 SDK 契约返回有效 buffer 与长度。
-            unsafe { slice::from_raw_parts(self.raw.pBufAddr, self.data_len) }
+            unsafe { slice::from_raw_parts(self.raw.pBufAddr, data_len) }
         };
-        Frame::from_parts(data, self.info)
+        Frame::from_parts(data, self.info())
     }
 
     pub(crate) fn info(&self) -> FrameInfo {
-        self.info
+        info_from_raw(&self.raw.stFrameInfo)
     }
 
     pub(crate) fn release(&mut self) -> MvsResult<()> {

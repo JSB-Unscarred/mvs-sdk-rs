@@ -18,6 +18,7 @@
 - 测试必须要精简，必要测试要注释说明针对的功能或约定
 - 修改代码后要同步更新注释和测试
 - 尽可能减少模块、类型、字段、线程和中间状态
+- 新增一个 SDK 接口要同步四处：facade（`src/camera.rs` 或 `src/library.rs`）、`src/backend/windows/`、`src/backend/unsupported.rs`、README 接口表；改动生命周期时一并更新对应时序图
 
 # Git
 

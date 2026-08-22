@@ -1,10 +1,10 @@
 use std::net::Ipv4Addr;
 use std::os::raw::c_void;
 
-use crate::device::DecodedDevice;
+use crate::device::DeviceProperties;
 use crate::error::check;
 use crate::sys;
-use crate::text::{SdkText, sdk_bytes_from_cstr_array};
+use crate::text::{SdkText, sdk_bytes};
 use crate::{AccessMode, MvsResult, TransportLayer};
 
 /// 枚举设备并复制 SDK 管理的临时记录。
@@ -54,10 +54,10 @@ impl DeviceInfo {
         &self.raw
     }
 
-    pub(crate) fn decode(&self) -> DecodedDevice {
+    pub(crate) fn decode(&self) -> DeviceProperties {
         let metadata = self.metadata();
         let (current_ip, current_subnet_mask, default_gateway, host_nic_ip) = self.gige_addresses();
-        DecodedDevice {
+        DeviceProperties {
             major_version: self.raw.nMajorVer,
             minor_version: self.raw.nMinorVer,
             mac_address: mac_from_parts(self.raw.nMacAddrHigh, self.raw.nMacAddrLow),
@@ -82,10 +82,13 @@ impl DeviceInfo {
         }
     }
 
+    /// union arm 选择必须精确匹配单一 device type 值，与 `metadata()` 的 GigE arm 同源。
+    /// 面向调用方的位集判定见 [`TransportLayer::is_gige`]。
     fn is_gige_transport(&self) -> bool {
-        self.raw.nTLayerType == sys::MV_GIGE_DEVICE
-            || self.raw.nTLayerType == sys::MV_VIR_GIGE_DEVICE
-            || self.raw.nTLayerType == sys::MV_GENTL_GIGE_DEVICE
+        matches!(
+            self.raw.nTLayerType,
+            sys::MV_GIGE_DEVICE | sys::MV_VIR_GIGE_DEVICE | sys::MV_GENTL_GIGE_DEVICE
+        )
     }
 
     fn metadata(&self) -> Option<DeviceMetadata<'_>> {
@@ -212,7 +215,7 @@ impl DeviceInfo {
 }
 
 fn sdk_text(bytes: Option<&[u8]>) -> SdkText {
-    SdkText::from_sdk_bytes(bytes.map(sdk_bytes_from_cstr_array).unwrap_or_default())
+    SdkText::from_sdk_bytes(bytes.map(sdk_bytes).unwrap_or_default().to_vec())
 }
 
 fn mac_from_parts(high: u32, low: u32) -> [u8; 8] {

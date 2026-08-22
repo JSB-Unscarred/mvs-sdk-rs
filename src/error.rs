@@ -8,6 +8,7 @@ use std::ffi::NulError;
 use std::fmt;
 use std::os::raw::c_int;
 
+use crate::library::Sdk;
 use crate::sys;
 
 /// Crate-wide result alias.
@@ -87,6 +88,70 @@ impl std::error::Error for CleanupError {
                 self.destroy_error()
                     .map(|error| error as &(dyn std::error::Error + 'static))
             })
+    }
+}
+
+/// [`Sdk::shutdown`] 返回的失败结果。
+///
+/// 只有"其它 session owner 存活"是可恢复情形，此时归还 `Sdk`，调用方关闭相机后
+/// 可重试；orphan handle 与 Finalize 失败都已消费本进程唯一的 Finalize 机会，
+/// 属于终态，不归还 owner。
+pub struct ShutdownError {
+    sdk: Option<Sdk>,
+    error: MvsError,
+}
+
+impl ShutdownError {
+    /// 可恢复情形：归还 `Sdk`。
+    pub(crate) fn recoverable(sdk: Sdk, error: MvsError) -> Self {
+        Self {
+            sdk: Some(sdk),
+            error,
+        }
+    }
+
+    /// 终态情形：Finalize 机会已消费。
+    pub(crate) fn terminal(error: MvsError) -> Self {
+        Self { sdk: None, error }
+    }
+
+    /// 返回本次 shutdown 失败的原因。
+    pub fn error(&self) -> &MvsError {
+        &self.error
+    }
+
+    /// 可恢复情形返回被归还的 `Sdk`；终态返回 `None`。
+    pub fn into_sdk(self) -> Option<Sdk> {
+        self.sdk
+    }
+}
+
+impl fmt::Debug for ShutdownError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShutdownError")
+            .field("error", &self.error)
+            .field("recoverable", &self.sdk.is_some())
+            .finish()
+    }
+}
+
+impl fmt::Display for ShutdownError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.sdk.is_some() {
+            write!(
+                f,
+                "SDK shutdown was rejected and the Sdk was returned: {}",
+                self.error
+            )
+        } else {
+            write!(f, "SDK shutdown failed terminally: {}", self.error)
+        }
+    }
+}
+
+impl std::error::Error for ShutdownError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
     }
 }
 
@@ -296,6 +361,9 @@ pub enum MvsError {
     Nul(#[from] NulError),
 
     /// The operation conflicts with the safe wrapper's current state.
+    ///
+    /// 内含字符串仅用于诊断，调用方不应据此分支：这些情形都是调用方时序错误，
+    /// 且都不可程序化恢复，细分 variant 只会增加匹配面。
     #[error("invalid state: {0}")]
     InvalidState(&'static str),
 
@@ -419,12 +487,6 @@ define_sdk_error_codes! {
     UpgUnknown => sys::MV_E_UPG_UNKNOW,
 }
 
-impl From<u32> for MvsError {
-    fn from(code: u32) -> Self {
-        Self::from(code as c_int)
-    }
-}
-
 /// Convert an SDK return code to a `MvsResult<()>`.
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 pub(crate) fn check(code: c_int) -> MvsResult<()> {
@@ -455,8 +517,8 @@ mod tests {
     // 核心错误约定：未知 native code 必须无损保留。
     #[test]
     fn unknown_sdk_code_is_preserved() {
-        let code = 0xDEAD_BEEF;
-        assert_eq!(MvsError::from(code).raw_code(), Some(code));
+        let code: u32 = 0xDEAD_BEEF;
+        assert_eq!(MvsError::from(code as c_int).raw_code(), Some(code));
     }
 
     // safe wrapper 本地错误不得伪装成 native 返回码。

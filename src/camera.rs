@@ -8,17 +8,14 @@ use std::sync::Arc;
 
 use crate::backend;
 use crate::callback::EventInfo;
-use crate::frame::{Frame, FrameGuard};
+use crate::frame::{Frame, FrameGuard, OwnedFrame};
 use crate::library::RuntimeCore;
 use crate::text::SdkText;
-use crate::{AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsError, MvsResult};
+use crate::{AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsResult, Timeout};
 
 pub(crate) type ImageCallback = Arc<dyn Fn(&Frame<'_>) + Send + Sync + 'static>;
 pub(crate) type ExceptionCallback = Arc<dyn Fn(u32) + Send + Sync + 'static>;
 pub(crate) type EventCallback = Arc<dyn Fn(&EventInfo<'_>) + Send + Sync + 'static>;
-
-/// Windows `INFINITE`；有限等待 API 拒绝该哨兵，无限等待使用 blocking 方法。
-const INFINITE_WAIT_MS: u32 = u32::MAX;
 
 /// 已打开的 MVS 相机。
 ///
@@ -28,6 +25,12 @@ const INFINITE_WAIT_MS: u32 = u32::MAX;
 /// 取流与 callback 注册状态只在对应 native 调用返回 `MV_OK` 后更新；
 /// native 失败保留调用前状态并返回原错误，本地顺序冲突返回
 /// [`crate::MvsError::InvalidState`]。
+///
+/// 幂等约定：释放类操作（[`Camera::stop_grabbing`]、`unregister_*`）在目标状态
+/// 已达成时返回 `Ok(())`，便于 teardown 路径无条件调用；建立类操作
+/// （[`Camera::start_grabbing`]、`register_*`）在状态已存在时返回
+/// [`crate::MvsError::InvalidState`]，因为重复调用意味着调用方状态机出错，
+/// 且第二次注册会静默顶掉上一个 closure。
 pub struct Camera {
     inner: backend::Camera,
     _not_sync: PhantomData<Cell<()>>,
@@ -68,7 +71,7 @@ impl Camera {
     /// [`Frame::to_owned`]。callback 内 panic 在 FFI 边界终止进程。
     /// 业务错误应由 closure 通过 channel 通知 owner；它们不会成为本注册调用的
     /// `MvsResult`。当前线程位于 MVS callback 时，生命周期操作返回
-    /// [`MvsError::InvalidState`]；`close` / `Drop` 则终止进程。
+    /// [`crate::MvsError::InvalidState`]；`close` / `Drop` 则终止进程。
     ///
     /// callback 由 SDK thread 调用，因此 capture 必须 `Send + Sync`：
     ///
@@ -88,7 +91,7 @@ impl Camera {
         self.inner.register_image_callback(Arc::new(callback))
     }
 
-    /// 注销 image callback。
+    /// 注销 image callback；未注册时直接返回 `Ok(())`。
     ///
     /// 返回后不再开始新的 Rust 调用；已经进入 trampoline 的调用可短暂继续，
     /// 其 closure 由独立 Arc 保活。
@@ -101,46 +104,29 @@ impl Camera {
         self.inner.start_grabbing()
     }
 
-    /// 停止取流。
+    /// 停止取流；未取流时直接返回 `Ok(())`。
     pub fn stop_grabbing(&mut self) -> MvsResult<()> {
         self.inner.stop_grabbing()
     }
 
-    /// polling 模式下获取一帧 SDK buffer，`timeout_ms` 为有限等待。
+    /// polling 模式下获取一帧 SDK buffer。
     ///
-    /// `u32::MAX` 是 SDK 的无限等待哨兵，请改用 [`Self::get_image_buffer_blocking`]。
     /// guard 借用相机并在 [`FrameGuard::release`] 或 `Drop` 时归还 buffer。
-    pub fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
+    /// 无限等待传 [`Timeout::Infinite`]。
+    pub fn get_image_buffer(&self, timeout: Timeout) -> MvsResult<FrameGuard<'_>> {
         self.inner
-            .get_image_buffer(finite_timeout_ms(timeout_ms)?)
-            .map(FrameGuard::new)
-    }
-
-    /// polling 模式下无限等待一帧 SDK buffer。
-    pub fn get_image_buffer_blocking(&self) -> MvsResult<FrameGuard<'_>> {
-        self.inner
-            .get_image_buffer(INFINITE_WAIT_MS)
+            .get_image_buffer(timeout.raw())
             .map(FrameGuard::new)
     }
 
     /// polling 模式下获取并复制一帧，同时显式归还 SDK buffer。
     ///
-    /// `u32::MAX` 请改用 [`Self::get_owned_frame_blocking`]。
     /// buffer release 失败会覆盖已完成的 owned copy 并返回对应错误，避免调用方误以为
     /// 本次 native buffer 已正常归还。
-    pub fn get_owned_frame(&mut self, timeout_ms: u32) -> MvsResult<crate::OwnedFrame> {
-        self.owned_frame_with_timeout(finite_timeout_ms(timeout_ms)?)
-    }
-
-    /// polling 模式下无限等待、复制一帧并显式归还 SDK buffer。
-    pub fn get_owned_frame_blocking(&mut self) -> MvsResult<crate::OwnedFrame> {
-        self.owned_frame_with_timeout(INFINITE_WAIT_MS)
-    }
-
-    fn owned_frame_with_timeout(&mut self, timeout_ms: u32) -> MvsResult<crate::OwnedFrame> {
+    pub fn get_owned_frame(&self, timeout: Timeout) -> MvsResult<OwnedFrame> {
         let frame = self
             .inner
-            .get_image_buffer(timeout_ms)
+            .get_image_buffer(timeout.raw())
             .map(FrameGuard::new)?;
         let owned = frame.to_owned();
         frame.release()?;
@@ -217,7 +203,7 @@ impl Camera {
         self.inner.register_exception_callback(Arc::new(callback))
     }
 
-    /// 注销 exception callback；已经进入的调用可短暂继续。
+    /// 注销 exception callback；未注册时直接返回 `Ok(())`，已经进入的调用可短暂继续。
     pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_exception_callback()
     }
@@ -231,7 +217,7 @@ impl Camera {
             .register_event_callback(event_name, Arc::new(callback))
     }
 
-    /// 注销一个 named event callback；已经进入的调用可短暂继续。
+    /// 注销一个 named event callback；未注册时直接返回 `Ok(())`。
     pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
         self.inner.unregister_event_callback(event_name)
     }
@@ -256,38 +242,8 @@ impl Camera {
     }
 }
 
-fn finite_timeout_ms(timeout_ms: u32) -> MvsResult<u32> {
-    if timeout_ms == INFINITE_WAIT_MS {
-        Err(MvsError::InvalidState(
-            "u32::MAX selects infinite wait; call the blocking method instead",
-        ))
-    } else {
-        Ok(timeout_ms)
-    }
-}
-
 impl fmt::Debug for Camera {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.inner, f)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{INFINITE_WAIT_MS, finite_timeout_ms};
-    use crate::MvsError;
-
-    // 有限等待 API 拒绝 SDK 无限等待哨兵，避免与 blocking 入口混淆。
-    #[test]
-    fn finite_timeout_rejects_infinite_sentinel() {
-        assert!(matches!(
-            finite_timeout_ms(INFINITE_WAIT_MS),
-            Err(MvsError::InvalidState(_))
-        ));
-        assert_eq!(finite_timeout_ms(0).unwrap(), 0);
-        assert_eq!(
-            finite_timeout_ms(INFINITE_WAIT_MS - 1).unwrap(),
-            u32::MAX - 1
-        );
     }
 }

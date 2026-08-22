@@ -22,6 +22,10 @@ impl SdkText {
     }
 
     /// 接受 FFI 已按 NUL 截断的 SDK 字段。
+    #[cfg(any(
+        test,
+        all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
+    ))]
     pub(crate) fn from_sdk_bytes(bytes: Vec<u8>) -> Self {
         debug_assert!(!bytes.contains(&0));
         Self(bytes)
@@ -95,18 +99,33 @@ impl TryFrom<&str> for SdkText {
     }
 }
 
-/// 按首个 NUL 截取 SDK 固定字段。
-pub(crate) fn sdk_bytes_from_cstr_array(bytes: &[u8]) -> Vec<u8> {
+/// 按首个 NUL 截取 SDK 固定字节数组。
+#[cfg(any(
+    test,
+    all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
+))]
+pub(crate) fn sdk_bytes(bytes: &[u8]) -> &[u8] {
     let end = bytes
         .iter()
         .position(|&byte| byte == 0)
         .unwrap_or(bytes.len());
-    bytes[..end].to_vec()
+    &bytes[..end]
+}
+
+/// `char` 数组版本；`c_char` 与 `u8` 同大小同对齐，重解释只在此处发生。
+#[cfg(any(
+    test,
+    all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
+))]
+pub(crate) fn sdk_bytes_from_chars(chars: &[std::os::raw::c_char]) -> &[u8] {
+    // SAFETY: 只重解释固定数组中已初始化的字节，长度不变。
+    let bytes = unsafe { std::slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) };
+    sdk_bytes(bytes)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SdkText;
+    use super::{SdkText, sdk_bytes, sdk_bytes_from_chars};
     use crate::MvsError;
 
     // 验证 SDK 文本保留非 UTF-8 字节，并拒绝 interior NUL。
@@ -116,5 +135,14 @@ mod tests {
         assert_eq!(text.as_bytes(), &[0x66, 0x80, 0x6F]);
         assert!(text.to_str().is_err());
         assert!(matches!(SdkText::new(b"a\0b"), Err(MvsError::Nul(_))));
+    }
+
+    // SDK 固定数组按首个 NUL 截取，无 NUL 时取满整个字段。
+    #[test]
+    fn fixed_arrays_are_cut_at_the_first_nul() {
+        assert_eq!(sdk_bytes(b"MV-CA\0\0\0"), b"MV-CA");
+        assert_eq!(sdk_bytes(b"MV-CA"), b"MV-CA");
+        let chars: [std::os::raw::c_char; 5] = [b'M' as _, b'V' as _, 0, b'X' as _, b'Y' as _];
+        assert_eq!(sdk_bytes_from_chars(&chars), b"MV");
     }
 }

@@ -23,7 +23,7 @@ sequenceDiagram
         Camera->>Native: MV_CC_CloseDevice()
         Camera->>Native: MV_CC_DestroyHandle()
         alt DestroyHandle 成功
-            Camera->>Slots: 释放 Box slots
+            Camera->>Slots: Box slots 随 Camera 释放
             Camera->>Runtime: 释放 session lease
             Camera-->>Caller: Ok 或 CleanupError(首个失败操作与错误, destroyed=true)
         else DestroyHandle 失败

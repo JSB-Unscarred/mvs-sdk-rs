@@ -200,10 +200,10 @@ impl fmt::Debug for OwnedFrame {
 /// an error, so use [`FrameGuard::release`] when release failures matter.
 ///
 /// ```compile_fail
-/// use mvs_sdk_rs::Camera;
+/// use mvs_sdk_rs::{Camera, Timeout};
 ///
 /// fn close_with_live_buffer(camera: Camera) {
-///     let frame = camera.get_image_buffer(0).unwrap();
+///     let frame = camera.get_image_buffer(Timeout::Finite(0)).unwrap();
 ///     drop(camera);
 ///     drop(frame);
 /// }

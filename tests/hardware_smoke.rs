@@ -8,7 +8,7 @@ use std::error::Error;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use mvs_sdk_rs::{AccessMode, Sdk, TransportLayer};
+use mvs_sdk_rs::{AccessMode, Sdk, Timeout, TransportLayer};
 
 // 验证 polling、callback 两条核心取流链和完整资源清理。
 #[test]
@@ -22,13 +22,14 @@ fn real_camera_data_flow_smoke() -> Result<(), Box<dyn Error>> {
         let mut polling = sdk.open(device, AccessMode::Exclusive, 0)?;
         hardware_support::require_trigger_off(&polling)?;
         polling.start_grabbing()?;
-        let frame = polling.get_image_buffer(hardware_support::FRAME_TIMEOUT_MS)?;
+        let timeout = Timeout::Finite(hardware_support::FRAME_TIMEOUT_MS);
+        let frame = polling.get_image_buffer(timeout)?;
         assert_eq!(
             frame.frame().data().len(),
             frame.info().frame_len() as usize
         );
         frame.release()?;
-        let owned = polling.get_owned_frame(hardware_support::FRAME_TIMEOUT_MS)?;
+        let owned = polling.get_owned_frame(timeout)?;
         assert_eq!(owned.data().len(), owned.info().frame_len() as usize);
         polling.stop_grabbing()?;
         polling.close()?;
@@ -47,6 +48,7 @@ fn real_camera_data_flow_smoke() -> Result<(), Box<dyn Error>> {
         callback.stop_grabbing()?;
         callback.close()?;
     }
+    // ShutdownError 实现 std::error::Error，可直接经 `?` 上抛。
     sdk.shutdown()?;
     Ok(())
 }

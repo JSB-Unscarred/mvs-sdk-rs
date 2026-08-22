@@ -1,10 +1,12 @@
+//! 非 Windows x86_64 MSVC 目标的同形 backend；所有 native 入口返回平台错误。
+
+use std::convert::Infallible;
 use std::marker::PhantomData;
-use std::net::Ipv4Addr;
 use std::os::raw::c_void;
 use std::sync::Arc;
 
 use crate::camera::{EventCallback, ExceptionCallback, ImageCallback};
-use crate::device::DecodedDevice;
+use crate::device::DeviceProperties;
 use crate::frame::{Frame, FrameInfo};
 use crate::library::RuntimeCore;
 use crate::text::SdkText;
@@ -36,28 +38,13 @@ pub(crate) fn enumerate_devices(_layers: TransportLayer) -> MvsResult<Vec<Device
     unsupported()
 }
 
+/// 枚举在该平台恒失败，因此本值不会被构造，`decode` 不再编造字段。
 #[derive(Clone)]
 pub(crate) struct DeviceInfo;
 
 impl DeviceInfo {
-    pub(crate) fn decode(&self) -> DecodedDevice {
-        DecodedDevice {
-            major_version: 0,
-            minor_version: 0,
-            mac_address: [0; 8],
-            transport_layer: TransportLayer::UNKNOWN,
-            device_type_info: 0,
-            manufacturer: SdkText::from_sdk_bytes(Vec::new()),
-            model: SdkText::from_sdk_bytes(Vec::new()),
-            device_version: SdkText::from_sdk_bytes(Vec::new()),
-            manufacturer_specific_info: SdkText::from_sdk_bytes(Vec::new()),
-            serial: SdkText::from_sdk_bytes(Vec::new()),
-            user_defined_name: SdkText::from_sdk_bytes(Vec::new()),
-            current_ip: None,
-            current_subnet_mask: None,
-            default_gateway: None,
-            host_nic_ip: None,
-        }
+    pub(crate) fn decode(&self) -> DeviceProperties {
+        unreachable!("device enumeration is unavailable on this platform")
     }
 
     pub(crate) fn is_accessible(&self, _mode: AccessMode) -> bool {
@@ -194,21 +181,22 @@ impl Camera {
     }
 }
 
+/// 取图在该平台恒失败，因此该 guard 不可构造；`'cam` 仍需保留以匹配公开签名。
 pub(crate) struct FrameGuard<'cam> {
-    info: FrameInfo,
+    never: Infallible,
     _marker: PhantomData<&'cam ()>,
 }
 
 impl FrameGuard<'_> {
     pub(crate) fn frame(&self) -> Frame<'_> {
-        Frame::from_parts(&[], self.info)
+        match self.never {}
     }
 
     pub(crate) fn info(&self) -> FrameInfo {
-        self.info
+        match self.never {}
     }
 
     pub(crate) fn release(&mut self) -> MvsResult<()> {
-        Ok(())
+        match self.never {}
     }
 }

@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::backend;
 use crate::camera::Camera;
 use crate::device::DeviceInfo;
+use crate::error::ShutdownError;
 use crate::{AccessMode, MvsError, MvsResult, TransportLayer};
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
@@ -51,18 +52,19 @@ impl RuntimeCore {
     }
 
     /// 记录 CreateHandle 已写出的非空 handle。
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
     pub(crate) fn native_handle_created(&self) {
         self.live_native_handles.fetch_add(1, Ordering::AcqRel);
     }
 
     /// 记录 DestroyHandle 已确认销毁的 handle。
+    ///
+    /// 计数由 `NativeHandle` 的创建与销毁成对维护，因此下溢是内部 bug；
+    /// release 下的绕回会让计数非零并继续阻止 Finalize，方向偏保守。
+    #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
     pub(crate) fn native_handle_destroyed(&self) {
-        let previous =
-            self.live_native_handles
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                    count.checked_sub(1)
-                });
-        debug_assert!(previous.is_ok(), "native handle count underflowed");
+        let previous = self.live_native_handles.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "native handle count underflowed");
     }
 
     fn orphaned_native_handles_live(&self) -> bool {
@@ -74,7 +76,7 @@ impl RuntimeCore {
 ///
 /// `Camera` 内部持有同一 session 的 lease，因此不借用本值。Initialize 每个进程
 /// 最多尝试一次；普通 Drop 跳过 Finalize，正常路径应在其它 session owner 释放后调用
-/// [`Sdk::shutdown`]。
+/// [`Sdk::shutdown`]；相机尚未关闭时该方法归还本值供重试。
 pub struct Sdk {
     runtime: Arc<RuntimeCore>,
 }
@@ -151,19 +153,29 @@ impl Sdk {
 
     /// 消费唯一入口并反初始化 SDK。
     ///
-    /// 其它 session owner 存在时返回 [`MvsError::InvalidState`]。owner 已消费但
-    /// `DestroyHandle` 未确认成功时返回 [`MvsError::NativeHandlesLive`]。两种错误均不
-    /// 调用 Finalize，调用方应按终止进程处理；本方法消费 `Sdk`，不能重试。
-    pub fn shutdown(self) -> MvsResult<()> {
-        let runtime = Arc::try_unwrap(self.runtime).map_err(|_| {
-            MvsError::InvalidState("all cameras must be dropped before SDK shutdown")
-        })?;
-
-        if runtime.orphaned_native_handles_live() {
-            return Err(MvsError::NativeHandlesLive);
+    /// 其它 session owner 存在是可恢复情形：本方法归还 `Sdk`，调用方关闭相机后可重试，
+    /// 通过 [`ShutdownError::into_sdk`] 取回。owner 已消费但 `DestroyHandle` 未确认成功
+    /// 返回 [`MvsError::NativeHandlesLive`]，Finalize 失败返回原 native 错误；这两种
+    /// 情形本进程的 Finalize 机会已消费，不归还 `Sdk`，调用方应按终止进程处理。
+    pub fn shutdown(self) -> Result<(), ShutdownError> {
+        // 本方法按值持有 `Sdk`，期间不存在 `&Sdk` 可再 clone lease；并发 Drop 的 Camera
+        // 只会让计数下降，因此计数检查偏保守且无竞争。
+        if Arc::strong_count(&self.runtime) != 1 {
+            return Err(ShutdownError::recoverable(
+                self,
+                MvsError::InvalidState("all cameras must be dropped before SDK shutdown"),
+            ));
         }
 
-        runtime.inner.finalize()
+        // 上一步已确认本值是唯一 owner。
+        let runtime = Arc::into_inner(self.runtime).expect("sole session owner");
+
+        // 相机全部关闭后仍有 live handle，说明 DestroyHandle 未确认成功。
+        if runtime.orphaned_native_handles_live() {
+            return Err(ShutdownError::terminal(MvsError::NativeHandlesLive));
+        }
+
+        runtime.inner.finalize().map_err(ShutdownError::terminal)
     }
 }
 

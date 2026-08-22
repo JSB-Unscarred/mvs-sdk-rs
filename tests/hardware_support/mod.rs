@@ -20,7 +20,7 @@ pub(crate) fn test_device(devices: &[DeviceInfo]) -> Result<&DeviceInfo, Box<dyn
     let serial = test_camera_serial()?;
     devices
         .iter()
-        .find(|device| device.serial.as_bytes() == serial.as_bytes())
+        .find(|device| device.properties.serial.as_bytes() == serial.as_bytes())
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
