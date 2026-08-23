@@ -89,7 +89,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// 取流未停止、已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
+    /// 取流未停止、已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
     pub fn register_image_callback<F>(&mut self, callback: F) -> MvsResult<()>
     where
         F: Fn(&Frame<'_>) + Send + Sync + 'static,
@@ -104,7 +104,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// 取流未停止或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
+    /// 取流未停止或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_image_callback()
     }
@@ -113,7 +113,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// 已在取流或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 启动失败返回原错误。
+    /// 已在取流或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 启动失败返回原错误。
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }
@@ -122,7 +122,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 停止失败返回原错误。
+    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 停止失败返回原错误。
     pub fn stop_grabbing(&mut self) -> MvsResult<()> {
         self.inner.stop_grabbing()
     }
@@ -273,7 +273,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// 已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
+    /// 已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> MvsResult<()>
     where
         F: Fn(u32) + Send + Sync + 'static,
@@ -285,7 +285,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
+    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
     pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_exception_callback()
     }
@@ -294,7 +294,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// 同名 event 已有注册、`event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回对应错误；native 注册失败返回原错误。
+    /// 同名 event 已有注册、`event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回对应错误；native 注册失败返回原错误。
     pub fn register_event_callback<F>(&mut self, event_name: &str, callback: F) -> MvsResult<()>
     where
         F: Fn(&EventInfo<'_>) + Send + Sync + 'static,
@@ -307,7 +307,7 @@ impl Camera {
     ///
     /// # Errors
     ///
-    /// `event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回对应错误；native 注销失败返回原错误。
+    /// `event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回对应错误；native 注销失败返回原错误。
     pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
         self.inner.unregister_event_callback(event_name)
     }

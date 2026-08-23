@@ -31,14 +31,15 @@ impl FrameGuard<'_> {
     }
 
     pub(crate) fn frame(&self) -> Frame<'_> {
-        let data_len = data_len_from_raw(&self.raw.stFrameInfo);
+        let info = self.info();
+        let data_len = data_len(&info);
         let data = if data_len == 0 {
             &[]
         } else {
             // SAFETY: 成功的 GetImageBuffer 按 SDK 契约返回有效 buffer 与长度。
             unsafe { slice::from_raw_parts(self.raw.pBufAddr, data_len) }
         };
-        Frame::from_parts(data, self.info())
+        Frame::from_parts(data, info)
     }
 
     pub(crate) fn info(&self) -> FrameInfo {
@@ -77,19 +78,24 @@ pub(super) fn info_from_raw(raw: &sys::MV_FRAME_OUT_INFO_EX) -> FrameInfo {
         exposure_time: raw.fExposureTime,
         trigger_index: raw.nTriggerIndex,
         lost_packets: raw.nLostPacket,
-        device_timestamp: (u64::from(raw.nDevTimeStampHigh) << 32)
-            | u64::from(raw.nDevTimeStampLow),
+        device_timestamp: combine_high_low(raw.nDevTimeStampHigh, raw.nDevTimeStampLow),
         host_timestamp_raw: raw.nHostTimeStamp,
     }
 }
 
-/// 返回 SDK 报告的有效 frame 长度；Windows x64 的 usize 可表示该字段。
+/// 复用 `FrameInfo` 已算出的 frame_len 作 slice 长度，热路径不再二次解析 raw；
+/// Windows x64 的 usize 可表示该字段。
 #[allow(
     clippy::cast_possible_truncation,
     reason = "本 backend 只编译到 Windows x86_64，usize 为 64 位"
 )]
-pub(super) fn data_len_from_raw(raw: &sys::MV_FRAME_OUT_INFO_EX) -> usize {
-    frame_len_from_raw(raw) as usize
+pub(super) const fn data_len(info: &FrameInfo) -> usize {
+    info.frame_len as usize
+}
+
+/// 合并 SDK 拆成高低位的 32 位字段对。
+pub(super) fn combine_high_low(high: u32, low: u32) -> u64 {
+    (u64::from(high) << 32) | u64::from(low)
 }
 
 fn extended_or_legacy(extended: u32, legacy: u16) -> u32 {

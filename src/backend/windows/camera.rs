@@ -540,10 +540,9 @@ impl Camera {
             check(unsafe { sys::MV_CC_CloseDevice(raw_handle) }),
         );
         let destroy_error = handle.destroy(&self.runtime).err();
-        let destroyed = destroy_error.is_none();
 
         self.grabbing = false;
-        if destroyed {
+        if destroy_error.is_none() {
             self.event_cbs.clear();
         } else {
             // Destroy 失败时 native 仍可能保存 pUser，只遗留对应的空 Box slot。
@@ -553,7 +552,7 @@ impl Camera {
         if prior_error.is_none() && destroy_error.is_none() {
             Ok(())
         } else {
-            Err(CleanupError::new(prior_error, destroy_error, destroyed))
+            Err(CleanupError::new(prior_error, destroy_error))
         }
     }
 

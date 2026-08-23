@@ -82,7 +82,7 @@ impl DeviceInfo {
         }
     }
 
-    /// union arm 选择必须精确匹配单一 device type 值，与 `metadata()` 的 `GigE` arm 同源。
+    /// union arm 选择必须精确匹配单一 device type 值，`metadata()` 的 `GigE` arm 复用本判定。
     /// 面向调用方的位集判定见 [`TransportLayer::is_gige`]。
     fn is_gige_transport(&self) -> bool {
         matches!(
@@ -93,7 +93,7 @@ impl DeviceInfo {
 
     fn metadata(&self) -> Option<DeviceMetadata<'_>> {
         match self.raw.nTLayerType {
-            sys::MV_GIGE_DEVICE | sys::MV_VIR_GIGE_DEVICE | sys::MV_GENTL_GIGE_DEVICE => {
+            _ if self.is_gige_transport() => {
                 // SAFETY: transport type 选择 GigE union arm。
                 let info = unsafe { &self.raw.SpecialInfo.stGigEInfo };
                 Some(DeviceMetadata {

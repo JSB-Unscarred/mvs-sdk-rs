@@ -10,7 +10,7 @@ use crate::frame::Frame;
 use crate::sys;
 use crate::text::sdk_bytes_from_chars;
 
-use super::frame::{data_len_from_raw, info_from_raw};
+use super::frame::{combine_high_low, data_len, info_from_raw};
 use crate::callback::EventInfo;
 
 thread_local! {
@@ -84,7 +84,7 @@ pub(super) unsafe extern "C" fn image_trampoline(
                 return;
             };
             let info = info_from_raw(&raw.stFrameInfo);
-            let len = data_len_from_raw(&raw.stFrameInfo);
+            let len = data_len(&info);
             let data = if len == 0 {
                 &[]
             } else {
@@ -116,8 +116,8 @@ pub(super) unsafe extern "C" fn event_trampoline(
                 name,
                 raw.nEventID,
                 raw.nStreamChannel,
-                (u64::from(raw.nBlockIdHigh) << 32) | u64::from(raw.nBlockIdLow),
-                (u64::from(raw.nTimestampHigh) << 32) | u64::from(raw.nTimestampLow),
+                combine_high_low(raw.nBlockIdHigh, raw.nBlockIdLow),
+                combine_high_low(raw.nTimestampHigh, raw.nTimestampLow),
             );
             function(&event);
         });

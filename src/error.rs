@@ -23,7 +23,6 @@ pub type MvsResult<T> = Result<T, MvsError>;
 pub struct CleanupError {
     prior_error: Option<(&'static str, MvsError)>,
     destroy_error: Option<MvsError>,
-    native_handle_destroyed: bool,
 }
 
 impl CleanupError {
@@ -34,12 +33,10 @@ impl CleanupError {
     pub(crate) const fn new(
         prior_error: Option<(&'static str, MvsError)>,
         destroy_error: Option<MvsError>,
-        native_handle_destroyed: bool,
     ) -> Self {
         Self {
             prior_error,
             destroy_error,
-            native_handle_destroyed,
         }
     }
 
@@ -61,10 +58,10 @@ impl CleanupError {
         self.destroy_error.as_ref()
     }
 
-    /// 返回 native handle 是否已由 `DestroyHandle` 确认销毁。
+    /// 返回 native handle 是否已由 `DestroyHandle` 确认销毁，即无 Destroy 错误。
     #[must_use]
     pub const fn native_handle_destroyed(&self) -> bool {
-        self.native_handle_destroyed
+        self.destroy_error.is_none()
     }
 }
 
@@ -544,7 +541,6 @@ mod tests {
         let error = CleanupError::new(
             Some(("StopGrabbing", MvsError::CallOrder)),
             Some(MvsError::Handle),
-            false,
         );
 
         assert_eq!(error.prior_operation(), Some("StopGrabbing"));
@@ -561,7 +557,7 @@ mod tests {
             Some(sys::MV_E_CALLORDER)
         );
 
-        let destroy_only = CleanupError::new(None, Some(MvsError::Handle), false);
+        let destroy_only = CleanupError::new(None, Some(MvsError::Handle));
         assert_eq!(
             std::error::Error::source(&destroy_only).and_then(|source| {
                 source
