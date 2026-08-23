@@ -1,7 +1,7 @@
-//! Build script for mvs_sdk_sys.
+//! Build script for `mvs_sdk_sys`.
 //!
 //! Responsibilities:
-//!   1. Skip MVS SDK link configuration outside Windows x86_64 MSVC.
+//!   1. Skip MVS SDK link configuration outside Windows `x86_64` MSVC.
 //!   2. Locate the MVS SDK via `MVCAM_COMMON_RUNENV` and emit link directives.
 
 use std::env;
@@ -25,28 +25,24 @@ fn main() {
         return;
     }
 
-    let mvcam = match env::var("MVCAM_COMMON_RUNENV") {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => {
-            println!(
-                "cargo:warning=MVCAM_COMMON_RUNENV is not set. `cargo check` will still work, \
-                 but linking requires the MVS SDK. Example: \
-                 set \"MVCAM_COMMON_RUNENV=C:\\Program Files (x86)\\MVS\\Development\""
-            );
-            return;
-        }
+    let Ok(mvcam) = env::var("MVCAM_COMMON_RUNENV").map(PathBuf::from) else {
+        println!(
+            "cargo:warning=MVCAM_COMMON_RUNENV is not set. `cargo check` will still work, \
+             but linking requires the MVS SDK. Example: \
+             set \"MVCAM_COMMON_RUNENV=C:\\Program Files (x86)\\MVS\\Development\""
+        );
+        return;
     };
 
     let lib_dir = mvcam.join("Libraries").join("win64");
 
-    if !lib_dir.exists() {
-        panic!(
-            "MVS library directory does not exist: {}\n\
-             Verify that the MVS SDK is installed at MVCAM_COMMON_RUNENV = {}.",
-            lib_dir.display(),
-            mvcam.display()
-        );
-    }
+    assert!(
+        lib_dir.exists(),
+        "MVS library directory does not exist: {}\n\
+         Verify that the MVS SDK is installed at MVCAM_COMMON_RUNENV = {}.",
+        lib_dir.display(),
+        mvcam.display()
+    );
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=MvCameraControl");

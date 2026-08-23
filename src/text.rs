@@ -16,6 +16,10 @@ pub struct SdkText(Vec<u8>);
 
 impl SdkText {
     /// 从调用方字节构造；拒绝 interior NUL，避免后续写成 C 字符串时截断。
+    ///
+    /// # Errors
+    ///
+    /// `bytes` 含 interior NUL 时返回 [`crate::MvsError::Nul`]。
     pub fn new(bytes: impl AsRef<[u8]>) -> MvsResult<Self> {
         let cstr = CString::new(bytes.as_ref())?;
         Ok(Self(cstr.into_bytes()))
@@ -31,30 +35,40 @@ impl SdkText {
         Self(bytes)
     }
 
+    /// 借出原始字节，不含结尾 NUL。
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
+    /// 返回字节数，不是字符数。
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.len()
     }
 
+    /// 返回是否为空字节序列。
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
+    /// 按 UTF-8 解释字节。
+    ///
+    /// # Errors
+    ///
+    /// 字节不是合法 UTF-8 时返回 [`Utf8Error`]，常见于 GBK 编码的设备字符串。
     pub fn to_str(&self) -> Result<&str, Utf8Error> {
         std::str::from_utf8(&self.0)
     }
 
+    /// 按 UTF-8 解释字节，非法序列替换为 `U+FFFD`。
     #[must_use]
     pub fn to_string_lossy(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.0)
     }
 
+    /// 消费本值并取出底层字节。
     #[must_use]
     pub fn into_bytes(self) -> Vec<u8> {
         self.0
@@ -142,7 +156,13 @@ mod tests {
     fn fixed_arrays_are_cut_at_the_first_nul() {
         assert_eq!(sdk_bytes(b"MV-CA\0\0\0"), b"MV-CA");
         assert_eq!(sdk_bytes(b"MV-CA"), b"MV-CA");
-        let chars: [std::os::raw::c_char; 5] = [b'M' as _, b'V' as _, 0, b'X' as _, b'Y' as _];
+        let chars: [std::os::raw::c_char; 5] = [
+            b'M'.cast_signed(),
+            b'V'.cast_signed(),
+            0,
+            b'X'.cast_signed(),
+            b'Y'.cast_signed(),
+        ];
         assert_eq!(sdk_bytes_from_chars(&chars), b"MV");
     }
 }

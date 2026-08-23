@@ -1,5 +1,6 @@
 //! SDK 初始化、反初始化与设备发现。
 
+use std::fmt;
 #[cfg(any(
     test,
     all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
@@ -35,7 +36,7 @@ fn claim_initialization(claimed: &AtomicBool) -> MvsResult<()> {
 /// 由 `Sdk` 与已打开相机共享的一次性 native session。
 ///
 /// `Arc` 只表达 session lease；相机 handle 仍由对应 `Camera` 唯一拥有。
-/// `live_native_handles` 记录 CreateHandle 已写出、DestroyHandle 尚未确认的 handle。
+/// `live_native_handles` 记录 `CreateHandle` 已写出、DestroyHandle 尚未确认的 handle。
 pub(crate) struct RuntimeCore {
     inner: backend::Sdk,
     enumeration_lock: Mutex<()>,
@@ -43,7 +44,7 @@ pub(crate) struct RuntimeCore {
 }
 
 impl RuntimeCore {
-    fn new(inner: backend::Sdk) -> Self {
+    const fn new(inner: backend::Sdk) -> Self {
         Self {
             inner,
             enumeration_lock: Mutex::new(()),
@@ -51,13 +52,13 @@ impl RuntimeCore {
         }
     }
 
-    /// 记录 CreateHandle 已写出的非空 handle。
+    /// 记录 `CreateHandle` 已写出的非空 handle。
     #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
     pub(crate) fn native_handle_created(&self) {
         self.live_native_handles.fetch_add(1, Ordering::AcqRel);
     }
 
-    /// 记录 DestroyHandle 已确认销毁的 handle。
+    /// 记录 `DestroyHandle` 已确认销毁的 handle。
     ///
     /// 计数由 `NativeHandle` 的创建与销毁成对维护，因此下溢是内部 bug；
     /// release 下的绕回会让计数非零并继续阻止 Finalize，方向偏保守。
@@ -81,6 +82,15 @@ pub struct Sdk {
     runtime: Arc<RuntimeCore>,
 }
 
+impl fmt::Debug for Sdk {
+    /// 报告 session owner 总数；本值算一个，其余是相机持有的 lease。
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sdk")
+            .field("session_owners", &Arc::strong_count(&self.runtime))
+            .finish_non_exhaustive()
+    }
+}
+
 impl Sdk {
     /// 初始化进程级 SDK 资源。
     ///
@@ -100,7 +110,7 @@ impl Sdk {
         })
     }
 
-    /// Windows x86_64 MSVC backend 串行声明唯一一次 native Initialize。
+    /// Windows `x86_64` MSVC backend 串行声明唯一一次 native Initialize。
     #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
     fn initialize_platform() -> MvsResult<Self> {
         claim_initialization(&INITIALIZE_CLAIMED)?;
@@ -112,6 +122,10 @@ impl Sdk {
     }
 
     /// 无需初始化即可查询已安装 SDK 的版本。
+    ///
+    /// # Errors
+    ///
+    /// native 查询失败时返回原错误；非 Windows `x86_64` MSVC 目标返回 [`MvsError::UnsupportedPlatform`]。
     pub fn version() -> MvsResult<u32> {
         backend::Sdk::sdk_version()
     }
@@ -119,6 +133,10 @@ impl Sdk {
     /// 枚举设备并返回 Rust-owned snapshot。
     ///
     /// 枚举锁只覆盖厂商内部列表的生成与复制，返回的设备信息不持有 session lease。
+    ///
+    /// # Errors
+    ///
+    /// native 枚举失败时返回原错误。
     pub fn devices(&self, layers: TransportLayer) -> MvsResult<Vec<DeviceInfo>> {
         let _enumeration = self
             .runtime
@@ -130,13 +148,18 @@ impl Sdk {
     }
 
     /// 查询 owned 设备 snapshot 是否可按指定权限打开。
+    #[must_use]
     pub fn is_accessible(&self, device: &DeviceInfo, mode: AccessMode) -> bool {
         device.is_accessible(mode)
     }
 
     /// 从 owned 设备 snapshot 创建并打开相机。
     ///
-    /// key 仅对 native GigE 设备有意义；其它 transport 由 SDK 忽略。
+    /// key 仅对 native `GigE` 设备有意义；其它 transport 由 SDK 忽略。
+    ///
+    /// # Errors
+    ///
+    /// 设备已被占用、权限不匹配等情形返回原 native 错误；当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]。回滚销毁也失败时返回 [`MvsError::OpenRollback`]。
     pub fn open(
         &self,
         device: &DeviceInfo,
@@ -145,7 +168,7 @@ impl Sdk {
     ) -> MvsResult<Camera> {
         Camera::open(
             Arc::clone(&self.runtime),
-            device.clone_backend(),
+            device.backend(),
             mode,
             switchover_key,
         )
@@ -157,6 +180,14 @@ impl Sdk {
     /// 通过 [`ShutdownError::into_sdk`] 取回。owner 已消费但 `DestroyHandle` 未确认成功
     /// 返回 [`MvsError::NativeHandlesLive`]，Finalize 失败返回原 native 错误；这两种
     /// 情形本进程的 Finalize 机会已消费，不归还 `Sdk`，调用方应按终止进程处理。
+    ///
+    /// # Panics
+    ///
+    /// 不会 panic：取出 runtime 前已确认本值是唯一 session owner。
+    ///
+    /// # Errors
+    ///
+    /// 相机尚未全部释放时返回可恢复的 [`ShutdownError`]，可经 [`ShutdownError::into_sdk`] 取回本值重试；handle 未确认销毁或 Finalize 失败时返回终态错误。
     pub fn shutdown(self) -> Result<(), ShutdownError> {
         // 本方法按值持有 `Sdk`，期间不存在 `&Sdk` 可再 clone lease；并发 Drop 的 Camera
         // 只会让计数下降，因此计数检查偏保守且无竞争。

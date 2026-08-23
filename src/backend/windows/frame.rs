@@ -16,8 +16,13 @@ pub(crate) struct FrameGuard<'cam> {
     _marker: PhantomData<&'cam ()>,
 }
 
-impl<'cam> FrameGuard<'cam> {
-    pub(crate) fn new(handle: *mut c_void, raw: sys::MV_FRAME_OUT) -> Self {
+impl FrameGuard<'_> {
+    // raw 由本 guard 存下并在 FreeImageBuffer 时原样交还 SDK，按值接收即所有权转移。
+    #[allow(
+        clippy::large_types_passed_by_value,
+        reason = "值被 guard 保存，改为借用只会多一次拷贝"
+    )]
+    pub(crate) const fn new(handle: *mut c_void, raw: sys::MV_FRAME_OUT) -> Self {
         Self {
             raw,
             handle,
@@ -48,7 +53,7 @@ impl<'cam> FrameGuard<'cam> {
         }
 
         // SAFETY: handle 与 frame record 均来自同一次 GetImageBuffer。
-        check(unsafe { sys::MV_CC_FreeImageBuffer(handle, &mut self.raw) })
+        check(unsafe { sys::MV_CC_FreeImageBuffer(handle, &raw mut self.raw) })
     }
 }
 
@@ -63,21 +68,26 @@ pub(super) fn info_from_raw(raw: &sys::MV_FRAME_OUT_INFO_EX) -> FrameInfo {
     FrameInfo {
         width: extended_or_legacy(raw.nExtendWidth, raw.nWidth),
         height: extended_or_legacy(raw.nExtendHeight, raw.nHeight),
-        pixel_type: PixelType::from_raw(raw.enPixelType as u32),
+        pixel_type: PixelType::from_raw(raw.enPixelType.cast_unsigned()),
         frame_num: raw.nFrameNum,
         frame_len: frame_len_from_raw(raw),
-        offset_x: raw.nOffsetX as u32,
-        offset_y: raw.nOffsetY as u32,
+        offset_x: u32::from(raw.nOffsetX),
+        offset_y: u32::from(raw.nOffsetY),
         gain: raw.fGain,
         exposure_time: raw.fExposureTime,
         trigger_index: raw.nTriggerIndex,
         lost_packets: raw.nLostPacket,
-        device_timestamp: ((raw.nDevTimeStampHigh as u64) << 32) | raw.nDevTimeStampLow as u64,
+        device_timestamp: (u64::from(raw.nDevTimeStampHigh) << 32)
+            | u64::from(raw.nDevTimeStampLow),
         host_timestamp_raw: raw.nHostTimeStamp,
     }
 }
 
 /// 返回 SDK 报告的有效 frame 长度；Windows x64 的 usize 可表示该字段。
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "本 backend 只编译到 Windows x86_64，usize 为 64 位"
+)]
 pub(super) fn data_len_from_raw(raw: &sys::MV_FRAME_OUT_INFO_EX) -> usize {
     frame_len_from_raw(raw) as usize
 }
@@ -113,7 +123,7 @@ mod tests {
             stFrameInfo: sys::MV_FRAME_OUT_INFO_EX {
                 nWidth: 1,
                 nHeight: 1,
-                enPixelType: PixelType::MONO8.raw() as i32,
+                enPixelType: PixelType::MONO8.raw().cast_signed(),
                 nFrameNum: 11,
                 nFrameLen: 1,
                 nExtendWidth: 4,

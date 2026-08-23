@@ -11,7 +11,7 @@ use crate::{AccessMode, MvsResult, TransportLayer};
 pub(crate) fn enumerate_devices(layers: TransportLayer) -> MvsResult<Vec<DeviceInfo>> {
     let mut raw = sys::MV_CC_DEVICE_INFO_LIST::default();
     // SAFETY: SDK 写入 raw；Sdk::devices 在复制完成前持有枚举锁。
-    check(unsafe { sys::MV_CC_EnumDevices(layers.raw(), &mut raw) })?;
+    check(unsafe { sys::MV_CC_EnumDevices(layers.raw(), &raw mut raw) })?;
 
     let device_count = (raw.nDeviceNum as usize).min(raw.pDeviceInfo.len());
     let mut devices = Vec::with_capacity(device_count);
@@ -82,7 +82,7 @@ impl DeviceInfo {
         }
     }
 
-    /// union arm 选择必须精确匹配单一 device type 值，与 `metadata()` 的 GigE arm 同源。
+    /// union arm 选择必须精确匹配单一 device type 值，与 `metadata()` 的 `GigE` arm 同源。
     /// 面向调用方的位集判定见 [`TransportLayer::is_gige`]。
     fn is_gige_transport(&self) -> bool {
         matches!(
@@ -206,7 +206,7 @@ impl DeviceInfo {
         // C API 使用 mutable pointer；私有副本避免把共享 Rust 数据暴露为 *mut。
         let mut raw = *self.raw;
         // SAFETY: raw 是枚举所得 record 的完整本地副本。
-        unsafe { sys::MV_CC_IsDeviceAccessible(&mut raw, mode.raw()) != 0 }
+        unsafe { sys::MV_CC_IsDeviceAccessible(&raw mut raw, mode.raw()) != 0 }
     }
 
     pub(crate) fn as_raw(&self) -> *const c_void {

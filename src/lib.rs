@@ -2,7 +2,7 @@
 //!
 //! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate. This
 //! crate exposes one platform-independent API backed by the native SDK on
-//! Windows x86_64 MSVC. On other targets, [`Sdk::initialize`] returns
+//! Windows `x86_64` MSVC. On other targets, [`Sdk::initialize`] returns
 //! [`MvsError::UnsupportedPlatform`]. Building and linking Windows MSVC applications
 //! requires the MVS SDK and `MVCAM_COMMON_RUNENV`; at runtime, the SDK DLL
 //! directory must be discoverable by the Windows loader, typically via `PATH`.
@@ -10,7 +10,7 @@
 //! # Workflow
 //!
 //! Initialize [`Sdk`], discover owned [`DeviceInfo`] snapshots with
-//! [`Sdk::devices`], open one through [`Sdk::open`], configure GenICam nodes
+//! [`Sdk::devices`], open one through [`Sdk::open`], configure `GenICam` nodes
 //! through [`Camera`], then choose one acquisition mode:
 //!
 //! - Register an image callback before [`Camera::start_grabbing`] for callback
@@ -55,6 +55,9 @@
 // Platform backends are private; accidentally writing `pub` inside one should
 // fail compilation instead of silently creating an unreachable public item.
 #![deny(unreachable_pub)]
+// `unreachable_pub` above requires spelling `pub(crate)` inside private modules,
+// which is exactly what this lint would remove.
+#![allow(clippy::redundant_pub_crate)]
 
 pub(crate) use mvs_sdk_sys as sys;
 

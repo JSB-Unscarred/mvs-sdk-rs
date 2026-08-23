@@ -15,7 +15,7 @@ pub struct EventInfo<'a> {
 
 impl<'a> EventInfo<'a> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-    pub(crate) fn new(
+    pub(crate) const fn new(
         name: &'a [u8],
         event_id: u16,
         stream_channel: u16,
@@ -32,27 +32,32 @@ impl<'a> EventInfo<'a> {
     }
 
     /// Return the event name as SDK original bytes, valid only for this invocation.
-    pub fn name(&self) -> &[u8] {
+    #[must_use]
+    pub const fn name(&self) -> &[u8] {
         self.name
     }
 
     /// Return the vendor event identifier.
-    pub fn event_id(&self) -> u16 {
+    #[must_use]
+    pub const fn event_id(&self) -> u16 {
         self.event_id
     }
 
     /// Return the stream-channel identifier associated with the event.
-    pub fn stream_channel(&self) -> u16 {
+    #[must_use]
+    pub const fn stream_channel(&self) -> u16 {
         self.stream_channel
     }
 
     /// Return the event block identifier.
-    pub fn block_id(&self) -> u64 {
+    #[must_use]
+    pub const fn block_id(&self) -> u64 {
         self.block_id
     }
 
     /// Return the device event timestamp in vendor-defined units.
-    pub fn timestamp(&self) -> u64 {
+    #[must_use]
+    pub const fn timestamp(&self) -> u64 {
         self.timestamp
     }
 }

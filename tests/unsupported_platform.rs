@@ -1,4 +1,4 @@
-//! 非 Windows x86_64 MSVC 平台的初始化行为。
+//! 非 Windows `x86_64` MSVC 平台的初始化行为。
 
 #![cfg(not(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")))]
 

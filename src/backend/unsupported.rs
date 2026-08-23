@@ -62,7 +62,7 @@ pub(crate) struct Camera;
 impl Camera {
     pub(crate) fn open(
         _runtime: Arc<RuntimeCore>,
-        _device: DeviceInfo,
+        _device: &DeviceInfo,
         _mode: AccessMode,
         _switchover_key: u16,
     ) -> MvsResult<Self> {

@@ -39,7 +39,7 @@ pub struct Camera {
 impl Camera {
     pub(crate) fn open(
         runtime: Arc<RuntimeCore>,
-        device: backend::DeviceInfo,
+        device: &backend::DeviceInfo,
         mode: AccessMode,
         switchover_key: u16,
     ) -> MvsResult<Self> {
@@ -55,11 +55,13 @@ impl Camera {
     ///
     /// pointer 由本 `Camera` 所有。通过 raw API 修改取流、callback 或 handle
     /// 生命周期会破坏 safe 层状态。
+    #[must_use]
     pub unsafe fn as_raw_handle(&self) -> *mut c_void {
         self.inner.as_raw_handle()
     }
 
     /// 返回当前连接状态快照。
+    #[must_use]
     pub fn is_connected(&self) -> bool {
         self.inner.is_connected()
     }
@@ -84,6 +86,10 @@ impl Camera {
     ///     let _ = camera.register_image_callback(move |_| drop(Rc::clone(&state)));
     /// }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// 取流未停止、已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
     pub fn register_image_callback<F>(&mut self, callback: F) -> MvsResult<()>
     where
         F: Fn(&Frame<'_>) + Send + Sync + 'static,
@@ -95,16 +101,28 @@ impl Camera {
     ///
     /// 返回后不再开始新的 Rust 调用；已经进入 trampoline 的调用可短暂继续，
     /// 其 closure 由独立 Arc 保活。
+    ///
+    /// # Errors
+    ///
+    /// 取流未停止或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
     pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_image_callback()
     }
 
     /// 启动取流；已注册 image callback 时使用 callback 模式，否则使用 polling。
+    ///
+    /// # Errors
+    ///
+    /// 已在取流或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 启动失败返回原错误。
     pub fn start_grabbing(&mut self) -> MvsResult<()> {
         self.inner.start_grabbing()
     }
 
     /// 停止取流；未取流时直接返回 `Ok(())`。
+    ///
+    /// # Errors
+    ///
+    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 停止失败返回原错误。
     pub fn stop_grabbing(&mut self) -> MvsResult<()> {
         self.inner.stop_grabbing()
     }
@@ -113,6 +131,10 @@ impl Camera {
     ///
     /// guard 借用相机并在 [`FrameGuard::release`] 或 `Drop` 时归还 buffer。
     /// 无限等待传 [`Timeout::Infinite`]。
+    ///
+    /// # Errors
+    ///
+    /// 未取流或已注册 image callback 时返回 [`crate::MvsError::InvalidState`]；等待超时等情形返回原 native 错误。
     pub fn get_image_buffer(&self, timeout: Timeout) -> MvsResult<FrameGuard<'_>> {
         self.inner
             .get_image_buffer(timeout.raw())
@@ -123,6 +145,10 @@ impl Camera {
     ///
     /// buffer release 失败会覆盖已完成的 owned copy 并返回对应错误，避免调用方误以为
     /// 本次 native buffer 已正常归还。
+    ///
+    /// # Errors
+    ///
+    /// 取帧失败返回原错误；复制完成后 buffer release 失败返回该 release 错误。
     pub fn get_owned_frame(&self, timeout: Timeout) -> MvsResult<OwnedFrame> {
         let frame = self
             .inner
@@ -134,61 +160,109 @@ impl Camera {
     }
 
     /// 获取 Integer 节点当前值、范围和步长。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn get_int(&self, key: &str) -> MvsResult<IntValue> {
         self.inner.get_int(key)
     }
 
     /// 设置 Integer 节点。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn set_int(&self, key: &str, value: i64) -> MvsResult<()> {
         self.inner.set_int(key, value)
     }
 
     /// 获取 Enum 节点当前值和支持值列表。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn get_enum(&self, key: &str) -> MvsResult<EnumValue> {
         self.inner.get_enum(key)
     }
 
     /// 按 numeric value 设置 Enum 节点。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn set_enum_value(&self, key: &str, value: u32) -> MvsResult<()> {
         self.inner.set_enum_value(key, value)
     }
 
     /// 按 symbolic name 设置 Enum 节点。
+    ///
+    /// # Errors
+    ///
+    /// `key` 或 `value` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、symbolic name 无效或设备拒绝时返回原 native 错误。
     pub fn set_enum_symbolic(&self, key: &str, value: &str) -> MvsResult<()> {
         self.inner.set_enum_symbolic(key, value)
     }
 
     /// 获取 Float 节点当前值和范围。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn get_float(&self, key: &str) -> MvsResult<FloatValue> {
         self.inner.get_float(key)
     }
 
     /// 设置 Float 节点。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn set_float(&self, key: &str, value: f32) -> MvsResult<()> {
         self.inner.set_float(key, value)
     }
 
     /// 获取 Boolean 节点。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn get_bool(&self, key: &str) -> MvsResult<bool> {
         self.inner.get_bool(key)
     }
 
     /// 设置 Boolean 节点。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn set_bool(&self, key: &str, value: bool) -> MvsResult<()> {
         self.inner.set_bool(key, value)
     }
 
     /// 获取 String 节点，保留 SDK 原始字节。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn get_string(&self, key: &str) -> MvsResult<SdkText> {
         self.inner.get_string(key)
     }
 
     /// 设置 String 节点；`value` 为原始字节，拒绝 interior NUL。
+    ///
+    /// # Errors
+    ///
+    /// `key` 或 `value` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、超长或设备拒绝时返回原 native 错误。
     pub fn set_string(&self, key: &str, value: &[u8]) -> MvsResult<()> {
         self.inner.set_string(key, value)
     }
 
     /// 执行 Command 节点。
+    ///
+    /// # Errors
+    ///
+    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
     pub fn exec_command(&self, key: &str) -> MvsResult<()> {
         self.inner.exec_command(key)
     }
@@ -196,6 +270,10 @@ impl Camera {
     /// 注册设备 exception callback。
     ///
     /// closure 只用于通知；需要关闭或重连时通过 channel 交给 Camera owner。
+    ///
+    /// # Errors
+    ///
+    /// 已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> MvsResult<()>
     where
         F: Fn(u32) + Send + Sync + 'static,
@@ -204,11 +282,19 @@ impl Camera {
     }
 
     /// 注销 exception callback；未注册时直接返回 `Ok(())`，已经进入的调用可短暂继续。
+    ///
+    /// # Errors
+    ///
+    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
     pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
         self.inner.unregister_exception_callback()
     }
 
-    /// 注册一个 named GenICam event callback。
+    /// 注册一个 named `GenICam` event callback。
+    ///
+    /// # Errors
+    ///
+    /// 同名 event 已有注册、`event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回对应错误；native 注册失败返回原错误。
     pub fn register_event_callback<F>(&mut self, event_name: &str, callback: F) -> MvsResult<()>
     where
         F: Fn(&EventInfo<'_>) + Send + Sync + 'static,
@@ -218,16 +304,28 @@ impl Camera {
     }
 
     /// 注销一个 named event callback；未注册时直接返回 `Ok(())`。
+    ///
+    /// # Errors
+    ///
+    /// `event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]时返回对应错误；native 注销失败返回原错误。
     pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
         self.inner.unregister_event_callback(event_name)
     }
 
     /// 开启设备端 named event notification。
+    ///
+    /// # Errors
+    ///
+    /// `event_name` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；设备不支持该 event 时返回原 native 错误。
     pub fn event_notification_on(&self, event_name: &str) -> MvsResult<()> {
         self.inner.event_notification_on(event_name)
     }
 
     /// 关闭设备端 named event notification。
+    ///
+    /// # Errors
+    ///
+    /// `event_name` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；设备不支持该 event 时返回原 native 错误。
     pub fn event_notification_off(&self, event_name: &str) -> MvsResult<()> {
         self.inner.event_notification_off(event_name)
     }
@@ -237,6 +335,10 @@ impl Camera {
     /// 全部清理步骤只尝试一次；错误返回后不能使用同一 `Camera` 重试。
     /// [`CleanupError`] 保留首个 Destroy 前操作及错误，并独立保留 Destroy 错误。
     /// 当前线程位于 MVS callback 时终止进程。
+    ///
+    /// # Errors
+    ///
+    /// teardown 任一步失败时返回 [`CleanupError`]，其中保留首个前序错误与独立的 `DestroyHandle` 错误。
     pub fn close(mut self) -> Result<(), CleanupError> {
         self.inner.cleanup()
     }

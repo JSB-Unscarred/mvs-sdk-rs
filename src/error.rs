@@ -31,7 +31,7 @@ impl CleanupError {
         test,
         all(target_os = "windows", target_arch = "x86_64", target_env = "msvc")
     ))]
-    pub(crate) fn new(
+    pub(crate) const fn new(
         prior_error: Option<(&'static str, MvsError)>,
         destroy_error: Option<MvsError>,
         native_handle_destroyed: bool,
@@ -44,22 +44,26 @@ impl CleanupError {
     }
 
     /// 返回 `DestroyHandle` 前首个失败操作的名称。
+    #[must_use]
     pub fn prior_operation(&self) -> Option<&'static str> {
         self.prior_error.as_ref().map(|(operation, _)| *operation)
     }
 
     /// 返回 `DestroyHandle` 前遇到的首个错误。
+    #[must_use]
     pub fn prior_error(&self) -> Option<&MvsError> {
         self.prior_error.as_ref().map(|(_, error)| error)
     }
 
     /// 返回独立保存的 `DestroyHandle` 错误。
-    pub fn destroy_error(&self) -> Option<&MvsError> {
+    #[must_use]
+    pub const fn destroy_error(&self) -> Option<&MvsError> {
         self.destroy_error.as_ref()
     }
 
     /// 返回 native handle 是否已由 `DestroyHandle` 确认销毁。
-    pub fn native_handle_destroyed(&self) -> bool {
+    #[must_use]
+    pub const fn native_handle_destroyed(&self) -> bool {
         self.native_handle_destroyed
     }
 }
@@ -103,7 +107,7 @@ pub struct ShutdownError {
 
 impl ShutdownError {
     /// 可恢复情形：归还 `Sdk`。
-    pub(crate) fn recoverable(sdk: Sdk, error: MvsError) -> Self {
+    pub(crate) const fn recoverable(sdk: Sdk, error: MvsError) -> Self {
         Self {
             sdk: Some(sdk),
             error,
@@ -111,16 +115,18 @@ impl ShutdownError {
     }
 
     /// 终态情形：Finalize 机会已消费。
-    pub(crate) fn terminal(error: MvsError) -> Self {
+    pub(crate) const fn terminal(error: MvsError) -> Self {
         Self { sdk: None, error }
     }
 
     /// 返回本次 shutdown 失败的原因。
-    pub fn error(&self) -> &MvsError {
+    #[must_use]
+    pub const fn error(&self) -> &MvsError {
         &self.error
     }
 
     /// 可恢复情形返回被归还的 `Sdk`；终态返回 `None`。
+    #[must_use]
     pub fn into_sdk(self) -> Option<Sdk> {
         self.sdk
     }
@@ -247,66 +253,66 @@ pub enum MvsError {
     UnknownGeneric,
 
     // ---- GenICam errors (0x80000100 - 0x800001FF) ----
-    /// A general GenICam operation failed.
+    /// A general `GenICam` operation failed.
     #[error("GenICam: general error")]
     GcGeneric,
-    /// A GenICam argument is invalid.
+    /// A `GenICam` argument is invalid.
     #[error("GenICam: illegal argument")]
     GcArgument,
-    /// A GenICam value is outside its accepted range.
+    /// A `GenICam` value is outside its accepted range.
     #[error("GenICam: value out of range")]
     GcRange,
-    /// A GenICam property operation failed.
+    /// A `GenICam` property operation failed.
     #[error("GenICam: property error")]
     GcProperty,
-    /// A GenICam runtime operation failed.
+    /// A `GenICam` runtime operation failed.
     #[error("GenICam: runtime error")]
     GcRuntime,
-    /// A GenICam logical condition failed.
+    /// A `GenICam` logical condition failed.
     #[error("GenICam: logical error")]
     GcLogical,
-    /// The GenICam node is not accessible in its current state.
+    /// The `GenICam` node is not accessible in its current state.
     #[error("GenICam: node access condition error")]
     GcAccess,
-    /// A GenICam operation timed out.
+    /// A `GenICam` operation timed out.
     #[error("GenICam: timeout")]
     GcTimeout,
-    /// A GenICam dynamic cast failed.
+    /// A `GenICam` dynamic cast failed.
     #[error("GenICam: dynamic cast error")]
     GcDynamicCast,
-    /// The SDK returned an unspecified GenICam error.
+    /// The SDK returned an unspecified `GenICam` error.
     #[error("GenICam: unknown error")]
     GcUnknown,
 
     // ---- GigE errors (0x80000200 - 0x800002FF) ----
-    /// The GigE device does not implement the requested command.
+    /// The `GigE` device does not implement the requested command.
     #[error("GigE: command not implemented by device")]
     NotImplemented,
-    /// A GigE address is invalid.
+    /// A `GigE` address is invalid.
     #[error("GigE: invalid address")]
     InvalidAddress,
-    /// The addressed GigE register or property is write-protected.
+    /// The addressed `GigE` register or property is write-protected.
     #[error("GigE: write protected")]
     WriteProtect,
-    /// Access to the GigE device was denied.
+    /// Access to the `GigE` device was denied.
     #[error("GigE: access denied")]
     AccessDenied,
-    /// The GigE device is busy or disconnected from the network.
+    /// The `GigE` device is busy or disconnected from the network.
     #[error("GigE: device busy or network disconnected")]
     Busy,
-    /// A GigE network packet was invalid or lost.
+    /// A `GigE` network packet was invalid or lost.
     #[error("GigE: network packet error")]
     Packet,
-    /// A general GigE network operation failed.
+    /// A general `GigE` network operation failed.
     #[error("GigE: network error")]
     Net,
-    /// This GigE device does not support changing its IP address.
+    /// This `GigE` device does not support changing its IP address.
     #[error("GigE: modifying the device IP is not supported")]
     ModifyDeviceIpNotSupported,
-    /// GigE key verification failed.
+    /// `GigE` key verification failed.
     #[error("GigE: key verification failed")]
     KeyVerificationFailed,
-    /// The GigE device's IP address conflicts with another host.
+    /// The `GigE` device's IP address conflicts with another host.
     #[error("GigE: device IP conflict")]
     IpConflict,
 
@@ -320,7 +326,7 @@ pub enum MvsError {
     /// The USB device reported an exception.
     #[error("USB: device exception")]
     UsbDevice,
-    /// A USB GenICam operation failed.
+    /// A USB `GenICam` operation failed.
     #[error("USB: GenICam error")]
     UsbGenicam,
     /// The USB connection has insufficient bandwidth.
@@ -376,7 +382,7 @@ pub enum MvsError {
     UnsupportedPlatform,
 
     /// SDK finalization is blocked by a native handle whose owner was consumed without a
-    /// confirmed DestroyHandle success.
+    /// confirmed `DestroyHandle` success.
     #[error("orphaned native camera handles are still live")]
     NativeHandlesLive,
 
@@ -387,9 +393,9 @@ pub enum MvsError {
     OpenRollback {
         /// Original `CreateHandle` or `OpenDevice` error.
         #[source]
-        open: Box<MvsError>,
+        open: Box<Self>,
         /// Error returned while destroying the partial handle.
-        destroy: Box<MvsError>,
+        destroy: Box<Self>,
     },
 }
 
@@ -398,7 +404,7 @@ macro_rules! define_sdk_error_codes {
     ($($variant:ident => $code:path),+ $(,)?) => {
         impl MvsError {
             /// Return the raw SDK status code represented by a native error variant.
-            pub fn raw_code(&self) -> Option<u32> {
+            pub const fn raw_code(&self) -> Option<u32> {
                 match self {
                     $(Self::$variant => Some($code),)+
                     Self::Unknown(code) => Some(*code),
@@ -416,7 +422,7 @@ macro_rules! define_sdk_error_codes {
             fn from(code: c_int) -> Self {
                 // Error constants come from bindgen as u32 (values above
                 // i32::MAX). Compare the return value's matching bit pattern.
-                match code as u32 {
+                match code.cast_unsigned() {
                     $($code => Self::$variant,)+
                     other => Self::Unknown(other),
                 }
@@ -490,7 +496,7 @@ define_sdk_error_codes! {
 /// Convert an SDK return code to a `MvsResult<()>`.
 #[cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
 pub(crate) fn check(code: c_int) -> MvsResult<()> {
-    if code as u32 == sys::MV_OK {
+    if code.cast_unsigned() == sys::MV_OK {
         Ok(())
     } else {
         Err(MvsError::from(code))
@@ -499,7 +505,6 @@ pub(crate) fn check(code: c_int) -> MvsResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::raw::c_int;
 
     use crate::sys;
 
@@ -508,7 +513,7 @@ mod tests {
     // native 错误必须保留 variant 与原始返回码。
     #[test]
     fn known_native_code_is_mapped() {
-        let error = MvsError::from(sys::MV_E_CALLORDER as c_int);
+        let error = MvsError::from(sys::MV_E_CALLORDER.cast_signed());
 
         assert!(matches!(&error, MvsError::CallOrder));
         assert_eq!(error.raw_code(), Some(sys::MV_E_CALLORDER));
@@ -518,7 +523,7 @@ mod tests {
     #[test]
     fn unknown_sdk_code_is_preserved() {
         let code: u32 = 0xDEAD_BEEF;
-        assert_eq!(MvsError::from(code as c_int).raw_code(), Some(code));
+        assert_eq!(MvsError::from(code.cast_signed()).raw_code(), Some(code));
     }
 
     // safe wrapper 本地错误不得伪装成 native 返回码。

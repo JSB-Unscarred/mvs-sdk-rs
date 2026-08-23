@@ -43,7 +43,7 @@ pub(super) struct CallbackSlot<C> {
 }
 
 impl<C: Clone> CallbackSlot<C> {
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             callback: Mutex::new(None),
         }
@@ -116,8 +116,8 @@ pub(super) unsafe extern "C" fn event_trampoline(
                 name,
                 raw.nEventID,
                 raw.nStreamChannel,
-                ((raw.nBlockIdHigh as u64) << 32) | raw.nBlockIdLow as u64,
-                ((raw.nTimestampHigh as u64) << 32) | raw.nTimestampLow as u64,
+                (u64::from(raw.nBlockIdHigh) << 32) | u64::from(raw.nBlockIdLow),
+                (u64::from(raw.nTimestampHigh) << 32) | u64::from(raw.nTimestampLow),
             );
             function(&event);
         });
@@ -189,11 +189,11 @@ mod tests {
             ..Default::default()
         };
         for (target, source) in raw.EventName.iter_mut().zip(b"ExposureEnd\0") {
-            *target = *source as _;
+            *target = source.cast_signed();
         }
 
         // SAFETY: raw 与 Box slot 在同步调用期间有效。
-        unsafe { event_trampoline(&mut raw, user) };
+        unsafe { event_trampoline(&raw mut raw, user) };
 
         assert_eq!(
             *observed.lock().unwrap(),

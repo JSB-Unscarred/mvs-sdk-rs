@@ -22,7 +22,7 @@ use super::callback::{
 use super::{DeviceInfo, FrameGuard};
 
 impl AccessMode {
-    pub(crate) fn raw(self) -> u32 {
+    pub(crate) const fn raw(self) -> u32 {
         match self {
             Self::Exclusive => sys::MV_ACCESS_Exclusive,
             Self::ExclusiveWithSwitch => sys::MV_ACCESS_ExclusiveWithSwitch,
@@ -35,7 +35,7 @@ impl AccessMode {
     }
 }
 
-/// Camera 单独持有 callback slot；Box 地址稳定到 DestroyHandle。
+/// Camera 单独持有 callback slot；Box 地址稳定到 `DestroyHandle`。
 ///
 /// slot 在 `Camera::open` 时就位并复用，注册状态因此只由 `registered` 一个字段表达。
 struct CallbackRecord<C> {
@@ -87,7 +87,7 @@ impl<C: Clone> CallbackRecord<C> {
         Ok(())
     }
 
-    fn is_active(&self) -> bool {
+    const fn is_active(&self) -> bool {
         self.registered
     }
 
@@ -95,7 +95,7 @@ impl<C: Clone> CallbackRecord<C> {
         self.slot.clear();
     }
 
-    /// DestroyHandle 失败后遗留空 slot，防止 native `pUser` 悬垂。
+    /// `DestroyHandle` 失败后遗留空 slot，防止 native `pUser` 悬垂。
     fn leak_slot(self) {
         let _ = Box::leak(self.slot);
     }
@@ -120,11 +120,11 @@ impl NativeHandle {
         })
     }
 
-    fn as_ptr(&self) -> *mut c_void {
+    const fn as_ptr(&self) -> *mut c_void {
         self.0.as_ptr()
     }
 
-    /// 计数只在 SDK 确认 DestroyHandle 成功后解除。
+    /// 计数只在 SDK 确认 `DestroyHandle` 成功后解除。
     fn destroy(self, runtime: &RuntimeCore) -> MvsResult<()> {
         // SAFETY: 本值是该 native handle 的唯一 Rust owner。
         check(unsafe { sys::MV_CC_DestroyHandle(self.as_ptr()) })?;
@@ -147,15 +147,15 @@ impl Camera {
     /// 创建并打开 handle；OpenDevice 失败时回滚销毁，销毁也失败时保留两项错误。
     pub(crate) fn open(
         runtime: Arc<RuntimeCore>,
-        device: DeviceInfo,
+        device: &DeviceInfo,
         mode: AccessMode,
         switchover_key: u16,
     ) -> MvsResult<Self> {
         reject_callback_context()?;
         let mut raw_handle = std::ptr::null_mut();
-        // SAFETY: 输出地址可写，device 是 Rust-owned SDK 结构体快照。
-        // CreateHandle 失败时不写出 handle，无需回滚。
-        check(unsafe { sys::MV_CC_CreateHandle(&mut raw_handle, device.raw()) })?;
+        // SAFETY: 输出地址可写，device 是 Rust-owned SDK 结构体快照；CreateHandle 在调用内
+        // 复制该记录，借用只需覆盖本次调用。失败时不写出 handle，无需回滚。
+        check(unsafe { sys::MV_CC_CreateHandle(&raw mut raw_handle, device.raw()) })?;
         let handle =
             NativeHandle::new(raw_handle, &runtime).ok_or(MvsError::NullHandleAfterCreate)?;
 
@@ -239,7 +239,7 @@ impl Camera {
         Ok(())
     }
 
-    /// polling 模式获取的 buffer 由 FrameGuard 唯一负责归还。
+    /// polling 模式获取的 buffer 由 `FrameGuard` 唯一负责归还。
     pub(crate) fn get_image_buffer(&self, timeout_ms: u32) -> MvsResult<FrameGuard<'_>> {
         if !self.grabbing || self.image_cb.is_active() {
             return Err(MvsError::InvalidState(
@@ -249,7 +249,7 @@ impl Camera {
         let handle = self.handle()?;
         let mut raw = sys::MV_FRAME_OUT::default();
         // SAFETY: raw 是可写输出结构体，handle 正在 polling 取流。
-        check(unsafe { sys::MV_CC_GetImageBuffer(handle, &mut raw, timeout_ms) })?;
+        check(unsafe { sys::MV_CC_GetImageBuffer(handle, &raw mut raw, timeout_ms) })?;
         Ok(FrameGuard::new(handle, raw))
     }
 
@@ -280,7 +280,7 @@ impl Camera {
         let (handle, key) = self.handle_and_key(key)?;
         let mut value = sys::MVCC_INTVALUE_EX::default();
         // SAFETY: value 是可写输出结构体。
-        check(unsafe { sys::MV_CC_GetIntValueEx(handle, key.as_ptr(), &mut value) })?;
+        check(unsafe { sys::MV_CC_GetIntValueEx(handle, key.as_ptr(), &raw mut value) })?;
         Ok(IntValue {
             current: value.nCurValue,
             min: value.nMin,
@@ -299,7 +299,7 @@ impl Camera {
         let (handle, key) = self.handle_and_key(key)?;
         let mut value = sys::MVCC_ENUMVALUE_EX::default();
         // SAFETY: value 是可写输出结构体。
-        check(unsafe { sys::MV_CC_GetEnumValueEx(handle, key.as_ptr(), &mut value) })?;
+        check(unsafe { sys::MV_CC_GetEnumValueEx(handle, key.as_ptr(), &raw mut value) })?;
         let len = (value.nSupportedNum as usize).min(value.nSupportValue.len());
         Ok(EnumValue {
             current: value.nCurValue,
@@ -324,7 +324,7 @@ impl Camera {
         let (handle, key) = self.handle_and_key(key)?;
         let mut value = sys::MVCC_FLOATVALUE::default();
         // SAFETY: value 是可写输出结构体。
-        check(unsafe { sys::MV_CC_GetFloatValue(handle, key.as_ptr(), &mut value) })?;
+        check(unsafe { sys::MV_CC_GetFloatValue(handle, key.as_ptr(), &raw mut value) })?;
         Ok(FloatValue {
             current: value.fCurValue,
             min: value.fMin,
@@ -342,13 +342,13 @@ impl Camera {
         let (handle, key) = self.handle_and_key(key)?;
         let mut value: sys::bool_ = 0;
         // SAFETY: value 是可写输出参数。
-        check(unsafe { sys::MV_CC_GetBoolValue(handle, key.as_ptr(), &mut value) })?;
+        check(unsafe { sys::MV_CC_GetBoolValue(handle, key.as_ptr(), &raw mut value) })?;
         Ok(value != 0)
     }
 
     pub(crate) fn set_bool(&self, key: &str, value: bool) -> MvsResult<()> {
         let (handle, key) = self.handle_and_key(key)?;
-        let value: sys::bool_ = if value { 1 } else { 0 };
+        let value: sys::bool_ = i8::from(value);
         // SAFETY: key 在调用期间有效。
         check(unsafe { sys::MV_CC_SetBoolValue(handle, key.as_ptr(), value) })
     }
@@ -357,7 +357,7 @@ impl Camera {
         let (handle, key) = self.handle_and_key(key)?;
         let mut value = sys::MVCC_STRINGVALUE::default();
         // SAFETY: value 是可写输出结构体。
-        check(unsafe { sys::MV_CC_GetStringValue(handle, key.as_ptr(), &mut value) })?;
+        check(unsafe { sys::MV_CC_GetStringValue(handle, key.as_ptr(), &raw mut value) })?;
         Ok(SdkText::from_sdk_bytes(
             sdk_bytes_from_chars(&value.chCurValue).to_vec(),
         ))
@@ -413,15 +413,14 @@ impl Camera {
             .event_cbs
             .iter()
             .position(|record| record.name.as_c_str() == name.as_c_str());
-        let index = match existing {
-            Some(index) => index,
-            None => {
-                self.event_cbs.push(EventRecord {
-                    name,
-                    callback: CallbackRecord::new(),
-                });
-                self.event_cbs.len() - 1
-            }
+        let index = if let Some(index) = existing {
+            index
+        } else {
+            self.event_cbs.push(EventRecord {
+                name,
+                callback: CallbackRecord::new(),
+            });
+            self.event_cbs.len() - 1
         };
 
         let EventRecord {
@@ -474,7 +473,7 @@ impl Camera {
         check(unsafe { sys::MV_CC_EventNotificationOff(handle, name.as_ptr()) })
     }
 
-    /// 尝试完整 teardown，分别保留前序首错与 DestroyHandle 错误。
+    /// 尝试完整 teardown，分别保留前序首错与 `DestroyHandle` 错误。
     /// callback 线程上的 close/Drop 会终止进程：厂商禁止从 callback 重入生命周期接口。
     pub(crate) fn cleanup(&mut self) -> Result<(), CleanupError> {
         if in_callback() {
@@ -566,7 +565,7 @@ impl Camera {
         }
     }
 
-    /// DestroyHandle 失败时遗留 native 曾持有指针的空 slot；
+    /// `DestroyHandle` 失败时遗留 native 曾持有指针的空 slot；
     /// 换入的空 record 不再注册，随 Camera 一起释放。
     fn leak_callback_slots(&mut self) {
         std::mem::replace(&mut self.image_cb, CallbackRecord::new()).leak_slot();
@@ -607,7 +606,7 @@ impl fmt::Debug for Camera {
                     .filter(|record| record.callback.is_active())
                     .count(),
             )
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -622,7 +621,7 @@ impl Drop for Camera {
 ///
 /// 判据：只有改变 handle 生命周期或取流/callback 注册状态的接口需要拒绝
 /// （Create/Open/Start/Stop/Register\*/Close/Destroy），厂商禁止在 callback 中重入它们。
-/// 纯 GenICam 节点读写不受此限，`MV_CC_EventNotificationOn/Off` 只写设备寄存器，
+/// 纯 `GenICam` 节点读写不受此限，`MV_CC_EventNotificationOn/Off` 只写设备寄存器，
 /// 与 `set_enum` 同类，因此不调用本函数。
 fn reject_callback_context() -> MvsResult<()> {
     if in_callback() {
@@ -634,7 +633,7 @@ fn reject_callback_context() -> MvsResult<()> {
     }
 }
 
-/// 记录 DestroyHandle 前首个失败的清理操作，后续清理仍继续。
+/// 记录 `DestroyHandle` 前首个失败的清理操作，后续清理仍继续。
 fn record_first_error(
     first_error: &mut Option<(&'static str, MvsError)>,
     operation: &'static str,
@@ -649,7 +648,6 @@ fn record_first_error(
 
 #[cfg(test)]
 mod tests {
-    use std::os::raw::c_int;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -674,7 +672,7 @@ mod tests {
                 assert_eq!(registered_user, user);
                 // SAFETY: slot 由 record 持有，注册期间地址稳定。
                 unsafe { exception_trampoline(1, registered_user) };
-                sys::MV_E_PARAMETER as c_int
+                sys::MV_E_PARAMETER.cast_signed()
             })
             .expect_err("native 注册失败应返回原错误");
 
@@ -693,19 +691,19 @@ mod tests {
             .register(Arc::clone(&callback), |registered_user| {
                 // SAFETY: slot 在同步派发期间地址稳定。
                 unsafe { exception_trampoline(3, registered_user) };
-                sys::MV_OK as c_int
+                sys::MV_OK.cast_signed()
             })
             .expect("注册应成功");
 
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert!(record.is_active());
         assert!(matches!(
-            record.register(Arc::clone(&callback), |_| sys::MV_OK as c_int),
+            record.register(Arc::clone(&callback), |_| sys::MV_OK.cast_signed()),
             Err(MvsError::InvalidState(_))
         ));
 
         record
-            .unregister(|| sys::MV_OK as c_int)
+            .unregister(|| sys::MV_OK.cast_signed())
             .expect("注销应成功");
         // SAFETY: record 仍持有已清空的 slot。
         unsafe { exception_trampoline(4, user) };
@@ -717,14 +715,14 @@ mod tests {
         record
             .register(callback, |registered_user| {
                 assert_eq!(registered_user, user);
-                sys::MV_OK as c_int
+                sys::MV_OK.cast_signed()
             })
             .expect("注销后应可复用同一 slot 重注册");
         // SAFETY: record 持有重新安装 closure 的 slot。
         unsafe { exception_trampoline(5, user) };
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         record
-            .unregister(|| sys::MV_OK as c_int)
+            .unregister(|| sys::MV_OK.cast_signed())
             .expect("测试清理应成功");
     }
 }

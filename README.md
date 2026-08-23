@@ -145,12 +145,15 @@ API，不扩展 safe 层。
 ## 文档与验证
 
 ```console
-cargo doc --workspace --no-deps --open
 cargo fmt --all -- --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+cargo doc --workspace --no-deps --target x86_64-pc-windows-msvc --open
+cargo test --workspace --target x86_64-pc-windows-msvc
 ```
+
+只有 native 后端参与编译，因此验证一律指定 `x86_64-pc-windows-msvc`；省略该 target 时
+`src/backend/windows` 会被 cfg 跳过。`clippy` 与 `doc` 不链接，任意平台都能跑；`cargo test`
+需要链接与运行，限 Windows。
 
 真机测试需要 Windows x64 MSVC、MVS SDK、专用相机和
 `MVS_TEST_CAMERA_SERIAL`：

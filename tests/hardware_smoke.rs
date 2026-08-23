@@ -26,11 +26,14 @@ fn real_camera_data_flow_smoke() -> Result<(), Box<dyn Error>> {
         let frame = polling.get_image_buffer(timeout)?;
         assert_eq!(
             frame.frame().data().len(),
-            frame.info().frame_len() as usize
+            usize::try_from(frame.info().frame_len())?
         );
         frame.release()?;
         let owned = polling.get_owned_frame(timeout)?;
-        assert_eq!(owned.data().len(), owned.info().frame_len() as usize);
+        assert_eq!(
+            owned.data().len(),
+            usize::try_from(owned.info().frame_len())?
+        );
         polling.stop_grabbing()?;
         polling.close()?;
 
@@ -44,7 +47,10 @@ fn real_camera_data_flow_smoke() -> Result<(), Box<dyn Error>> {
         let owned = frame_rx.recv_timeout(Duration::from_millis(u64::from(
             hardware_support::FRAME_TIMEOUT_MS,
         )))?;
-        assert_eq!(owned.data().len(), owned.info().frame_len() as usize);
+        assert_eq!(
+            owned.data().len(),
+            usize::try_from(owned.info().frame_len())?
+        );
         callback.stop_grabbing()?;
         callback.close()?;
     }

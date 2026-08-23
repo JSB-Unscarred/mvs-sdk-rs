@@ -25,64 +25,76 @@ pub struct FrameInfo {
 
 impl FrameInfo {
     /// Image width in pixels.
-    pub fn width(&self) -> u32 {
+    #[must_use]
+    pub const fn width(&self) -> u32 {
         self.width
     }
 
     /// Image height in pixels.
-    pub fn height(&self) -> u32 {
+    #[must_use]
+    pub const fn height(&self) -> u32 {
         self.height
     }
 
     /// Pixel format reported by the SDK.
-    pub fn pixel_type(&self) -> PixelType {
+    #[must_use]
+    pub const fn pixel_type(&self) -> PixelType {
         self.pixel_type
     }
 
     /// Device frame sequence number.
-    pub fn frame_num(&self) -> u32 {
+    #[must_use]
+    pub const fn frame_num(&self) -> u32 {
         self.frame_num
     }
 
     /// Number of valid bytes in the image buffer.
     ///
     /// Native frames use the SDK's extended 64-bit length when available.
-    pub fn frame_len(&self) -> u64 {
+    #[must_use]
+    pub const fn frame_len(&self) -> u64 {
         self.frame_len
     }
 
     /// Horizontal image-region offset in pixels.
-    pub fn offset_x(&self) -> u32 {
+    #[must_use]
+    pub const fn offset_x(&self) -> u32 {
         self.offset_x
     }
 
     /// Vertical image-region offset in pixels.
-    pub fn offset_y(&self) -> u32 {
+    #[must_use]
+    pub const fn offset_y(&self) -> u32 {
         self.offset_y
     }
 
     /// Gain recorded in the frame metadata.
-    pub fn gain(&self) -> f32 {
+    #[must_use]
+    pub const fn gain(&self) -> f32 {
         self.gain
     }
 
     /// Exposure time recorded in the frame metadata.
-    pub fn exposure_time(&self) -> f32 {
+    #[must_use]
+    pub const fn exposure_time(&self) -> f32 {
         self.exposure_time
     }
 
     /// Trigger sequence index reported by the device.
-    pub fn trigger_index(&self) -> u32 {
+    #[must_use]
+    pub const fn trigger_index(&self) -> u32 {
         self.trigger_index
     }
 
     /// Number of lost packets reported for this frame.
-    pub fn lost_packets(&self) -> u32 {
+    #[must_use]
+    pub const fn lost_packets(&self) -> u32 {
         self.lost_packets
     }
 
     /// Device timestamp assembled from the SDK's high and low words.
-    pub fn device_timestamp(&self) -> u64 {
+    #[must_use]
+    pub const fn device_timestamp(&self) -> u64 {
         self.device_timestamp
     }
 
@@ -90,7 +102,8 @@ impl FrameInfo {
     ///
     /// The installed SDK headers do not define this value's unit, so the
     /// wrapper intentionally leaves interpretation to the application.
-    pub fn host_timestamp_raw(&self) -> i64 {
+    #[must_use]
+    pub const fn host_timestamp_raw(&self) -> i64 {
         self.host_timestamp_raw
     }
 }
@@ -115,21 +128,24 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
-    pub(crate) fn from_parts(data: &'a [u8], info: FrameInfo) -> Self {
+    pub(crate) const fn from_parts(data: &'a [u8], info: FrameInfo) -> Self {
         Self { data, info }
     }
 
     /// Borrow the valid pixel bytes for this frame.
-    pub fn data(&self) -> &[u8] {
+    #[must_use]
+    pub const fn data(&self) -> &[u8] {
         self.data
     }
 
     /// Return a copy of this frame's metadata.
-    pub fn info(&self) -> FrameInfo {
+    #[must_use]
+    pub const fn info(&self) -> FrameInfo {
         self.info
     }
 
     /// Copy the pixels and metadata into SDK-independent storage.
+    #[must_use]
     pub fn to_owned(&self) -> OwnedFrame {
         let mut info = self.info;
         info.frame_len = self.data.len() as u64;
@@ -159,6 +175,7 @@ pub struct OwnedFrame {
 impl OwnedFrame {
     /// Borrow the owned pixel bytes in the format indicated by
     /// [`FrameInfo::pixel_type`].
+    #[must_use]
     pub fn data(&self) -> &[u8] {
         &self.data
     }
@@ -169,16 +186,19 @@ impl OwnedFrame {
     }
 
     /// Consume the frame and return its pixel allocation.
+    #[must_use]
     pub fn into_data(self) -> Vec<u8> {
         self.data
     }
 
     /// Return a copy of the owned frame's metadata.
-    pub fn info(&self) -> FrameInfo {
+    #[must_use]
+    pub const fn info(&self) -> FrameInfo {
         self.info
     }
 
     /// Borrow this owned allocation as a [`Frame`].
+    #[must_use]
     pub fn as_frame(&self) -> Frame<'_> {
         Frame::from_parts(&self.data, self.info)
     }
@@ -213,21 +233,24 @@ pub struct FrameGuard<'cam> {
 }
 
 impl<'cam> FrameGuard<'cam> {
-    pub(crate) fn new(inner: backend::FrameGuard<'cam>) -> Self {
+    pub(crate) const fn new(inner: backend::FrameGuard<'cam>) -> Self {
         Self { inner }
     }
 
     /// Borrow the guarded SDK buffer as a frame.
+    #[must_use]
     pub fn frame(&self) -> Frame<'_> {
         self.inner.frame()
     }
 
     /// Return a copy of the guarded frame's metadata without borrowing pixels.
+    #[must_use]
     pub fn info(&self) -> FrameInfo {
         self.inner.info()
     }
 
     /// Copy the guarded frame into SDK-independent storage.
+    #[must_use]
     pub fn to_owned(&self) -> OwnedFrame {
         self.frame().to_owned()
     }
@@ -236,8 +259,21 @@ impl<'cam> FrameGuard<'cam> {
     ///
     /// The guard is consumed, so the native release is attempted exactly once;
     /// an error reports that attempt and does not return a guard for retry.
+    ///
+    /// # Errors
+    ///
+    /// Report the vendor error from the single `MV_CC_FreeImageBuffer` attempt.
     pub fn release(mut self) -> MvsResult<()> {
         self.inner.release()
+    }
+}
+
+impl fmt::Debug for FrameGuard<'_> {
+    /// Report the guarded frame's metadata; the pixel buffer is not formatted.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FrameGuard")
+            .field("info", &self.info())
+            .finish_non_exhaustive()
     }
 }
 

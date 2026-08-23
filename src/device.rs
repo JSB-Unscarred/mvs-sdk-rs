@@ -31,26 +31,26 @@ pub struct DeviceProperties {
     pub model: SdkText,
     /// 设备版本字符串；无对应字段时为空。
     pub device_version: SdkText,
-    /// GigE 制造商附加信息；其它 transport 为空。
+    /// `GigE` 制造商附加信息；其它 transport 为空。
     pub manufacturer_specific_info: SdkText,
     /// 序列号。
     pub serial: SdkText,
     /// 用户自定义名称；无对应字段时为空。
     pub user_defined_name: SdkText,
-    /// GigE 当前 IP；其它 transport 为 `None`。
+    /// `GigE` 当前 IP；其它 transport 为 `None`。
     pub current_ip: Option<Ipv4Addr>,
-    /// GigE 当前子网掩码；其它 transport 为 `None`。
+    /// `GigE` 当前子网掩码；其它 transport 为 `None`。
     pub current_subnet_mask: Option<Ipv4Addr>,
-    /// GigE 默认网关；其它 transport 为 `None`。
+    /// `GigE` 默认网关；其它 transport 为 `None`。
     pub default_gateway: Option<Ipv4Addr>,
-    /// GigE 主机网口 IP；其它 transport 为 `None`。
+    /// `GigE` 主机网口 IP；其它 transport 为 `None`。
     pub host_nic_ip: Option<Ipv4Addr>,
 }
 
 /// 从 SDK 枚举结果深拷贝得到的设备 snapshot。
 ///
 /// 本值不持有 SDK session lease；打开与可访问性查询由 [`crate::Sdk`] 提供。
-/// 解码字段见 [`DeviceProperties`]，内部另存同一记录的 C 快照供 CreateHandle 使用。
+/// 解码字段见 [`DeviceProperties`]，内部另存同一记录的 C 快照供 `CreateHandle` 使用。
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct DeviceInfo {
@@ -67,23 +67,23 @@ impl DeviceInfo {
         }
     }
 
-    pub(crate) fn clone_backend(&self) -> backend::DeviceInfo {
-        self.inner.clone()
+    pub(crate) const fn backend(&self) -> &backend::DeviceInfo {
+        &self.inner
     }
 
     pub(crate) fn is_accessible(&self, mode: AccessMode) -> bool {
         self.inner.is_accessible(mode)
     }
 
-    /// 返回设备是否使用 GigE transport。
+    /// 返回设备是否使用 `GigE` transport。
     #[must_use]
-    pub fn is_gige(&self) -> bool {
+    pub const fn is_gige(&self) -> bool {
         self.properties.transport_layer.is_gige()
     }
 
     /// 返回设备是否使用 USB transport。
     #[must_use]
-    pub fn is_usb(&self) -> bool {
+    pub const fn is_usb(&self) -> bool {
         self.properties.transport_layer.is_usb()
     }
 
@@ -92,6 +92,7 @@ impl DeviceInfo {
     /// # Safety
     ///
     /// pointer 只在本值存活期间有效。通过 raw SDK 修改该记录属于 `unsafe` 操作。
+    #[must_use]
     pub unsafe fn as_raw(&self) -> *const c_void {
         self.inner.as_raw()
     }
@@ -115,6 +116,6 @@ impl fmt::Debug for DeviceInfo {
             .field("serial", &self.properties.serial)
             .field("user_defined_name", &self.properties.user_defined_name)
             .field("current_ip", &self.properties.current_ip)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
