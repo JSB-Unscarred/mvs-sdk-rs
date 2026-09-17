@@ -1,42 +1,9 @@
-# Rust build artifacts
 /target/
-/Cargo.lock
 
-# Proprietary Hikvision SDK headers; users install the MVS SDK themselves
+# 厂商头文件由用户随 MVS SDK 安装，不入库
 /Includes/
 
-# Local development tools
 /.claude/
-
-# Editors and IDEs
-/.vscode/
 /.idea/
-*.swp
-*.swo
-*~
-
-# macOS Finder metadata and filesystem litter
+/.vscode/
 .DS_Store
-.AppleDouble
-.LSOverride
-Icon?
-._*
-
-# macOS system directories and volume metadata
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-
-# macOS metadata created on network or removable volumes
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
-
-Cargo.lock
-.claude/

@@ -1,158 +1,93 @@
-//! Platform-independent image frame views and ownership types.
+//! 图像帧：借用 SDK buffer 的视图，以及 polling buffer 的归还守卫。
 
 use std::fmt;
+use std::marker::PhantomData;
+use std::os::raw::c_void;
+use std::slice;
 
-use crate::backend;
-use crate::{MvsResult, PixelType};
+use crate::{PixelType, high_low, sys};
 
-/// Metadata for an image frame.
-#[derive(Copy, Clone)]
+/// 帧的元数据，复制自 `MV_FRAME_OUT_INFO_EX`。
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct FrameInfo {
-    pub(crate) width: u32,
-    pub(crate) height: u32,
-    pub(crate) pixel_type: PixelType,
-    pub(crate) frame_num: u32,
-    pub(crate) frame_len: u64,
-    pub(crate) offset_x: u32,
-    pub(crate) offset_y: u32,
-    pub(crate) gain: f32,
-    pub(crate) exposure_time: f32,
-    pub(crate) trigger_index: u32,
-    pub(crate) lost_packets: u32,
-    pub(crate) device_timestamp: u64,
-    pub(crate) host_timestamp_raw: i64,
+    /// 宽度，优先取扩展字段。
+    pub width: u32,
+    /// 高度，优先取扩展字段。
+    pub height: u32,
+    /// 像素格式。
+    pub pixel_type: PixelType,
+    /// 帧号。
+    pub frame_number: u32,
+    /// 水平偏移。
+    pub offset_x: u32,
+    /// 垂直偏移。
+    pub offset_y: u32,
+    /// 增益。
+    pub gain: f32,
+    /// 曝光时间。
+    pub exposure_time: f32,
+    /// 触发计数。
+    pub trigger_index: u32,
+    /// 丢包数。
+    pub lost_packets: u32,
+    /// 设备时间戳。
+    pub device_timestamp: u64,
+    /// 主机时间戳；头文件未定义单位。
+    pub host_timestamp: i64,
 }
 
-impl FrameInfo {
-    /// Image width in pixels.
-    #[must_use]
-    pub const fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// Image height in pixels.
-    #[must_use]
-    pub const fn height(&self) -> u32 {
-        self.height
-    }
-
-    /// Pixel format reported by the SDK.
-    #[must_use]
-    pub const fn pixel_type(&self) -> PixelType {
-        self.pixel_type
-    }
-
-    /// Device frame sequence number.
-    #[must_use]
-    pub const fn frame_num(&self) -> u32 {
-        self.frame_num
-    }
-
-    /// Number of valid bytes in the image buffer.
-    ///
-    /// Native frames use the SDK's extended 64-bit length when available.
-    #[must_use]
-    pub const fn frame_len(&self) -> u64 {
-        self.frame_len
-    }
-
-    /// Horizontal image-region offset in pixels.
-    #[must_use]
-    pub const fn offset_x(&self) -> u32 {
-        self.offset_x
-    }
-
-    /// Vertical image-region offset in pixels.
-    #[must_use]
-    pub const fn offset_y(&self) -> u32 {
-        self.offset_y
-    }
-
-    /// Gain recorded in the frame metadata.
-    #[must_use]
-    pub const fn gain(&self) -> f32 {
-        self.gain
-    }
-
-    /// Exposure time recorded in the frame metadata.
-    #[must_use]
-    pub const fn exposure_time(&self) -> f32 {
-        self.exposure_time
-    }
-
-    /// Trigger sequence index reported by the device.
-    #[must_use]
-    pub const fn trigger_index(&self) -> u32 {
-        self.trigger_index
-    }
-
-    /// Number of lost packets reported for this frame.
-    #[must_use]
-    pub const fn lost_packets(&self) -> u32 {
-        self.lost_packets
-    }
-
-    /// Device timestamp assembled from the SDK's high and low words.
-    #[must_use]
-    pub const fn device_timestamp(&self) -> u64 {
-        self.device_timestamp
-    }
-
-    /// Raw signed host timestamp returned by the SDK.
-    ///
-    /// The installed SDK headers do not define this value's unit, so the
-    /// wrapper intentionally leaves interpretation to the application.
-    #[must_use]
-    pub const fn host_timestamp_raw(&self) -> i64 {
-        self.host_timestamp_raw
-    }
-}
-
-impl fmt::Debug for FrameInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FrameInfo")
-            .field("width", &self.width())
-            .field("height", &self.height())
-            .field("pixel_type", &self.pixel_type())
-            .field("frame_num", &self.frame_num())
-            .field("frame_len", &self.frame_len())
-            .finish()
-    }
-}
-
-/// A borrowed image frame. To keep it beyond the callback or guard lifetime,
-/// call [`Frame::to_owned`].
+/// 借用 SDK buffer 的一帧图像。
+///
+/// callback 中的帧只在本次回调期间有效，polling 帧不能超过其 [`FrameGuard`]；
+/// 需要保留像素时复制 [`Frame::data`]。
+#[derive(Clone, Copy)]
 pub struct Frame<'a> {
     data: &'a [u8],
     info: FrameInfo,
 }
 
 impl<'a> Frame<'a> {
-    pub(crate) const fn from_parts(data: &'a [u8], info: FrameInfo) -> Self {
-        Self { data, info }
+    /// # Safety
+    ///
+    /// `raw` 来自成功的 `GetImageBuffer` 或 image callback，像素在 `'a` 内有效。
+    #[allow(clippy::cast_possible_truncation, reason = "只支持 64 位 Windows")]
+    pub(crate) unsafe fn from_raw(raw: &'a sys::MV_FRAME_OUT) -> Self {
+        let info = &raw.stFrameInfo;
+        let len = if info.nFrameLenEx == 0 { u64::from(info.nFrameLen) } else { info.nFrameLenEx };
+        let data = if raw.pBufAddr.is_null() || len == 0 {
+            &[]
+        } else {
+            // SAFETY: 调用方保证 pBufAddr 指向 len 字节的有效像素。
+            unsafe { slice::from_raw_parts(raw.pBufAddr, len as usize) }
+        };
+        Self {
+            data,
+            info: FrameInfo {
+                width: extended_or(info.nExtendWidth, info.nWidth),
+                height: extended_or(info.nExtendHeight, info.nHeight),
+                pixel_type: PixelType::from_raw(info.enPixelType.cast_unsigned()),
+                frame_number: info.nFrameNum,
+                offset_x: u32::from(info.nOffsetX),
+                offset_y: u32::from(info.nOffsetY),
+                gain: info.fGain,
+                exposure_time: info.fExposureTime,
+                trigger_index: info.nTriggerIndex,
+                lost_packets: info.nLostPacket,
+                device_timestamp: high_low(info.nDevTimeStampHigh, info.nDevTimeStampLow),
+                host_timestamp: info.nHostTimeStamp,
+            },
+        }
     }
 
-    /// Borrow the valid pixel bytes for this frame.
-    #[must_use]
-    pub const fn data(&self) -> &[u8] {
+    /// 像素字节，格式见 [`FrameInfo::pixel_type`]。
+    pub const fn data(&self) -> &'a [u8] {
         self.data
     }
 
-    /// Return a copy of this frame's metadata.
-    #[must_use]
-    pub const fn info(&self) -> FrameInfo {
-        self.info
-    }
-
-    /// Copy the pixels and metadata into SDK-independent storage.
-    #[must_use]
-    pub fn to_owned(&self) -> OwnedFrame {
-        let mut info = self.info;
-        info.frame_len = self.data.len() as u64;
-        OwnedFrame {
-            data: self.data.to_vec(),
-            info,
-        }
+    /// 帧的元数据。
+    pub const fn info(&self) -> &FrameInfo {
+        &self.info
     }
 }
 
@@ -160,153 +95,83 @@ impl fmt::Debug for Frame<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Frame")
             .field("info", &self.info)
-            .field("data.len", &self.data.len())
+            .field("data_len", &self.data.len())
             .finish()
     }
 }
 
-/// An owned image frame, independent of any SDK buffer.
-#[derive(Clone)]
-pub struct OwnedFrame {
-    data: Vec<u8>,
-    info: FrameInfo,
-}
-
-impl OwnedFrame {
-    /// Borrow the owned pixel bytes in the format indicated by
-    /// [`FrameInfo::pixel_type`].
-    #[must_use]
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    /// Mutably borrow the owned pixel bytes without changing their length.
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        &mut self.data
-    }
-
-    /// Consume the frame and return its pixel allocation.
-    #[must_use]
-    pub fn into_data(self) -> Vec<u8> {
-        self.data
-    }
-
-    /// Return a copy of the owned frame's metadata.
-    #[must_use]
-    pub const fn info(&self) -> FrameInfo {
-        self.info
-    }
-
-    /// Borrow this owned allocation as a [`Frame`].
-    #[must_use]
-    pub fn as_frame(&self) -> Frame<'_> {
-        Frame::from_parts(&self.data, self.info)
-    }
-}
-
-impl fmt::Debug for OwnedFrame {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OwnedFrame")
-            .field("info", &self.info())
-            .field("data.len", &self.data.len())
-            .finish()
-    }
-}
-
-/// RAII guard returned by [`Camera::get_image_buffer`](crate::Camera::get_image_buffer).
+/// polling 取得的 SDK buffer，释放时调用 `MV_CC_FreeImageBuffer` 归还。
 ///
-/// The guard keeps the camera borrowed and the SDK buffer valid.
-/// Dropping the guard makes one best-effort release attempt and cannot report
-/// an error, so use [`FrameGuard::release`] when release failures matter.
-///
-/// ```compile_fail
-/// use mvs_sdk_rs::{Camera, Timeout};
-///
-/// fn close_with_live_buffer(camera: Camera) {
-///     let frame = camera.get_image_buffer(Timeout::Finite(0)).unwrap();
-///     drop(camera);
-///     drop(frame);
-/// }
-/// ```
-pub struct FrameGuard<'cam> {
-    inner: backend::FrameGuard<'cam>,
+/// 守卫借用 [`Grabbing`](crate::Grabbing)，因此 buffer 必然在停止取流前归还。
+pub struct FrameGuard<'a> {
+    raw: sys::MV_FRAME_OUT,
+    handle: *mut c_void,
+    _grabbing: PhantomData<&'a ()>,
 }
 
-impl<'cam> FrameGuard<'cam> {
-    pub(crate) const fn new(inner: backend::FrameGuard<'cam>) -> Self {
-        Self { inner }
+impl FrameGuard<'_> {
+    pub(crate) const fn new(handle: *mut c_void, raw: &sys::MV_FRAME_OUT) -> Self {
+        Self { raw: *raw, handle, _grabbing: PhantomData }
     }
 
-    /// Borrow the guarded SDK buffer as a frame.
-    #[must_use]
+    /// 借出 buffer 中的帧。
     pub fn frame(&self) -> Frame<'_> {
-        self.inner.frame()
+        // SAFETY: raw 来自成功的 GetImageBuffer，buffer 在守卫释放前有效。
+        unsafe { Frame::from_raw(&self.raw) }
     }
+}
 
-    /// Return a copy of the guarded frame's metadata without borrowing pixels.
-    #[must_use]
-    pub fn info(&self) -> FrameInfo {
-        self.inner.info()
-    }
-
-    /// Copy the guarded frame into SDK-independent storage.
-    #[must_use]
-    pub fn to_owned(&self) -> OwnedFrame {
-        self.frame().to_owned()
-    }
-
-    /// Release the SDK buffer and report the vendor result.
-    ///
-    /// The guard is consumed, so the native release is attempted exactly once;
-    /// an error reports that attempt and does not return a guard for retry.
-    ///
-    /// # Errors
-    ///
-    /// Report the vendor error from the single `MV_CC_FreeImageBuffer` attempt.
-    pub fn release(mut self) -> MvsResult<()> {
-        self.inner.release()
+impl Drop for FrameGuard<'_> {
+    fn drop(&mut self) {
+        // SAFETY: handle 与 raw 来自同一次 GetImageBuffer，只归还一次。
+        unsafe { sys::MV_CC_FreeImageBuffer(self.handle, &raw mut self.raw) };
     }
 }
 
 impl fmt::Debug for FrameGuard<'_> {
-    /// Report the guarded frame's metadata; the pixel buffer is not formatted.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FrameGuard")
-            .field("info", &self.info())
-            .finish_non_exhaustive()
+        f.debug_tuple("FrameGuard").field(&self.frame()).finish()
     }
+}
+
+/// SDK 用扩展字段承载超过 `u16` 的尺寸，扩展字段为 0 时取旧字段。
+fn extended_or(extended: u32, legacy: u16) -> u32 {
+    if extended == 0 { u32::from(legacy) } else { extended }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, FrameInfo};
-    use crate::PixelType;
+    use super::Frame;
+    use crate::{PixelType, sys};
 
-    // 核心所有权约定：OwnedFrame 的像素与借用 buffer 解耦。
+    // 优先使用扩展尺寸与扩展长度，缺省时回退到旧字段。
     #[test]
-    fn owned_frame_detaches_from_borrowed_data() {
-        let info = FrameInfo {
-            width: 2,
-            height: 1,
-            pixel_type: PixelType::MONO8,
-            frame_num: 1,
-            frame_len: 2,
-            offset_x: 0,
-            offset_y: 0,
-            gain: 0.0,
-            exposure_time: 0.0,
-            trigger_index: 0,
-            lost_packets: 0,
-            device_timestamp: 0,
-            host_timestamp_raw: 0,
+    fn extended_fields_take_precedence() {
+        let mut pixels = [1_u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut raw = sys::MV_FRAME_OUT {
+            pBufAddr: pixels.as_mut_ptr(),
+            stFrameInfo: sys::MV_FRAME_OUT_INFO_EX {
+                nWidth: 1,
+                nExtendWidth: 4,
+                nHeight: 2,
+                nFrameLen: 1,
+                nFrameLenEx: 8,
+                enPixelType: PixelType::MONO8.raw().cast_signed(),
+                nDevTimeStampHigh: 1,
+                nDevTimeStampLow: 2,
+                ..Default::default()
+            },
+            ..Default::default()
         };
 
-        let mut data = [1, 2];
-        let owned = Frame::from_parts(&data, info).to_owned();
-        data[0] = 9;
+        // SAFETY: pixels 覆盖 raw 声明的 8 字节。
+        let frame = unsafe { Frame::from_raw(&raw) };
+        assert_eq!((frame.info().width, frame.info().height), (4, 2));
+        assert_eq!(frame.data(), pixels);
+        assert_eq!(frame.info().device_timestamp, 0x1_0000_0002);
 
-        assert_eq!(data, [9, 2]);
-        assert_eq!(owned.data(), [1, 2]);
-        assert_eq!(owned.info().frame_len(), 2);
+        raw.stFrameInfo.nFrameLenEx = 0;
+        // SAFETY: 同上，长度缩短为 1 字节。
+        assert_eq!(unsafe { Frame::from_raw(&raw) }.data(), [1]);
     }
 }

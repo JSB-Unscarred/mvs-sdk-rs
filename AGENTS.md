@@ -18,7 +18,8 @@
 - 测试必须要精简，必要测试要注释说明针对的功能或约定
 - 修改代码后要同步更新注释和测试
 - 尽可能减少模块、类型、字段、线程和中间状态
-- 新增一个 SDK 接口要同步四处：facade（`src/camera.rs` 或 `src/library.rs`）、`src/backend/windows/`、`src/backend/unsupported.rs`、README 接口表；改动生命周期时一并更新对应时序图
+- 结构参照 realsense-rust：每种 native 资源由一个类型拥有并在 `Drop` 中释放，方法直接调用 `sys`；调用顺序用类型与借用表达，不用运行时状态检查
+- 新增一个 SDK 接口时同步 README 接口表；改动生命周期或所有权时同步 `src/docs/architecture.rs`
 
 # Git
 
@@ -37,8 +38,5 @@
 - SDK的示例程序说明文档：C:\Program Files (x86)\MVS\Development\Documentations\工业相机Windows SDK C++示例程序说明.pdf
 - SDK的头文件目录：C:\Program Files (x86)\MVS\Development\Includes
 - SDK的示例程序目录：C:\Program Files (x86)\MVS\Development\Samples\C++
-- 生命周期与调用时序总览：README.md#生命周期约束
-- Callback取流主流程：时序图/Callback取流.md
-- 轮询取图与buffer归还：时序图/轮询取图与buffer归还.md
-- Camera显式关闭与Drop兜底：时序图/Camera显式关闭与Drop兜底.md
-- Sdk shutdown的终态约束：时序图/Sdk-shutdown的终态约束.md
+- 所有权、类型状态、清理失败与 callback 约定：src/docs/architecture.rs
+- 使用示例：examples/

@@ -1,14 +1,14 @@
 [package]
 name = "mvs-sdk-sys"
-version = "0.1.0"
-edition = "2024"
-publish = false
 description = "Raw FFI bindings for the Hikvision MVS machine-vision camera SDK."
-license = "MIT"
 readme = "README.md"
-repository = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
-homepage = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
 links = "MvCameraControl"
-
 keywords = ["mvs", "hikvision", "camera", "ffi", "bindings"]
-categories = ["api-bindings", "hardware-support"]
+categories = ["external-ffi-bindings", "hardware-support"]
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true

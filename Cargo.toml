@@ -2,35 +2,49 @@
 members = ["mvs-sdk-sys"]
 resolver = "3"
 
-[package]
-name = "mvs-sdk-rs"
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-publish = false
-description = "Safe Rust bindings for Hikvision MVS with a native Windows backend."
+rust-version = "1.87"
 license = "MIT"
-readme = "README.md"
 repository = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
 homepage = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
-include = [
-    "/src/**",
-    "/tests/**",
-    "/Cargo.toml",
-    "/README.md",
-    "/LICENSE",
-]
 
+[workspace.lints.rust]
+missing_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# 错误语义统一记录在 docs::architecture，逐函数复制 `# Errors` 只会制造模板文档。
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+undocumented_unsafe_blocks = "deny"
+
+[package]
+name = "mvs-sdk-rs"
+description = "Safe Rust bindings for the Hikvision MVS machine-vision camera SDK."
+readme = "README.md"
 keywords = ["mvs", "hikvision", "camera", "machine-vision", "ffi"]
 categories = ["api-bindings", "hardware-support"]
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
-# Enables explicitly-invoked hardware tests that link the native SDK and use a
-# dedicated camera. It is intentionally off for normal builds and CI.
+# 启用需要 MVS SDK 与专用测试相机的真机测试。
 hardware-tests = []
 
 [[test]]
 name = "hardware_smoke"
 required-features = ["hardware-tests"]
+
+[lints]
+workspace = true
 
 [dependencies]
 mvs-sdk-sys = { path = "mvs-sdk-sys", version = "0.1.0" }

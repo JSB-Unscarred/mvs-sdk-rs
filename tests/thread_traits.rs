@@ -1,4 +1,6 @@
-use mvs_sdk_rs::{Camera, DeviceInfo, Sdk};
+//! 公开类型的线程约定。
+
+use mvs_sdk_rs::{Camera, DeviceInfo, FrameGuard, Sdk};
 
 macro_rules! assert_not_impl {
     ($type:ty: $bound:path) => {
@@ -14,11 +16,13 @@ macro_rules! assert_not_impl {
     };
 }
 
+// 同一 handle 的调用必须由 owner 串行发起；buffer 不能离开取流线程。
 assert_not_impl!(Camera: Sync);
+assert_not_impl!(FrameGuard<'static>: Send);
 
-// 验证共享 session、owned snapshot 与独占 Camera 的线程契约。
+// 会话与设备信息可以共享，相机可以移动到工作线程。
 #[test]
-fn public_runtime_types_follow_the_thread_contract() {
+fn public_types_follow_the_thread_contract() {
     fn assert_send<T: Send>() {}
     fn assert_send_sync<T: Send + Sync>() {}
 

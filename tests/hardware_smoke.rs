@@ -1,60 +1,45 @@
-//! Windows x64 MSVC + MVS SDK 真机完整数据流测试。
-
-#![cfg(all(target_os = "windows", target_arch = "x86_64", target_env = "msvc"))]
-
-mod hardware_support;
+//! 真机数据流测试：需要 MVS SDK、专用相机与 `MVS_TEST_CAMERA_SERIAL`。
 
 use std::error::Error;
+use std::ffi::CString;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use mvs_sdk_rs::{AccessMode, Sdk, Timeout, TransportLayer};
+use mvs_sdk_rs::{AccessMode, Sdk, TransportLayer};
 
-// 验证 polling、callback 两条核心取流链和完整资源清理。
+const TIMEOUT: Duration = Duration::from_secs(3);
+
+// polling 与 callback 两条取流链，以及显式清理。
 #[test]
 #[ignore = "requires the MVS SDK, MVS_TEST_CAMERA_SERIAL, and TriggerMode=Off"]
-fn real_camera_data_flow_smoke() -> Result<(), Box<dyn Error>> {
+fn real_camera_data_flow() -> Result<(), Box<dyn Error>> {
+    // 只操作专用测试相机，避免误用其它设备。
+    let serial = CString::new(std::env::var("MVS_TEST_CAMERA_SERIAL")?)?;
     let sdk = Sdk::initialize()?;
+    let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
+    let device = devices
+        .iter()
+        .find(|device| device.serial_number() == serial.as_c_str())
+        .ok_or("the test camera was not enumerated")?;
+
+    let mut camera = sdk.open(device, AccessMode::Exclusive, 0)?;
+    // free-run 才能在超时内拿到图像。
+    assert_eq!(camera.get_enum(c"TriggerMode")?.current, 0, "TriggerMode must be Off");
+
+    let grabbing = camera.start_grabbing()?;
     {
-        let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
-        let device = hardware_support::test_device(&devices)?;
-
-        let mut polling = sdk.open(device, AccessMode::Exclusive, 0)?;
-        hardware_support::require_trigger_off(&polling)?;
-        polling.start_grabbing()?;
-        let timeout = Timeout::Finite(hardware_support::FRAME_TIMEOUT_MS);
-        let frame = polling.get_image_buffer(timeout)?;
-        assert_eq!(
-            frame.frame().data().len(),
-            usize::try_from(frame.info().frame_len())?
-        );
-        frame.release()?;
-        let owned = polling.get_owned_frame(timeout)?;
-        assert_eq!(
-            owned.data().len(),
-            usize::try_from(owned.info().frame_len())?
-        );
-        polling.stop_grabbing()?;
-        polling.close()?;
-
-        let mut callback = sdk.open(device, AccessMode::Exclusive, 0)?;
-        hardware_support::require_trigger_off(&callback)?;
-        let (frame_tx, frame_rx) = mpsc::sync_channel(1);
-        callback.register_image_callback(move |frame| {
-            let _ = frame_tx.try_send(frame.to_owned());
-        })?;
-        callback.start_grabbing()?;
-        let owned = frame_rx.recv_timeout(Duration::from_millis(u64::from(
-            hardware_support::FRAME_TIMEOUT_MS,
-        )))?;
-        assert_eq!(
-            owned.data().len(),
-            usize::try_from(owned.info().frame_len())?
-        );
-        callback.stop_grabbing()?;
-        callback.close()?;
+        let buffer = grabbing.get_image_buffer(Some(TIMEOUT))?;
+        assert!(!buffer.frame().data().is_empty());
     }
-    // ShutdownError 实现 std::error::Error，可直接经 `?` 上抛。
-    sdk.shutdown()?;
+    grabbing.stop()?;
+
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let grabbing = camera.start_grabbing_with(move |frame| {
+        let _ = sender.try_send(frame.data().to_vec());
+    })?;
+    assert!(!receiver.recv_timeout(TIMEOUT)?.is_empty());
+    grabbing.stop()?;
+
+    camera.close()?;
     Ok(())
 }

@@ -1,351 +1,345 @@
-//! 已打开相机的安全接口。
+//! 已打开的相机：handle 所有权、`GenICam` 节点读写与 exception/event callback。
 
-use std::cell::Cell;
+use std::any::Any;
+use std::ffi::{CStr, CString};
 use std::fmt;
-use std::marker::PhantomData;
+use std::mem;
 use std::os::raw::c_void;
+use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
-use crate::backend;
-use crate::callback::EventInfo;
-use crate::frame::{Frame, FrameGuard, OwnedFrame};
-use crate::library::RuntimeCore;
-use crate::text::SdkText;
-use crate::{AccessMode, CleanupError, EnumValue, FloatValue, IntValue, MvsResult, Timeout};
+use crate::callback::{event_trampoline, exception_trampoline};
+use crate::error::sdk_call;
+use crate::sdk::Session;
+use crate::{
+    AccessMode, DeviceInfo, Error, ErrorCode, EventInfo, ExceptionKind, Result,
+    fixed_cstr_from_chars, sys,
+};
 
-pub(crate) type ImageCallback = Arc<dyn Fn(&Frame<'_>) + Send + Sync + 'static>;
-pub(crate) type ExceptionCallback = Arc<dyn Fn(u32) + Send + Sync + 'static>;
-pub(crate) type EventCallback = Arc<dyn Fn(&EventInfo<'_>) + Send + Sync + 'static>;
+/// 交给 SDK 的 callback 闭包；只做类型擦除后的释放。
+pub(crate) type BoxedCallback = Box<dyn Any + Send + Sync>;
 
 /// 已打开的 MVS 相机。
 ///
-/// `Camera` 内部持有进程级 SDK session lease，因而不借用 [`crate::Sdk`]。
-/// 它可以移动到普通 worker thread，但不实现 `Sync`；同一 handle 的调用由 owner
-/// 串行发起。`Drop` 只做忽略错误的兜底，正常路径使用 [`Camera::close`]。
-/// 取流与 callback 注册状态只在对应 native 调用返回 `MV_OK` 后更新；
-/// native 失败保留调用前状态并返回原错误，本地顺序冲突返回
-/// [`crate::MvsError::InvalidState`]。
-///
-/// 幂等约定：释放类操作（[`Camera::stop_grabbing`]、`unregister_*`）在目标状态
-/// 已达成时返回 `Ok(())`，便于 teardown 路径无条件调用；建立类操作
-/// （[`Camera::start_grabbing`]、`register_*`）在状态已存在时返回
-/// [`crate::MvsError::InvalidState`]，因为重复调用意味着调用方状态机出错，
-/// 且第二次注册会静默顶掉上一个 closure。
+/// `Camera` 独占 native handle，释放时依次调用 `MV_CC_CloseDevice` 与 `MV_CC_DestroyHandle`；
+/// 需要观察清理错误时调用 [`Camera::close`]。相机持有 SDK 会话的引用，不借用
+/// [`Sdk`](crate::Sdk)。`Camera` 是 `Send` 但不是 `Sync`，同一 handle 上的调用由 owner 串行发起。
 pub struct Camera {
-    inner: backend::Camera,
-    _not_sync: PhantomData<Cell<()>>,
+    /// 只在 `release` 中被取走，存活的相机总是持有 handle。
+    handle: Option<NonNull<c_void>>,
+    /// 已交给 SDK 的 exception/event 闭包；SDK 可能随时回调，只在 `DestroyHandle` 成功后释放。
+    callbacks: Vec<BoxedCallback>,
+    session: Arc<Session>,
+}
+
+// SAFETY: 厂商示例在工作线程中使用 handle。Camera 独占 handle 且不是 Sync，调用不会并发。
+unsafe impl Send for Camera {}
+
+/// Integer 节点的当前值与取值约束。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IntValue {
+    /// 当前值。
+    pub current: i64,
+    /// 最小值。
+    pub min: i64,
+    /// 最大值。
+    pub max: i64,
+    /// 步长。
+    pub inc: i64,
+}
+
+/// Float 节点的当前值与取值范围。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FloatValue {
+    /// 当前值。
+    pub current: f32,
+    /// 最小值。
+    pub min: f32,
+    /// 最大值。
+    pub max: f32,
+}
+
+/// Enumeration 节点的当前值与候选值。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnumValue {
+    /// 当前值。
+    pub current: u32,
+    /// 节点支持的全部值。
+    pub supported: Vec<u32>,
 }
 
 impl Camera {
+    /// 创建并打开 handle；`OpenDevice` 失败时销毁 handle。
     pub(crate) fn open(
-        runtime: Arc<RuntimeCore>,
-        device: &backend::DeviceInfo,
+        session: Arc<Session>,
+        device: &DeviceInfo,
         mode: AccessMode,
         switchover_key: u16,
-    ) -> MvsResult<Self> {
-        Ok(Self {
-            inner: backend::Camera::open(runtime, device, mode, switchover_key)?,
-            _not_sync: PhantomData,
-        })
+    ) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        // SAFETY: handle 是可写输出；CreateHandle 在调用期间复制设备记录。
+        unsafe { sdk_call!(MV_CC_CreateHandle(&raw mut handle, device.raw())) }?;
+        let handle = NonNull::new(handle)
+            .ok_or(Error::Sdk { function: "MV_CC_CreateHandle", code: ErrorCode::Handle })?;
+
+        // SAFETY: handle 来自 CreateHandle，只由本函数持有。
+        let opened =
+            unsafe { sdk_call!(MV_CC_OpenDevice(handle.as_ptr(), mode as u32, switchover_key)) };
+        if let Err(error) = opened {
+            // SAFETY: OpenDevice 失败后 handle 仍只由本函数持有。
+            if unsafe { sdk_call!(MV_CC_DestroyHandle(handle.as_ptr())) }.is_err() {
+                // handle 未能销毁，保留会话引用以阻止 Finalize。
+                mem::forget(session);
+            }
+            return Err(error);
+        }
+
+        Ok(Self { handle: Some(handle), callbacks: Vec::new(), session })
     }
 
-    /// 借出 opaque native handle，供尚未包装的 SDK 接口使用。
+    /// native handle，供尚未封装的 SDK 接口使用。
     ///
-    /// # Safety
-    ///
-    /// pointer 由本 `Camera` 所有。通过 raw API 修改取流、callback 或 handle
-    /// 生命周期会破坏 safe 层状态。
-    #[must_use]
-    pub unsafe fn as_raw_handle(&self) -> *mut c_void {
-        self.inner.as_raw_handle()
+    /// 通过它改变取流、callback 注册或 handle 生命周期会破坏本 crate 的约定。
+    pub fn as_raw_handle(&self) -> *mut c_void {
+        self.handle.map_or(ptr::null_mut(), NonNull::as_ptr)
     }
 
-    /// 返回当前连接状态快照。
-    #[must_use]
+    /// 设备当前是否在线。
     pub fn is_connected(&self) -> bool {
-        self.inner.is_connected()
+        // SAFETY: handle 在相机存活期间有效。
+        unsafe { sys::MV_CC_IsDeviceConnected(self.as_raw_handle()) != 0 }
     }
 
-    /// 注册 image callback，使用 `MV_CC_RegisterImageCallBackEx2(autoFree=true)`。
-    ///
-    /// 注册与注销要求停止取流。同一注册只接受一次；先注销后可重新注册。
-    /// `Frame` 仅在本次调用期间有效，跨线程或长期使用时调用
-    /// [`Frame::to_owned`]。callback 内 panic 在 FFI 边界终止进程。
-    /// 业务错误应由 closure 通过 channel 通知 owner；它们不会成为本注册调用的
-    /// `MvsResult`。当前线程位于 MVS callback 时，生命周期操作返回
-    /// [`crate::MvsError::InvalidState`]；`close` / `Drop` 则终止进程。
-    ///
-    /// callback 由 SDK thread 调用，因此 capture 必须 `Send + Sync`：
-    ///
-    /// ```compile_fail
-    /// use std::rc::Rc;
-    /// use mvs_sdk_rs::Camera;
-    ///
-    /// fn register_non_send(camera: &mut Camera) {
-    ///     let state = Rc::new(());
-    ///     let _ = camera.register_image_callback(move |_| drop(Rc::clone(&state)));
-    /// }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// 取流未停止、已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
-    pub fn register_image_callback<F>(&mut self, callback: F) -> MvsResult<()>
-    where
-        F: Fn(&Frame<'_>) + Send + Sync + 'static,
-    {
-        self.inner.register_image_callback(Arc::new(callback))
-    }
-
-    /// 注销 image callback；未注册时直接返回 `Ok(())`。
-    ///
-    /// 返回后不再开始新的 Rust 调用；已经进入 trampoline 的调用可短暂继续，
-    /// 其 closure 由独立 Arc 保活。
-    ///
-    /// # Errors
-    ///
-    /// 取流未停止或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
-    pub fn unregister_image_callback(&mut self) -> MvsResult<()> {
-        self.inner.unregister_image_callback()
-    }
-
-    /// 启动取流；已注册 image callback 时使用 callback 模式，否则使用 polling。
-    ///
-    /// # Errors
-    ///
-    /// 已在取流或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 启动失败返回原错误。
-    pub fn start_grabbing(&mut self) -> MvsResult<()> {
-        self.inner.start_grabbing()
-    }
-
-    /// 停止取流；未取流时直接返回 `Ok(())`。
-    ///
-    /// # Errors
-    ///
-    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 停止失败返回原错误。
-    pub fn stop_grabbing(&mut self) -> MvsResult<()> {
-        self.inner.stop_grabbing()
-    }
-
-    /// polling 模式下获取一帧 SDK buffer。
-    ///
-    /// guard 借用相机并在 [`FrameGuard::release`] 或 `Drop` 时归还 buffer。
-    /// 无限等待传 [`Timeout::Infinite`]。
-    ///
-    /// # Errors
-    ///
-    /// 未取流或已注册 image callback 时返回 [`crate::MvsError::InvalidState`]；等待超时等情形返回原 native 错误。
-    pub fn get_image_buffer(&self, timeout: Timeout) -> MvsResult<FrameGuard<'_>> {
-        self.inner
-            .get_image_buffer(timeout.raw())
-            .map(FrameGuard::new)
-    }
-
-    /// polling 模式下获取并复制一帧，同时显式归还 SDK buffer。
-    ///
-    /// buffer release 失败会覆盖已完成的 owned copy 并返回对应错误，避免调用方误以为
-    /// 本次 native buffer 已正常归还。
-    ///
-    /// # Errors
-    ///
-    /// 取帧失败返回原错误；复制完成后 buffer release 失败返回该 release 错误。
-    pub fn get_owned_frame(&self, timeout: Timeout) -> MvsResult<OwnedFrame> {
-        let frame = self
-            .inner
-            .get_image_buffer(timeout.raw())
-            .map(FrameGuard::new)?;
-        let owned = frame.to_owned();
-        frame.release()?;
-        Ok(owned)
-    }
-
-    /// 获取 Integer 节点当前值、范围和步长。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn get_int(&self, key: &str) -> MvsResult<IntValue> {
-        self.inner.get_int(key)
+    /// 读取 Integer 节点。
+    pub fn get_int(&self, key: &CStr) -> Result<IntValue> {
+        let mut value = sys::MVCC_INTVALUE_EX::default();
+        // SAFETY: key 以 NUL 结尾，value 是可写输出，二者只在本次调用期间借出。
+        unsafe {
+            sdk_call!(MV_CC_GetIntValueEx(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+        }?;
+        Ok(IntValue { current: value.nCurValue, min: value.nMin, max: value.nMax, inc: value.nInc })
     }
 
     /// 设置 Integer 节点。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn set_int(&self, key: &str, value: i64) -> MvsResult<()> {
-        self.inner.set_int(key, value)
+    pub fn set_int(&self, key: &CStr, value: i64) -> Result<()> {
+        // SAFETY: key 以 NUL 结尾，只在本次调用期间借出。
+        unsafe { sdk_call!(MV_CC_SetIntValueEx(self.as_raw_handle(), key.as_ptr(), value)) }
     }
 
-    /// 获取 Enum 节点当前值和支持值列表。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn get_enum(&self, key: &str) -> MvsResult<EnumValue> {
-        self.inner.get_enum(key)
+    /// 读取 Enumeration 节点。
+    pub fn get_enum(&self, key: &CStr) -> Result<EnumValue> {
+        let mut value = sys::MVCC_ENUMVALUE_EX::default();
+        // SAFETY: key 以 NUL 结尾，value 是可写输出。
+        unsafe {
+            sdk_call!(MV_CC_GetEnumValueEx(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+        }?;
+        let count = (value.nSupportedNum as usize).min(value.nSupportValue.len());
+        Ok(EnumValue { current: value.nCurValue, supported: value.nSupportValue[..count].to_vec() })
     }
 
-    /// 按 numeric value 设置 Enum 节点。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn set_enum_value(&self, key: &str, value: u32) -> MvsResult<()> {
-        self.inner.set_enum_value(key, value)
+    /// 按数值设置 Enumeration 节点。
+    pub fn set_enum_value(&self, key: &CStr, value: u32) -> Result<()> {
+        // SAFETY: key 以 NUL 结尾。
+        unsafe { sdk_call!(MV_CC_SetEnumValue(self.as_raw_handle(), key.as_ptr(), value)) }
     }
 
-    /// 按 symbolic name 设置 Enum 节点。
-    ///
-    /// # Errors
-    ///
-    /// `key` 或 `value` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、symbolic name 无效或设备拒绝时返回原 native 错误。
-    pub fn set_enum_symbolic(&self, key: &str, value: &str) -> MvsResult<()> {
-        self.inner.set_enum_symbolic(key, value)
+    /// 按符号名设置 Enumeration 节点。
+    pub fn set_enum_symbolic(&self, key: &CStr, value: &CStr) -> Result<()> {
+        // SAFETY: 两个字符串都以 NUL 结尾。
+        unsafe {
+            sdk_call!(MV_CC_SetEnumValueByString(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                value.as_ptr()
+            ))
+        }
     }
 
-    /// 获取 Float 节点当前值和范围。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn get_float(&self, key: &str) -> MvsResult<FloatValue> {
-        self.inner.get_float(key)
+    /// 读取 Float 节点。
+    pub fn get_float(&self, key: &CStr) -> Result<FloatValue> {
+        let mut value = sys::MVCC_FLOATVALUE::default();
+        // SAFETY: key 以 NUL 结尾，value 是可写输出。
+        unsafe {
+            sdk_call!(MV_CC_GetFloatValue(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+        }?;
+        Ok(FloatValue { current: value.fCurValue, min: value.fMin, max: value.fMax })
     }
 
     /// 设置 Float 节点。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn set_float(&self, key: &str, value: f32) -> MvsResult<()> {
-        self.inner.set_float(key, value)
+    pub fn set_float(&self, key: &CStr, value: f32) -> Result<()> {
+        // SAFETY: key 以 NUL 结尾。
+        unsafe { sdk_call!(MV_CC_SetFloatValue(self.as_raw_handle(), key.as_ptr(), value)) }
     }
 
-    /// 获取 Boolean 节点。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn get_bool(&self, key: &str) -> MvsResult<bool> {
-        self.inner.get_bool(key)
+    /// 读取 Boolean 节点。
+    pub fn get_bool(&self, key: &CStr) -> Result<bool> {
+        let mut value = 0;
+        // SAFETY: key 以 NUL 结尾，value 是可写输出。
+        unsafe {
+            sdk_call!(MV_CC_GetBoolValue(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+        }?;
+        Ok(value != 0)
     }
 
     /// 设置 Boolean 节点。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn set_bool(&self, key: &str, value: bool) -> MvsResult<()> {
-        self.inner.set_bool(key, value)
+    pub fn set_bool(&self, key: &CStr, value: bool) -> Result<()> {
+        // SAFETY: key 以 NUL 结尾。
+        unsafe {
+            sdk_call!(MV_CC_SetBoolValue(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                sys::bool_::from(value)
+            ))
+        }
     }
 
-    /// 获取 String 节点，保留 SDK 原始字节。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn get_string(&self, key: &str) -> MvsResult<SdkText> {
-        self.inner.get_string(key)
+    /// 读取 String 节点，保留 SDK 原始字节。
+    pub fn get_string(&self, key: &CStr) -> Result<CString> {
+        let mut value = sys::MVCC_STRINGVALUE::default();
+        // SAFETY: key 以 NUL 结尾，value 是可写输出。
+        unsafe {
+            sdk_call!(MV_CC_GetStringValue(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+        }?;
+        Ok(fixed_cstr_from_chars(&value.chCurValue).to_owned())
     }
 
-    /// 设置 String 节点；`value` 为原始字节，拒绝 interior NUL。
-    ///
-    /// # Errors
-    ///
-    /// `key` 或 `value` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、超长或设备拒绝时返回原 native 错误。
-    pub fn set_string(&self, key: &str, value: &[u8]) -> MvsResult<()> {
-        self.inner.set_string(key, value)
+    /// 设置 String 节点。
+    pub fn set_string(&self, key: &CStr, value: &CStr) -> Result<()> {
+        // SAFETY: 两个字符串都以 NUL 结尾。
+        unsafe {
+            sdk_call!(MV_CC_SetStringValue(self.as_raw_handle(), key.as_ptr(), value.as_ptr()))
+        }
     }
 
     /// 执行 Command 节点。
-    ///
-    /// # Errors
-    ///
-    /// `key` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；节点不存在、类型不符或设备拒绝时返回原 native 错误。
-    pub fn exec_command(&self, key: &str) -> MvsResult<()> {
-        self.inner.exec_command(key)
+    pub fn exec_command(&self, key: &CStr) -> Result<()> {
+        // SAFETY: key 以 NUL 结尾。
+        unsafe { sdk_call!(MV_CC_SetCommandValue(self.as_raw_handle(), key.as_ptr())) }
     }
 
-    /// 注册设备 exception callback。
+    /// 注册设备 exception callback，替换之前的注册。
     ///
-    /// closure 只用于通知；需要关闭或重连时通过 channel 交给 Camera owner。
-    ///
-    /// # Errors
-    ///
-    /// 已有注册或当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注册失败返回原错误。
-    pub fn register_exception_callback<F>(&mut self, callback: F) -> MvsResult<()>
+    /// SDK 在内部线程调用 `callback`；闭包保留到 `DestroyHandle`，因此重复注册会累积闭包。
+    /// callback 内的 panic 会在 FFI 边界终止进程。
+    pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
-        F: Fn(u32) + Send + Sync + 'static,
+        F: Fn(ExceptionKind) + Send + Sync + 'static,
     {
-        self.inner.register_exception_callback(Arc::new(callback))
+        let callback = Box::new(callback);
+        let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
+        // SAFETY: trampoline 与 F 匹配；闭包在 DestroyHandle 之前不会释放。
+        unsafe {
+            sdk_call!(MV_CC_RegisterExceptionCallBack(
+                self.as_raw_handle(),
+                Some(exception_trampoline::<F>),
+                user
+            ))
+        }?;
+        self.callbacks.push(callback);
+        Ok(())
     }
 
-    /// 注销 exception callback；未注册时直接返回 `Ok(())`，已经进入的调用可短暂继续。
-    ///
-    /// # Errors
-    ///
-    /// 当前线程位于 MVS callback 时返回 [`crate::MvsError::InvalidState`]；native 注销失败返回原错误。
-    pub fn unregister_exception_callback(&mut self) -> MvsResult<()> {
-        self.inner.unregister_exception_callback()
+    /// 注销 exception callback；已注册的闭包仍保留到 `DestroyHandle`。
+    pub fn unregister_exception_callback(&mut self) -> Result<()> {
+        // SAFETY: 厂商约定传入空 callback 注销。
+        unsafe {
+            sdk_call!(MV_CC_RegisterExceptionCallBack(self.as_raw_handle(), None, ptr::null_mut()))
+        }
     }
 
-    /// 注册一个 named `GenICam` event callback。
+    /// 为名为 `event_name` 的 `GenICam` 事件注册 callback，替换该事件之前的注册。
     ///
-    /// # Errors
-    ///
-    /// 同名 event 已有注册、`event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回对应错误；native 注册失败返回原错误。
-    pub fn register_event_callback<F>(&mut self, event_name: &str, callback: F) -> MvsResult<()>
+    /// 闭包的保留与 panic 规则同 [`Camera::register_exception_callback`]。设备端的事件开关见
+    /// [`Camera::event_notification_on`]。
+    pub fn register_event_callback<F>(&mut self, event_name: &CStr, callback: F) -> Result<()>
     where
         F: Fn(&EventInfo<'_>) + Send + Sync + 'static,
     {
-        self.inner
-            .register_event_callback(event_name, Arc::new(callback))
+        // 厂商未说明是否复制事件名，名字与闭包一起保留到 DestroyHandle。
+        let name = event_name.to_owned();
+        let callback = Box::new(callback);
+        let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
+        // SAFETY: name 以 NUL 结尾；trampoline 与 F 匹配，name 与闭包在 DestroyHandle 之前不会释放。
+        unsafe {
+            sdk_call!(MV_CC_RegisterEventCallBackEx(
+                self.as_raw_handle(),
+                name.as_ptr(),
+                Some(event_trampoline::<F>),
+                user
+            ))
+        }?;
+        self.callbacks.push(callback);
+        self.callbacks.push(Box::new(name));
+        Ok(())
     }
 
-    /// 注销一个 named event callback；未注册时直接返回 `Ok(())`。
-    ///
-    /// # Errors
-    ///
-    /// `event_name` 含 interior NUL 或当前线程位于 MVS callback 时返回对应错误；native 注销失败返回原错误。
-    pub fn unregister_event_callback(&mut self, event_name: &str) -> MvsResult<()> {
-        self.inner.unregister_event_callback(event_name)
+    /// 注销名为 `event_name` 的事件 callback；已注册的闭包仍保留到 `DestroyHandle`。
+    pub fn unregister_event_callback(&mut self, event_name: &CStr) -> Result<()> {
+        // SAFETY: event_name 以 NUL 结尾；厂商约定传入空 callback 注销。
+        unsafe {
+            sdk_call!(MV_CC_RegisterEventCallBackEx(
+                self.as_raw_handle(),
+                event_name.as_ptr(),
+                None,
+                ptr::null_mut()
+            ))
+        }
     }
 
-    /// 开启设备端 named event notification。
-    ///
-    /// # Errors
-    ///
-    /// `event_name` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；设备不支持该 event 时返回原 native 错误。
-    pub fn event_notification_on(&self, event_name: &str) -> MvsResult<()> {
-        self.inner.event_notification_on(event_name)
+    /// 打开设备端的事件通知。
+    pub fn event_notification_on(&self, event_name: &CStr) -> Result<()> {
+        // SAFETY: event_name 以 NUL 结尾。
+        unsafe { sdk_call!(MV_CC_EventNotificationOn(self.as_raw_handle(), event_name.as_ptr())) }
     }
 
-    /// 关闭设备端 named event notification。
-    ///
-    /// # Errors
-    ///
-    /// `event_name` 含 interior NUL 时返回 [`crate::MvsError::Nul`]；设备不支持该 event 时返回原 native 错误。
-    pub fn event_notification_off(&self, event_name: &str) -> MvsResult<()> {
-        self.inner.event_notification_off(event_name)
+    /// 关闭设备端的事件通知。
+    pub fn event_notification_off(&self, event_name: &CStr) -> Result<()> {
+        // SAFETY: event_name 以 NUL 结尾。
+        unsafe { sdk_call!(MV_CC_EventNotificationOff(self.as_raw_handle(), event_name.as_ptr())) }
     }
 
-    /// 消费相机并按 Stop → callback 注销 → Close → Destroy 顺序清理。
+    /// 关闭并销毁 handle，返回首个错误。
+    pub fn close(mut self) -> Result<()> {
+        self.release()
+    }
+
+    /// 交给 SDK 且可能仍被回调的闭包，保留到 `DestroyHandle` 之后。
+    pub(crate) fn keep_until_destroy(&mut self, callback: BoxedCallback) {
+        self.callbacks.push(callback);
+    }
+
+    /// 取走 handle 并依次 Close、Destroy；`close` 之后的 `Drop` 因此不会重复释放。
     ///
-    /// 全部清理步骤只尝试一次；错误返回后不能使用同一 `Camera` 重试。
-    /// [`CleanupError`] 保留首个 Destroy 前操作及错误，并独立保留 Destroy 错误。
-    /// 当前线程位于 MVS callback 时终止进程。
-    ///
-    /// # Errors
-    ///
-    /// teardown 任一步失败时返回 [`CleanupError`]，其中保留首个前序错误与独立的 `DestroyHandle` 错误。
-    pub fn close(mut self) -> Result<(), CleanupError> {
-        self.inner.cleanup()
+    /// `CloseDevice` 失败不影响 `DestroyHandle`。Destroy 失败时 SDK 可能仍持有闭包指针和会话资源，
+    /// 因此泄漏闭包与一份会话引用，Finalize 不再执行。
+    fn release(&mut self) -> Result<()> {
+        let Some(handle) = self.handle.take() else {
+            return Ok(());
+        };
+        let handle = handle.as_ptr();
+        // SAFETY: handle 由相机独占；借用相机的取流守卫与 buffer 都已释放。
+        let close = unsafe { sdk_call!(MV_CC_CloseDevice(handle)) };
+        // SAFETY: 同上，且之后不再使用 handle。
+        let destroy = unsafe { sdk_call!(MV_CC_DestroyHandle(handle)) };
+        if destroy.is_err() {
+            mem::forget(mem::take(&mut self.callbacks));
+            mem::forget(Arc::clone(&self.session));
+        }
+        close.and(destroy)
+    }
+}
+
+impl Drop for Camera {
+    fn drop(&mut self) {
+        let _ = self.release();
     }
 }
 
 impl fmt::Debug for Camera {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.inner, f)
+        f.debug_struct("Camera")
+            .field("handle", &self.as_raw_handle())
+            .field("callbacks", &self.callbacks.len())
+            .finish_non_exhaustive()
     }
 }

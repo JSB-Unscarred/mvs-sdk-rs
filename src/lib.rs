@@ -1,81 +1,72 @@
-//! Safe Rust wrapper for the Hikvision **MVS** machine-vision camera SDK.
+//! 海康威视 MVS 工业相机 SDK 的安全 Rust 封装。
 //!
-//! Raw `unsafe` FFI is isolated in the companion `mvs-sdk-sys` crate. This
-//! crate exposes one platform-independent API backed by the native SDK on
-//! Windows `x86_64` MSVC. On other targets, [`Sdk::initialize`] returns
-//! [`MvsError::UnsupportedPlatform`]. Building and linking Windows MSVC applications
-//! requires the MVS SDK and `MVCAM_COMMON_RUNENV`; at runtime, the SDK DLL
-//! directory must be discoverable by the Windows loader, typically via `PATH`.
+//! 原始 FFI 位于 `mvs-sdk-sys`。本 crate 用所有权与借用表达 SDK 的调用约定：
 //!
-//! # Workflow
+//! - [`Sdk`] 初始化进程级 SDK，枚举并打开设备；
+//! - [`Camera`] 独占一个 native handle，负责节点读写和 exception/event callback；
+//! - [`Camera::start_grabbing`] 与 [`Camera::start_grabbing_with`] 返回借用相机的取流守卫，
+//!   polling 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
 //!
-//! Initialize [`Sdk`], discover owned [`DeviceInfo`] snapshots with
-//! [`Sdk::devices`], open one through [`Sdk::open`], configure `GenICam` nodes
-//! through [`Camera`], then choose one acquisition mode:
+//! 设计取舍见 [`docs::architecture`]。
 //!
-//! - Register an image callback before [`Camera::start_grabbing`] for callback
-//!   mode. The SDK invokes it on a streaming thread and each [`Frame`] is
-//!   borrowed only for that invocation.
-//! - Start without an image callback for polling mode, then call
-//!   [`Camera::get_image_buffer`]. Its [`FrameGuard`] releases the native buffer
-//!   on drop; call [`FrameGuard::release`] to observe release errors, or use
-//!   [`Camera::get_owned_frame`] to copy and explicitly release in one call.
-//!   Both take a [`Timeout`]; infinite wait is [`Timeout::Infinite`].
+//! ```no_run
+//! use std::time::Duration;
 //!
-//! Stop acquisition before registering or unregistering the image
-//! callback, and before switching acquisition modes. To keep pixels beyond a
-//! callback or guard lifetime, copy them with [`Frame::to_owned`].
-//! A callback must ask the [`Camera`] owner thread to change lifecycle state;
-//! while the current thread is in any MVS callback, start/stop/register return
-//! [`MvsError::InvalidState`], and `close` / `Drop` terminate the process.
+//! use mvs_sdk_rs::{AccessMode, Sdk, TransportLayer};
 //!
-//! # Lifetimes and shutdown
+//! fn main() -> mvs_sdk_rs::Result<()> {
+//!     let sdk = Sdk::initialize()?;
+//!     let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
+//!     let mut camera = sdk.open(&devices[0], AccessMode::Exclusive, 0)?;
+//!     camera.set_float(c"ExposureTime", 10_000.0)?;
 //!
-//! [`Camera`] owns an internal lease on the process-wide session and is `Send` but not `Sync`;
-//! move its unique owner to a worker thread and serialize access to one handle.
-//! Prefer [`Camera::close`] over relying on `Drop`, because explicit close can
-//! preserve the first pre-destroy operation/error and the Destroy error in
-//! `CleanupError`. `Camera::close`, [`FrameGuard::release`] and [`Sdk::shutdown`]
-//! consume their owner and attempt cleanup once; their errors are diagnostic
-//! input for host policy, not retry handles.
-//! Consuming [`Sdk`] with [`Sdk::shutdown`] succeeds only after all cameras are closed or dropped;
-//! while a camera is still alive the call returns the [`Sdk`] through
-//! [`ShutdownError::into_sdk`] so the caller can close it and retry.
-//! A native handle whose destruction was not confirmed also blocks Finalize after its Rust owner
-//! is consumed, and that rejection is terminal.
-//! Finalization is terminal for the process, as required by the vendor
-//! documentation.
-//!
-//! See the repository's `tests/hardware_smoke.rs` for polling and callback
-//! workflows on separate native handles.
+//!     let grabbing = camera.start_grabbing()?;
+//!     let buffer = grabbing.get_image_buffer(Some(Duration::from_secs(1)))?;
+//!     let frame = buffer.frame();
+//!     println!("{:?}，{} 字节", frame.info(), frame.data().len());
+//!     Ok(())
+//! }
+//! ```
 
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
-// Public functions must not expose types that downstream crates cannot name.
-#![deny(unnameable_types)]
-// Platform backends are private; accidentally writing `pub` inside one should
-// fail compilation instead of silently creating an unreachable public item.
-#![deny(unreachable_pub)]
-// `unreachable_pub` above requires spelling `pub(crate)` inside private modules,
-// which is exactly what this lint would remove.
-#![allow(clippy::redundant_pub_crate)]
+use std::ffi::CStr;
+use std::os::raw::c_char;
 
 pub(crate) use mvs_sdk_sys as sys;
 
-mod backend;
 mod callback;
 mod camera;
 mod device;
-pub mod error;
+pub mod docs;
+mod error;
 mod frame;
-mod library;
-mod text;
-mod types;
+mod grabbing;
+mod kind;
+mod sdk;
 
-pub use callback::EventInfo;
-pub use camera::Camera;
-pub use device::{DeviceInfo, DeviceProperties};
-pub use error::{CleanupError, MvsError, MvsResult, ShutdownError};
-pub use frame::{Frame, FrameGuard, FrameInfo, OwnedFrame};
-pub use library::Sdk;
-pub use text::SdkText;
-pub use types::{AccessMode, EnumValue, FloatValue, IntValue, PixelType, Timeout, TransportLayer};
+pub use callback::{EventInfo, ExceptionKind};
+pub use camera::{Camera, EnumValue, FloatValue, IntValue};
+pub use device::DeviceInfo;
+pub use error::{Error, ErrorCode, Result};
+pub use frame::{Frame, FrameGuard, FrameInfo};
+pub use grabbing::{CallbackGrabbing, Grabbing};
+pub use kind::{AccessMode, PixelType, TransportLayer};
+pub use sdk::Sdk;
+
+/// 读取 SDK 定长字符数组中首个 NUL 之前的字符串。
+///
+/// 厂商保证这些字段以 NUL 结尾；缺少 NUL 时返回空串，避免越界读取。
+fn fixed_cstr(bytes: &[u8]) -> &CStr {
+    CStr::from_bytes_until_nul(bytes).unwrap_or_default()
+}
+
+/// [`fixed_cstr`] 的 `c_char` 版本。
+fn fixed_cstr_from_chars(chars: &[c_char]) -> &CStr {
+    // SAFETY: `c_char` 与 `u8` 大小、对齐相同，只重新解释已初始化的字节。
+    let bytes = unsafe { std::slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) };
+    fixed_cstr(bytes)
+}
+
+/// 合并 SDK 拆成高低两半的 64 位值。
+fn high_low(high: u32, low: u32) -> u64 {
+    (u64::from(high) << 32) | u64::from(low)
+}
