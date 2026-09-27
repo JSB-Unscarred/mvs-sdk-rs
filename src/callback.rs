@@ -34,7 +34,7 @@ impl ExceptionKind {
 }
 
 /// event callback 收到的事件信息，只在本次回调期间有效。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct EventInfo<'a> {
     /// 事件名。
@@ -46,7 +46,7 @@ pub struct EventInfo<'a> {
     /// 帧号。
     pub block_id: u64,
     /// 设备时间戳，单位由厂商定义。
-    pub timestamp: u64,
+    pub device_timestamp: u64,
 }
 
 /// 把闭包放入 `Arc`，返回 owner 持有的强引用与交给 SDK 的 `pUser`。
@@ -130,7 +130,7 @@ pub(crate) unsafe extern "C" fn event_trampoline<F>(
             event_id: info.nEventID,
             stream_channel: info.nStreamChannel,
             block_id: high_low(info.nBlockIdHigh, info.nBlockIdLow),
-            timestamp: high_low(info.nTimestampHigh, info.nTimestampLow),
+            device_timestamp: high_low(info.nTimestampHigh, info.nTimestampLow),
         });
     }
 }
@@ -176,7 +176,7 @@ mod tests {
             *target = byte.cast_signed();
         }
         let (_event_owner, on_event, event_user) = register_event(|event| {
-            let seen = format!("{:?}@{:X}", event.name, event.timestamp);
+            let seen = format!("{:?}@{:X}", event.name, event.device_timestamp);
             SEEN.lock().unwrap().push(seen);
         });
         let (_exception_owner, on_exception, exception_user) =

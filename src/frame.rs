@@ -41,10 +41,13 @@ pub struct FrameInfo {
 ///
 /// callback 中的帧只在本次回调期间有效，polling 帧不能超过其 [`FrameGuard`]；
 /// 需要保留像素时复制 [`Frame::data`]。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Frame<'a> {
-    data: &'a [u8],
-    info: FrameInfo,
+    /// 像素字节，格式见 [`FrameInfo::pixel_type`]。
+    pub data: &'a [u8],
+    /// 帧的元数据。
+    pub info: FrameInfo,
 }
 
 impl<'a> Frame<'a> {
@@ -82,16 +85,6 @@ impl<'a> Frame<'a> {
                 host_timestamp: info.nHostTimeStamp,
             },
         }
-    }
-
-    /// 像素字节，格式见 [`FrameInfo::pixel_type`]。
-    pub const fn data(&self) -> &'a [u8] {
-        self.data
-    }
-
-    /// 帧的元数据。
-    pub const fn info(&self) -> &FrameInfo {
-        &self.info
     }
 }
 
@@ -178,12 +171,12 @@ mod tests {
 
         // SAFETY: pixels 覆盖 raw 声明的 8 字节。
         let frame = unsafe { Frame::from_raw(&raw) };
-        assert_eq!((frame.info().width, frame.info().height), (4, 2));
-        assert_eq!(frame.data(), pixels);
-        assert_eq!(frame.info().device_timestamp, 0x1_0000_0002);
+        assert_eq!((frame.info.width, frame.info.height), (4, 2));
+        assert_eq!(frame.data, pixels);
+        assert_eq!(frame.info.device_timestamp, 0x1_0000_0002);
 
         raw.stFrameInfo.nFrameLenEx = 0;
         // SAFETY: 同上，长度缩短为 1 字节。
-        assert_eq!(unsafe { Frame::from_raw(&raw) }.data(), [1]);
+        assert_eq!(unsafe { Frame::from_raw(&raw) }.data, [1]);
     }
 }

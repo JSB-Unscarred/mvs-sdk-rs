@@ -3,7 +3,6 @@
 use std::ffi::CStr;
 use std::fmt;
 use std::net::Ipv4Addr;
-use std::os::raw::c_void;
 
 use crate::{TransportLayer, fixed_cstr, sys};
 
@@ -61,12 +60,13 @@ impl DeviceInfo {
         self.raw.nDevTypeInfo
     }
 
-    /// `nMacAddrHigh` 与 `nMacAddrLow` 按大端拼接的 8 字节。
-    pub fn mac_address(&self) -> [u8; 8] {
-        let mut mac = [0; 8];
-        mac[..4].copy_from_slice(&self.raw.nMacAddrHigh.to_be_bytes());
-        mac[4..].copy_from_slice(&self.raw.nMacAddrLow.to_be_bytes());
-        mac
+    /// MAC 地址。
+    ///
+    /// 同 `GigE` Vision 引导寄存器：`nMacAddrHigh` 的低 16 位是前 2 字节，`nMacAddrLow` 是后 4 字节。
+    pub const fn mac_address(&self) -> [u8; 6] {
+        let [_, _, high0, high1] = self.raw.nMacAddrHigh.to_be_bytes();
+        let [low0, low1, low2, low3] = self.raw.nMacAddrLow.to_be_bytes();
+        [high0, high1, low0, low1, low2, low3]
     }
 
     /// 制造商名称。
@@ -90,6 +90,8 @@ impl DeviceInfo {
     }
 
     /// 用户自定义名称；原生 Camera Link 设备没有该字段。
+    ///
+    /// 字节按设备写入时的编码保存，厂商示例按系统 ANSI 代码页（中文 Windows 上为 GBK）解码。
     pub fn user_defined_name(&self) -> &CStr {
         self.string(|strings| strings.user_defined_name)
     }
@@ -116,8 +118,8 @@ impl DeviceInfo {
     }
 
     /// 指向内部 `MV_CC_DEVICE_INFO` 的指针，供尚未封装的 SDK 接口使用，只在本值存活期间有效。
-    pub fn as_raw(&self) -> *const c_void {
-        (&raw const self.raw).cast()
+    pub const fn as_raw(&self) -> *const sys::MV_CC_DEVICE_INFO {
+        &raw const self.raw
     }
 
     fn string(&self, field: impl FnOnce(Strings<'_>) -> &[u8]) -> &CStr {
@@ -175,11 +177,13 @@ mod tests {
     use super::DeviceInfo;
     use crate::sys;
 
-    // 字符串按 transport 选择 union 成员并截断到 NUL；非 GigE 设备没有 IP。
+    // 字符串按 transport 选择 union 成员并截断到 NUL；非 GigE 设备没有 IP；MAC 丢弃高位字段的高 16 位。
     #[test]
     fn fields_follow_the_transport_layer() {
         let mut raw = sys::MV_CC_DEVICE_INFO {
             nTLayerType: sys::MV_GIGE_DEVICE,
+            nMacAddrHigh: 0xFFFF_0011,
+            nMacAddrLow: 0x2233_4455,
             ..Default::default()
         };
         // SAFETY: 测试只写入 stGigEInfo 成员，union 其余字节保持为零。
@@ -191,6 +195,7 @@ mod tests {
         let gige = DeviceInfo::from_raw(&raw);
         assert_eq!(gige.serial_number(), c"SN1");
         assert_eq!(gige.current_ip(), Some(Ipv4Addr::new(192, 168, 1, 2)));
+        assert_eq!(gige.mac_address(), [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
 
         raw.nTLayerType = sys::MV_CAMERALINK_DEVICE;
         let camera_link = DeviceInfo::from_raw(&raw);

@@ -33,13 +33,13 @@ fn real_camera_data_flow() -> Result<(), Box<dyn Error>> {
     let grabbing = camera.start_grabbing()?;
     {
         let buffer = grabbing.get_image_buffer(Some(TIMEOUT))?;
-        assert!(!buffer.frame().data().is_empty());
+        assert!(!buffer.frame().data.is_empty());
     }
     grabbing.stop()?;
 
     let (sender, receiver) = mpsc::sync_channel(1);
     let grabbing = camera.start_grabbing_with(move |frame| {
-        let _ = sender.try_send(frame.data().to_vec());
+        let _ = sender.try_send(frame.data.to_vec());
     })?;
     assert!(!receiver.recv_timeout(TIMEOUT)?.is_empty());
     grabbing.stop()?;

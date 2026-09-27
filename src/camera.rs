@@ -11,8 +11,7 @@ use crate::callback::{event_trampoline, exception_trampoline, into_user_data};
 use crate::error::sdk_call;
 use crate::sdk::Session;
 use crate::{
-    AccessMode, DeviceInfo, Error, ErrorCode, EventInfo, ExceptionKind, Result,
-    fixed_cstr_from_chars, sys,
+    AccessMode, DeviceInfo, Error, ErrorCode, EventInfo, ExceptionKind, Result, fixed_cstring, sys,
 };
 
 /// 已打开的 MVS 相机。
@@ -20,6 +19,7 @@ use crate::{
 /// `Camera` 独占 native handle，释放时依次调用 `MV_CC_CloseDevice` 与 `MV_CC_DestroyHandle`；
 /// 需要观察清理错误时调用 [`Camera::close`]。相机持有 SDK 会话的引用，不借用
 /// [`Sdk`](crate::Sdk)。`Camera` 是 `Send` 但不是 `Sync`，同一 handle 上的调用由 owner 串行发起。
+#[must_use = "the camera is closed when dropped"]
 pub struct Camera {
     /// 只在 `release` 中被取走，存活的相机总是持有 handle。
     handle: Option<NonNull<c_void>>,
@@ -32,7 +32,8 @@ pub struct Camera {
 unsafe impl Send for Camera {}
 
 /// Integer 节点的当前值与取值约束。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct IntValue {
     /// 当前值。
     pub current: i64,
@@ -41,11 +42,12 @@ pub struct IntValue {
     /// 最大值。
     pub max: i64,
     /// 步长。
-    pub inc: i64,
+    pub increment: i64,
 }
 
 /// Float 节点的当前值与取值范围。
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct FloatValue {
     /// 当前值。
     pub current: f32,
@@ -56,12 +58,23 @@ pub struct FloatValue {
 }
 
 /// Enumeration 节点的当前值与候选值。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct EnumValue {
     /// 当前值。
     pub current: u32,
     /// 节点支持的全部值。
     pub supported: Vec<u32>,
+}
+
+/// String 节点的当前值与容量。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct StringValue {
+    /// 当前值，保留 SDK 原始字节。
+    pub current: CString,
+    /// 最大字节数。
+    pub max_length: i64,
 }
 
 impl Camera {
@@ -132,7 +145,7 @@ impl Camera {
             current: value.nCurValue,
             min: value.nMin,
             max: value.nMax,
-            inc: value.nInc,
+            increment: value.nInc,
         })
     }
 
@@ -167,7 +180,7 @@ impl Camera {
     }
 
     /// 按数值设置 Enumeration 节点。
-    pub fn set_enum_value(&self, key: &CStr, value: u32) -> Result<()> {
+    pub fn set_enum(&self, key: &CStr, value: u32) -> Result<()> {
         // SAFETY: key 以 NUL 结尾。
         unsafe {
             sdk_call!(MV_CC_SetEnumValue(
@@ -246,8 +259,8 @@ impl Camera {
         }
     }
 
-    /// 读取 String 节点，保留 SDK 原始字节。
-    pub fn get_string(&self, key: &CStr) -> Result<CString> {
+    /// 读取 String 节点。
+    pub fn get_string(&self, key: &CStr) -> Result<StringValue> {
         let mut value = sys::MVCC_STRINGVALUE::default();
         // SAFETY: key 以 NUL 结尾，value 是可写输出。
         unsafe {
@@ -257,7 +270,10 @@ impl Camera {
                 &raw mut value
             ))
         }?;
-        Ok(fixed_cstr_from_chars(&value.chCurValue).to_owned())
+        Ok(StringValue {
+            current: fixed_cstring(&value.chCurValue),
+            max_length: value.nMaxLength,
+        })
     }
 
     /// 设置 String 节点。
@@ -273,7 +289,7 @@ impl Camera {
     }
 
     /// 执行 Command 节点。
-    pub fn exec_command(&self, key: &CStr) -> Result<()> {
+    pub fn execute_command(&self, key: &CStr) -> Result<()> {
         // SAFETY: key 以 NUL 结尾。
         unsafe { sdk_call!(MV_CC_SetCommandValue(self.as_raw_handle(), key.as_ptr())) }
     }

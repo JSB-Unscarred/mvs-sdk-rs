@@ -58,6 +58,7 @@ impl Camera {
 
 /// polling 模式的取流守卫。
 #[derive(Debug)]
+#[must_use = "grabbing stops when the guard is dropped"]
 pub struct Grabbing<'a> {
     camera: &'a mut Camera,
 }
@@ -100,6 +101,7 @@ impl Drop for Grabbing<'_> {
 }
 
 /// callback 模式的取流守卫，持有交给 SDK 的闭包。
+#[must_use = "grabbing stops and the callback is unregistered when the guard is dropped"]
 pub struct CallbackGrabbing<'a> {
     camera: &'a mut Camera,
     /// 只在 `finish` 中被取走，`stop` 之后的 `Drop` 因此不会重复停止。

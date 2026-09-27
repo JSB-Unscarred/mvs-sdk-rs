@@ -7,7 +7,7 @@ use mvs_sdk::{AccessMode, Sdk, TransportLayer};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = Sdk::new()?;
     let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
-    let device = devices.first().ok_or("没有找到相机")?;
+    let device = devices.first().ok_or("no camera found")?;
 
     let mut camera = sdk.open(device, AccessMode::Exclusive, 0)?;
     camera.set_enum_symbolic(c"TriggerMode", c"Off")?;
@@ -16,13 +16,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..10 {
         let buffer = grabbing.get_image_buffer(Some(Duration::from_secs(1)))?;
         let frame = buffer.frame();
-        let info = frame.info();
+        let info = frame.info;
         println!(
-            "#{} {}x{} {} 字节",
+            "#{} {}x{} {} bytes",
             info.frame_number,
             info.width,
             info.height,
-            frame.data().len()
+            frame.data.len()
         );
     }
     grabbing.stop()?;

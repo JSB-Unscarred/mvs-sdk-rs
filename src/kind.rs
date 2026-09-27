@@ -10,6 +10,7 @@ use crate::sys;
 /// 模式与切换 key 只对原生 `GigE` 设备有意义，`GenTL` `GigE` 设备只接受独占、控制与监视三种；
 /// USB3、Camera Link、`CoaXPress`、`XoF` 与虚拟设备忽略这两个参数，按控制权限打开。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 #[repr(u32)]
 pub enum AccessMode {
     /// 独占权限。

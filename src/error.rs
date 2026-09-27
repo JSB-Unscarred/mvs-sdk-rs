@@ -9,11 +9,11 @@ use crate::sys;
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// 本 crate 的错误。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// SDK 函数返回了非 `MV_OK` 的状态码。
-    #[error("{function} 失败：{code}")]
+    #[error("{function} failed: {code}")]
     Sdk {
         /// 失败的 SDK 函数名。
         function: &'static str,
@@ -21,7 +21,7 @@ pub enum Error {
         code: ErrorCode,
     },
     /// 本进程的 SDK 会话已经 `MV_CC_Finalize`；厂商约定每个进程只初始化一次，不能再次初始化。
-    #[error("本进程的 MVS SDK 已反初始化，不能再次初始化")]
+    #[error("MVS SDK was finalized in this process and cannot be initialized again")]
     Finalized,
 }
 
@@ -143,7 +143,7 @@ error_codes! {
     /// 设备无响应。
     NoResponse = MV_E_NORESPONSE,
     /// 未知错误。
-    UnknownGeneric = MV_E_UNKNOW,
+    Unknown = MV_E_UNKNOW,
     /// `GenICam` 通用错误。
     GcGeneric = MV_E_GC_GENERIC,
     /// `GenICam` 参数非法。
@@ -214,7 +214,7 @@ impl fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.name() {
             Some(name) => write!(f, "{name} (0x{:08X})", self.raw()),
-            None => write!(f, "未知状态码 0x{:08X}", self.raw()),
+            None => write!(f, "unknown status code 0x{:08X}", self.raw()),
         }
     }
 }
@@ -243,7 +243,7 @@ mod tests {
         ));
         assert_eq!(
             error.to_string(),
-            "MV_CC_StartGrabbing 失败：MV_E_CALLORDER (0x80000003)"
+            "MV_CC_StartGrabbing failed: MV_E_CALLORDER (0x80000003)"
         );
     }
 }

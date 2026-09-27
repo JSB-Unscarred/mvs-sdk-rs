@@ -36,6 +36,7 @@ impl Drop for Session {
 /// 而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；`Sdk` 与全部相机都释放后 SDK 自动反初始化。
 /// `Sdk` 是 `Send + Sync`。
 #[derive(Clone)]
+#[must_use = "the SDK is finalized once the last Sdk and camera are dropped"]
 pub struct Sdk {
     session: Arc<Session>,
 }
