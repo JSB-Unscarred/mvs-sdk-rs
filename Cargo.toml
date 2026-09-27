@@ -1,6 +1,5 @@
 [workspace]
 members = ["mvs-sdk-sys"]
-resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
@@ -8,7 +7,6 @@ edition = "2024"
 rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
-homepage = "https://github.com/JSB-Unscarred/mvs-sdk-rs"
 
 [workspace.lints.rust]
 missing_docs = "deny"
@@ -23,25 +21,20 @@ undocumented_unsafe_blocks = "deny"
 
 [package]
 name = "mvs-sdk-rs"
-description = "Safe Rust bindings for the Hikvision MVS machine-vision camera SDK."
-readme = "README.md"
-keywords = ["mvs", "hikvision", "camera", "machine-vision", "ffi"]
+description = "Unofficial safe Rust wrapper for the Hikrobot MVS industrial camera SDK (MvCameraControl)."
+keywords = ["hikrobot", "hikvision", "mvs", "industrial-camera", "machine-vision"]
 categories = ["api-bindings", "hardware-support"]
+exclude = ["/.gitattributes", "/.gitignore", "/AGENTS.md", "/CLAUDE.md", "/tools"]
 publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 
-[features]
-# 启用需要 MVS SDK 与专用测试相机的真机测试。
-hardware-tests = []
-
-[[test]]
-name = "hardware_smoke"
-required-features = ["hardware-tests"]
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = []
 
 [lints]
 workspace = true

@@ -1,8 +1,5 @@
 /target/
 
-# 厂商头文件由用户随 MVS SDK 安装，不入库
-/Includes/
-
 /.claude/
 /.idea/
 /.vscode/
