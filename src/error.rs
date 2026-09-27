@@ -1,7 +1,7 @@
 //! 错误类型与 SDK 状态码。
 
+use std::ffi::c_int;
 use std::fmt;
-use std::os::raw::c_int;
 
 use crate::sys;
 
@@ -180,7 +180,7 @@ error_codes! {
     Net = MV_E_NETER,
     /// 当前模式不支持修改设备 IP。
     ModifyDeviceIpNotSupported = MV_E_SUPPORT_MODIFY_DEVICE_IP,
-    /// 秘钥校验失败。
+    /// 密钥校验失败。
     KeyVerificationFailed = MV_E_KEY_VERIFICATION,
     /// 设备 IP 冲突。
     IpConflict = MV_E_IP_CONFLICT,

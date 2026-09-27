@@ -1,4 +1,4 @@
-//! 打开第一台相机，以 polling 方式取 10 帧。
+//! 打开第一台相机，以 pull 方式取 10 帧。
 
 use std::time::Duration;
 

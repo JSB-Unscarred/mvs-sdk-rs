@@ -1,4 +1,4 @@
-//! 真机数据流测试：需要 MVS SDK、专用相机与 `MVS_SDK_TEST_SERIAL`。
+//! 真机数据流测试：需要 MVS SDK、专用测试相机与 `MVS_SDK_TEST_SERIAL`。
 
 use std::error::Error;
 use std::ffi::CString;
@@ -9,10 +9,10 @@ use mvs_sdk::{AccessMode, Sdk, TransportLayer};
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
-// polling 与 callback 两条取流链，以及显式清理。
+// pull 与 callback 两条取流链，以及显式清理。
 #[test]
-#[ignore = "requires the MVS SDK, MVS_SDK_TEST_SERIAL, and TriggerMode=Off"]
-fn real_camera_data_flow() -> Result<(), Box<dyn Error>> {
+#[ignore = "requires a dedicated camera and MVS_SDK_TEST_SERIAL"]
+fn pull_and_callback_grabbing() -> Result<(), Box<dyn Error>> {
     // 只操作专用测试相机，避免误用其它设备。
     let serial = CString::new(std::env::var("MVS_SDK_TEST_SERIAL")?)?;
     let sdk = Sdk::new()?;
@@ -24,11 +24,7 @@ fn real_camera_data_flow() -> Result<(), Box<dyn Error>> {
 
     let mut camera = sdk.open(device, AccessMode::Exclusive, 0)?;
     // free-run 才能在超时内拿到图像。
-    assert_eq!(
-        camera.get_enum(c"TriggerMode")?.current,
-        0,
-        "TriggerMode must be Off"
-    );
+    camera.set_enum_symbolic(c"TriggerMode", c"Off")?;
 
     let grabbing = camera.start_grabbing()?;
     {

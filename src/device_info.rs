@@ -4,7 +4,7 @@ use std::ffi::CStr;
 use std::fmt;
 use std::net::Ipv4Addr;
 
-use crate::{TransportLayer, fixed_cstr, sys};
+use crate::{TransportLayer, fixed_cstr_bytes, sys};
 
 /// `MV_CC_DEVICE_INFO` 的拥有副本。
 ///
@@ -42,10 +42,12 @@ macro_rules! strings {
 }
 
 impl DeviceInfo {
+    /// 复制 SDK 设备记录。
     pub(crate) const fn from_raw(raw: &sys::MV_CC_DEVICE_INFO) -> Self {
         Self { raw: *raw }
     }
 
+    /// 借出设备记录，供 `CreateHandle` 与 `IsDeviceAccessible` 使用。
     pub(crate) const fn raw(&self) -> &sys::MV_CC_DEVICE_INFO {
         &self.raw
     }
@@ -122,11 +124,13 @@ impl DeviceInfo {
         &raw const self.raw
     }
 
+    /// 按 transport 读取一个公共字符串字段；没有该字段的 transport 返回空串。
     fn string(&self, field: impl FnOnce(Strings<'_>) -> &[u8]) -> &CStr {
         self.strings()
-            .map_or(c"", |strings| fixed_cstr(field(strings)))
+            .map_or(c"", |strings| fixed_cstr_bytes(field(strings)))
     }
 
+    /// `GigE` 设备的 union 成员；其它 transport 返回 `None`。
     fn gige(&self) -> Option<&sys::MV_GIGE_DEVICE_INFO> {
         match self.raw.nTLayerType {
             sys::MV_GIGE_DEVICE | sys::MV_VIR_GIGE_DEVICE | sys::MV_GENTL_GIGE_DEVICE => {
@@ -137,6 +141,7 @@ impl DeviceInfo {
         }
     }
 
+    /// 按 nTLayerType 定位各 union 成员中的公共字符串字段。
     fn strings(&self) -> Option<Strings<'_>> {
         let info = &self.raw.SpecialInfo;
         // SAFETY: 每个分支只读取 nTLayerType 对应的 union 成员。

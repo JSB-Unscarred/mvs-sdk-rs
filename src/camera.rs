@@ -1,9 +1,9 @@
 //! 已打开的相机：handle 所有权、`GenICam` 节点读写与 exception/event callback。
 
+use std::ffi::c_void;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::mem;
-use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
@@ -133,7 +133,7 @@ impl Camera {
     /// 读取 Integer 节点。
     pub fn get_int(&self, key: &CStr) -> Result<IntValue> {
         let mut value = sys::MVCC_INTVALUE_EX::default();
-        // SAFETY: key 以 NUL 结尾，value 是可写输出，二者只在本次调用期间借出。
+        // SAFETY: key 以 NUL 结尾，value 是可写输出。
         unsafe {
             sdk_call!(MV_CC_GetIntValueEx(
                 self.as_raw_handle(),
@@ -151,7 +151,7 @@ impl Camera {
 
     /// 设置 Integer 节点。
     pub fn set_int(&self, key: &CStr, value: i64) -> Result<()> {
-        // SAFETY: key 以 NUL 结尾，只在本次调用期间借出。
+        // SAFETY: key 以 NUL 结尾。
         unsafe {
             sdk_call!(MV_CC_SetIntValueEx(
                 self.as_raw_handle(),
@@ -397,9 +397,9 @@ impl Camera {
         self.callbacks.push(callback);
     }
 
-    /// 取走 handle 并依次 Close、Destroy；`close` 之后的 `Drop` 因此不会重复释放。
+    /// 取走 handle 并依次 `CloseDevice`、`DestroyHandle`；`close` 之后的 `Drop` 因此不会重复释放。
     ///
-    /// `CloseDevice` 失败不影响 `DestroyHandle`。Destroy 失败时 SDK 可能仍持有闭包指针和会话资源，
+    /// `CloseDevice` 失败不影响 `DestroyHandle`。`DestroyHandle` 失败时 SDK 可能仍持有闭包指针和会话资源，
     /// 因此泄漏闭包与一份会话引用，Finalize 不再执行。
     fn release(&mut self) -> Result<()> {
         let Some(handle) = self.handle.take() else {

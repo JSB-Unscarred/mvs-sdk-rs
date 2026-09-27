@@ -34,7 +34,7 @@ impl Drop for Session {
 ///
 /// 本进程只有一个会话，会话存活期间 [`Sdk::new`] 与 `clone` 得到的都是它。[`Camera`] 持有会话引用
 /// 而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；`Sdk` 与全部相机都释放后 SDK 自动反初始化。
-/// `Sdk` 是 `Send + Sync`。
+/// 以 `&self` 借用 `Sdk` 的方法保证调用时 SDK 已初始化。`Sdk` 是 `Send + Sync`。
 #[derive(Clone)]
 #[must_use = "the SDK is finalized once the last Sdk and camera are dropped"]
 pub struct Sdk {
@@ -77,7 +77,7 @@ impl Sdk {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut list = sys::MV_CC_DEVICE_INFO_LIST::default();
-        // SAFETY: list 是可写的输出结构体。
+        // SAFETY: list 是可写输出。
         unsafe { sdk_call!(MV_CC_EnumDevices(layers.raw(), &raw mut list)) }?;
 
         let count = (list.nDeviceNum as usize).min(list.pDeviceInfo.len());
@@ -92,10 +92,6 @@ impl Sdk {
     }
 
     /// 查询设备当前能否以指定模式打开。
-    #[allow(
-        clippy::unused_self,
-        reason = "借用 Sdk 保证调用时会话仍处于初始化状态"
-    )]
     pub fn is_accessible(&self, device: &DeviceInfo, mode: AccessMode) -> bool {
         let mut raw = *device.raw();
         // SAFETY: raw 是设备记录的本地副本，C 接口只是签名要求可变指针。

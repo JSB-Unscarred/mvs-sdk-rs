@@ -5,7 +5,7 @@
 //! - [`Sdk`] 初始化进程级 SDK，枚举并打开设备；
 //! - [`Camera`] 独占一个 native handle，负责节点读写和 exception/event callback；
 //! - [`Camera::start_grabbing`] 与 [`Camera::start_grabbing_with`] 返回借用相机的取流守卫，
-//!   polling 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
+//!   pull 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
 //!
 //! 设计取舍见 [`docs::architecture`]。
 //!
@@ -28,8 +28,8 @@
 //! }
 //! ```
 
-use std::ffi::{CStr, CString};
-use std::os::raw::c_char;
+use std::ffi::{CStr, CString, c_char};
+use std::slice;
 
 /// 原始 FFI 绑定（`mvs-sdk-sys`），与本 crate 同版本发布；配合 [`Camera::as_raw_handle`] 与
 /// [`DeviceInfo::as_raw`] 调用尚未封装的 SDK 接口。
@@ -37,7 +37,7 @@ pub use mvs_sdk_sys as sys;
 
 mod callback;
 mod camera;
-mod device;
+mod device_info;
 pub mod docs;
 mod error;
 mod frame;
@@ -47,7 +47,7 @@ mod sdk;
 
 pub use callback::{EventInfo, ExceptionKind};
 pub use camera::{Camera, EnumValue, FloatValue, IntValue, StringValue};
-pub use device::DeviceInfo;
+pub use device_info::DeviceInfo;
 pub use error::{Error, ErrorCode, Result};
 pub use frame::{Frame, FrameGuard, FrameInfo};
 pub use grabbing::{CallbackGrabbing, Grabbing};
@@ -58,13 +58,13 @@ pub use sdk::Sdk;
 ///
 /// 这些字段是 C 字符串，厂商示例直接以 `%s` 读取，写入方保证以 NUL 结尾；缺少 NUL 属于违约数据，
 /// 此时返回空串而不越界读取。
-fn fixed_cstr(bytes: &[u8]) -> &CStr {
-    CStr::from_bytes_until_nul(bytes).unwrap_or_default()
+fn fixed_cstr(chars: &[c_char]) -> &CStr {
+    fixed_cstr_bytes(char_bytes(chars))
 }
 
-/// [`fixed_cstr`] 的 `c_char` 版本。
-fn fixed_cstr_from_chars(chars: &[c_char]) -> &CStr {
-    fixed_cstr(char_bytes(chars))
+/// [`fixed_cstr`] 的字节版本：bindgen 把设备信息中的 `unsigned char` 字符串生成为 `u8` 数组。
+fn fixed_cstr_bytes(bytes: &[u8]) -> &CStr {
+    CStr::from_bytes_until_nul(bytes).unwrap_or_default()
 }
 
 /// 复制 SDK 定长字符数组中的字符串：截到首个 NUL，字段写满、没有 NUL 时取整个字段，不丢数据。
@@ -81,7 +81,7 @@ fn fixed_cstring(chars: &[c_char]) -> CString {
 /// 把 SDK 的 `c_char` 数组按字节读取。
 fn char_bytes(chars: &[c_char]) -> &[u8] {
     // SAFETY: `c_char` 与 `u8` 大小、对齐相同，只重新解释已初始化的字节。
-    unsafe { std::slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) }
+    unsafe { slice::from_raw_parts(chars.as_ptr().cast::<u8>(), chars.len()) }
 }
 
 /// 合并 SDK 拆成高低两半的 64 位值。
@@ -91,17 +91,17 @@ fn high_low(high: u32, low: u32) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{fixed_cstr_from_chars, fixed_cstring};
+    use super::{fixed_cstr, fixed_cstring};
 
     // 拥有型字符串无损：字段写满、没有 NUL 时取整个字段；借用型按厂商约定截到 NUL，违约时为空串。
     #[test]
     fn fixed_strings_follow_the_nul_policy() {
         let full = [b'a'.cast_signed(); 4];
         assert_eq!(fixed_cstring(&full).as_bytes(), b"aaaa");
-        assert_eq!(fixed_cstr_from_chars(&full), c"");
+        assert_eq!(fixed_cstr(&full), c"");
 
         let terminated = [b'a'.cast_signed(), 0, b'b'.cast_signed(), 0];
         assert_eq!(fixed_cstring(&terminated).as_bytes(), b"a");
-        assert_eq!(fixed_cstr_from_chars(&terminated), c"a");
+        assert_eq!(fixed_cstr(&terminated), c"a");
     }
 }

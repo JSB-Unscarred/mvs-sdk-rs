@@ -6,10 +6,10 @@
 //! 正在执行的闭包因此存活到调用返回。Rust 1.81 起，panic 越过 `extern "C"` 函数会直接终止进程。
 
 use std::ffi::CStr;
-use std::os::raw::{c_uint, c_void};
+use std::ffi::{c_uint, c_void};
 use std::sync::Arc;
 
-use crate::{Frame, fixed_cstr_from_chars, high_low, sys};
+use crate::{Frame, fixed_cstr, high_low, sys};
 
 /// exception callback 收到的消息类型。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -24,6 +24,7 @@ pub enum ExceptionKind {
 }
 
 impl ExceptionKind {
+    /// 由 SDK 原始值构造，未定义的值保存在 [`ExceptionKind::Other`]。
     const fn from_raw(raw: u32) -> Self {
         match raw {
             sys::MV_EXCEPTION_DEV_DISCONNECT => Self::Disconnected,
@@ -126,7 +127,7 @@ pub(crate) unsafe extern "C" fn event_trampoline<F>(
     let (callback, info) = unsafe { (from_user_data::<F>(user), info.as_ref()) };
     if let Some(info) = info {
         callback(EventInfo {
-            name: fixed_cstr_from_chars(&info.EventName),
+            name: fixed_cstr(&info.EventName),
             event_id: info.nEventID,
             stream_channel: info.nStreamChannel,
             block_id: high_low(info.nBlockIdHigh, info.nBlockIdLow),
@@ -137,14 +138,27 @@ pub(crate) unsafe extern "C" fn event_trampoline<F>(
 
 #[cfg(test)]
 mod tests {
-    use std::os::raw::c_void;
+    use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use super::{EventInfo, ExceptionKind, event_trampoline, exception_trampoline, into_user_data};
-    use crate::sys;
+    use super::{
+        EventInfo, ExceptionKind, event_trampoline, exception_trampoline, image_trampoline,
+        into_user_data,
+    };
+    use crate::{Frame, sys};
 
     // 与注册时相同：返回 owner 的强引用、交给 SDK 的 callback 与 pUser。
+    fn register_image<F>(
+        callback: F,
+    ) -> (Arc<dyn Send + Sync>, sys::MvImageCallbackEx2, *mut c_void)
+    where
+        F: Fn(Frame<'_>) + Send + Sync + 'static,
+    {
+        let (owner, user) = into_user_data(callback);
+        (owner, Some(image_trampoline::<F>), user)
+    }
+
     fn register_event<F>(callback: F) -> (Arc<dyn Send + Sync>, sys::MvEventCallback, *mut c_void)
     where
         F: Fn(EventInfo<'_>) + Send + Sync + 'static,
@@ -163,10 +177,19 @@ mod tests {
         (owner, Some(exception_trampoline::<F>), user)
     }
 
-    // trampoline 按注册类型还原闭包，并转换事件名、时间戳与消息类型。
+    // trampoline 按注册类型还原闭包并转换参数。
     #[test]
     fn trampolines_restore_the_closure_and_convert_arguments() {
         static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let mut pixels = [1_u8, 2];
+        let mut frame = sys::MV_FRAME_OUT {
+            pBufAddr: pixels.as_mut_ptr(),
+            stFrameInfo: sys::MV_FRAME_OUT_INFO_EX {
+                nFrameLen: 2,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let mut info = sys::MV_EVENT_OUT_INFO {
             nTimestampHigh: 0x1,
             nTimestampLow: 0x2,
@@ -175,6 +198,8 @@ mod tests {
         for (target, byte) in info.EventName.iter_mut().zip(b"End") {
             *target = byte.cast_signed();
         }
+        let (_image_owner, on_image, image_user) =
+            register_image(|frame| SEEN.lock().unwrap().push(format!("{:?}", frame.data)));
         let (_event_owner, on_event, event_user) = register_event(|event| {
             let seen = format!("{:?}@{:X}", event.name, event.device_timestamp);
             SEEN.lock().unwrap().push(seen);
@@ -182,13 +207,17 @@ mod tests {
         let (_exception_owner, on_exception, exception_user) =
             register_exception(|kind| SEEN.lock().unwrap().push(format!("{kind:?}")));
 
-        // SAFETY: owner 在同步调用期间存活，info 是本函数的局部变量。
+        // SAFETY: owner 在同步调用期间存活，frame、pixels 与 info 是本函数的局部变量。
         unsafe {
+            on_image.unwrap()(&raw mut frame, image_user, 1);
             on_event.unwrap()(&raw mut info, event_user);
             on_exception.unwrap()(sys::MV_EXCEPTION_DEV_DISCONNECT, exception_user);
         }
 
-        assert_eq!(*SEEN.lock().unwrap(), ["\"End\"@100000002", "Disconnected"]);
+        assert_eq!(
+            *SEEN.lock().unwrap(),
+            ["[1, 2]", "\"End\"@100000002", "Disconnected"]
+        );
     }
 
     // callback 在执行中释放 owner（相当于在回调里 drop 相机）时，闭包存活到本次调用返回。

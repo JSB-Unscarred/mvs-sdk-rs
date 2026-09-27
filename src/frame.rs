@@ -1,8 +1,8 @@
-//! 图像帧：借用 SDK buffer 的视图，以及 polling buffer 的归还守卫。
+//! 图像帧：借用 SDK buffer 的视图，以及 pull buffer 的归还守卫。
 
+use std::ffi::c_void;
 use std::fmt;
 use std::marker::PhantomData;
-use std::os::raw::c_void;
 use std::slice;
 
 use crate::{PixelType, high_low, sys};
@@ -39,7 +39,7 @@ pub struct FrameInfo {
 
 /// 借用 SDK buffer 的一帧图像。
 ///
-/// callback 中的帧只在本次回调期间有效，polling 帧不能超过其 [`FrameGuard`]；
+/// callback 中的帧只在本次回调期间有效，pull 帧不能超过其 [`FrameGuard`]；
 /// 需要保留像素时复制 [`Frame::data`]。
 #[derive(Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -51,10 +51,12 @@ pub struct Frame<'a> {
 }
 
 impl<'a> Frame<'a> {
+    /// 以 SDK 输出构造借用 buffer 的帧，尺寸与长度优先取扩展字段。
+    ///
     /// # Safety
     ///
     /// `raw` 来自成功的 `GetImageBuffer` 或 image callback，像素在 `'a` 内有效。
-    #[allow(clippy::cast_possible_truncation, reason = "只支持 64 位 Windows")]
+    #[expect(clippy::cast_possible_truncation, reason = "只支持 64 位 Windows")]
     pub(crate) unsafe fn from_raw(raw: &'a sys::MV_FRAME_OUT) -> Self {
         let info = &raw.stFrameInfo;
         let len = if info.nFrameLenEx == 0 {
@@ -97,7 +99,7 @@ impl fmt::Debug for Frame<'_> {
     }
 }
 
-/// polling 取得的 SDK buffer，释放时调用 `MV_CC_FreeImageBuffer` 归还。
+/// pull 取得的 SDK buffer，释放时调用 `MV_CC_FreeImageBuffer` 归还。
 ///
 /// 守卫借用 [`Grabbing`](crate::Grabbing)，因此 buffer 必然在停止取流前归还。
 pub struct FrameGuard<'a> {
@@ -107,6 +109,7 @@ pub struct FrameGuard<'a> {
 }
 
 impl FrameGuard<'_> {
+    /// 接管一次成功的 `GetImageBuffer` 输出，释放时归还。
     pub(crate) const fn new(handle: *mut c_void, raw: &sys::MV_FRAME_OUT) -> Self {
         Self {
             raw: *raw,
