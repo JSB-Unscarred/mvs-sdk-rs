@@ -6,7 +6,7 @@ fn main() -> mvs_sdk::Result<()> {
     let version = Sdk::version();
     println!("MVS SDK 0x{version:08X}");
 
-    let sdk = Sdk::initialize()?;
+    let sdk = Sdk::new()?;
     for device in sdk.devices(TransportLayer::GIGE | TransportLayer::USB)? {
         println!(
             "{:<24} SN {:<16} {:?}",

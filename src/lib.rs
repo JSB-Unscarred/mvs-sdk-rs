@@ -15,7 +15,7 @@
 //! use mvs_sdk::{AccessMode, Sdk, TransportLayer};
 //!
 //! fn main() -> mvs_sdk::Result<()> {
-//!     let sdk = Sdk::initialize()?;
+//!     let sdk = Sdk::new()?;
 //!     let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
 //!     let mut camera = sdk.open(&devices[0], AccessMode::Exclusive, 0)?;
 //!     camera.set_float(c"ExposureTime", 10_000.0)?;

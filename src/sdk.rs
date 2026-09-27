@@ -1,13 +1,17 @@
 //! 进程级 SDK 会话：初始化、设备枚举与打开相机。
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crate::error::sdk_call;
 use crate::{AccessMode, Camera, DeviceInfo, Error, Result, TransportLayer, sys};
 
-/// 本进程是否已尝试 `MV_CC_Initialize`；厂商约定每个进程只初始化一次。
-static INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// 本进程的 SDK 会话登记。
+///
+/// `None` 表示尚未成功 `MV_CC_Initialize`；能 upgrade 表示会话存活；不能 upgrade 表示已经（或正在）
+/// `MV_CC_Finalize`。只在 Initialize 成功后写入，因此失败可以重试；厂商约定每个进程只初始化一次，
+/// Finalize 之后不再重新初始化。
+static SESSION: Mutex<Option<Weak<Session>>> = Mutex::new(None);
 
 /// 已初始化的 SDK 会话，由 [`Sdk`] 与每个 [`Camera`] 通过 `Arc` 共享。
 ///
@@ -20,32 +24,42 @@ pub(crate) struct Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // SAFETY: 所有相机都持有会话引用，走到这里说明它们均已销毁；Finalize 只在此处调用。
+        // SAFETY: strong 计数已归零：所有相机均已销毁，SESSION 中的 Weak 也不会再 upgrade 成功，
+        // 之后没有 SDK 调用；Finalize 只在此处调用。
         unsafe { sys::MV_CC_Finalize() };
     }
 }
 
 /// MVS SDK 的进程级入口。
 ///
-/// [`Camera`] 持有同一会话的引用而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；
-/// `Sdk` 与全部相机都释放后 SDK 自动反初始化。`Sdk` 是 `Send + Sync`。
+/// 本进程只有一个会话，会话存活期间 [`Sdk::new`] 与 `clone` 得到的都是它。[`Camera`] 持有会话引用
+/// 而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；`Sdk` 与全部相机都释放后 SDK 自动反初始化。
+/// `Sdk` 是 `Send + Sync`。
+#[derive(Clone)]
 pub struct Sdk {
     session: Arc<Session>,
 }
 
 impl Sdk {
-    /// 初始化 SDK。每个进程只能成功调用一次，之后返回 [`Error::AlreadyInitialized`]。
-    pub fn initialize() -> Result<Self> {
-        if INITIALIZED.swap(true, Ordering::AcqRel) {
-            return Err(Error::AlreadyInitialized);
-        }
-        // SAFETY: 上面的原子标记保证本进程只调用一次。
-        unsafe { sdk_call!(MV_CC_Initialize()) }?;
-        Ok(Self {
-            session: Arc::new(Session {
-                enumeration: Mutex::new(()),
-            }),
-        })
+    /// 返回本进程的 SDK 会话，首次调用时 `MV_CC_Initialize`。
+    ///
+    /// Initialize 失败返回 [`Error::Sdk`]，之后可以重试；会话 Finalize 之后返回 [`Error::Finalized`]。
+    pub fn new() -> Result<Self> {
+        let mut state = SESSION.lock().unwrap_or_else(PoisonError::into_inner);
+        let session = match state.as_ref().map(Weak::upgrade) {
+            Some(Some(session)) => session,
+            Some(None) => return Err(Error::Finalized),
+            None => {
+                // SAFETY: 持锁且本进程尚未成功初始化，Initialize 不会并发或重复成功。
+                unsafe { sdk_call!(MV_CC_Initialize()) }?;
+                let session = Arc::new(Session {
+                    enumeration: Mutex::new(()),
+                });
+                *state = Some(Arc::downgrade(&session));
+                session
+            }
+        };
+        Ok(Self { session })
     }
 
     /// 查询 SDK 版本，无需先初始化。
@@ -95,5 +109,11 @@ impl Sdk {
         switchover_key: u16,
     ) -> Result<Camera> {
         Camera::open(Arc::clone(&self.session), device, mode, switchover_key)
+    }
+}
+
+impl fmt::Debug for Sdk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sdk").finish_non_exhaustive()
     }
 }

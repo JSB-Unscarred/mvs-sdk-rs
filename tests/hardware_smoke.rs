@@ -15,7 +15,7 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 fn real_camera_data_flow() -> Result<(), Box<dyn Error>> {
     // 只操作专用测试相机，避免误用其它设备。
     let serial = CString::new(std::env::var("MVS_SDK_TEST_SERIAL")?)?;
-    let sdk = Sdk::initialize()?;
+    let sdk = Sdk::new()?;
     let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
     let device = devices
         .iter()

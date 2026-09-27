@@ -20,8 +20,8 @@
 //!
 //! 会话用 `Arc` 共享，[`Camera`](crate::Camera) 不借用 [`Sdk`](crate::Sdk)，可以存入结构体或移到
 //! 工作线程；只要还有相机存活，Finalize 就不会执行。厂商约定每个进程只初始化一次，
-//! 第二次调用 [`Sdk::initialize`](crate::Sdk::initialize) 返回
-//! [`Error::AlreadyInitialized`](crate::Error::AlreadyInitialized)。
+//! 会话存活期间 [`Sdk::new`](crate::Sdk::new) 返回同一会话，Finalize 之后返回
+//! [`Error::Finalized`](crate::Error::Finalized)。
 //!
 //! ## 类型状态
 //!

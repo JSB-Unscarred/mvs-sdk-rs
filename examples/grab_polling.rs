@@ -5,7 +5,7 @@ use std::time::Duration;
 use mvs_sdk::{AccessMode, Sdk, TransportLayer};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sdk = Sdk::initialize()?;
+    let sdk = Sdk::new()?;
     let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
     let device = devices.first().ok_or("没有找到相机")?;
 

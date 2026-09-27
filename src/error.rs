@@ -20,9 +20,9 @@ pub enum Error {
         /// SDK 返回的状态码。
         code: ErrorCode,
     },
-    /// 本进程已经调用过 `MV_CC_Initialize`；厂商约定每个进程只初始化一次。
-    #[error("本进程已经初始化过 MVS SDK")]
-    AlreadyInitialized,
+    /// 本进程的 SDK 会话已经 `MV_CC_Finalize`；厂商约定每个进程只初始化一次，不能再次初始化。
+    #[error("本进程的 MVS SDK 已反初始化，不能再次初始化")]
+    Finalized,
 }
 
 /// 把 SDK 返回值转换为 `Result`；通常经由 [`sdk_call!`] 调用。
