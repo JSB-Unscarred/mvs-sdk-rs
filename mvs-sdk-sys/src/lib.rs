@@ -2,7 +2,7 @@
 //!
 //! The bindings are generated with `bindgen` and intentionally expose the
 //! SDK's unsafe C API without a safety wrapper. Most applications should use
-//! the safe `mvs-sdk-rs` crate instead.
+//! the safe `mvs-sdk` crate instead.
 
 #![allow(
     non_upper_case_globals,

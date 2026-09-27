@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use mvs_sdk_rs::{AccessMode, Sdk, TransportLayer};
+use mvs_sdk::{AccessMode, Sdk, TransportLayer};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = Sdk::initialize()?;

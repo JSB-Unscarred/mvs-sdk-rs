@@ -1,6 +1,6 @@
 //! 公开类型的线程约定。
 
-use mvs_sdk_rs::{Camera, DeviceInfo, FrameGuard, Sdk};
+use mvs_sdk::{Camera, DeviceInfo, FrameGuard, Sdk};
 
 macro_rules! assert_not_impl {
     ($type:ty: $bound:path) => {

@@ -12,9 +12,9 @@
 //! ```no_run
 //! use std::time::Duration;
 //!
-//! use mvs_sdk_rs::{AccessMode, Sdk, TransportLayer};
+//! use mvs_sdk::{AccessMode, Sdk, TransportLayer};
 //!
-//! fn main() -> mvs_sdk_rs::Result<()> {
+//! fn main() -> mvs_sdk::Result<()> {
 //!     let sdk = Sdk::initialize()?;
 //!     let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
 //!     let mut camera = sdk.open(&devices[0], AccessMode::Exclusive, 0)?;

@@ -3,7 +3,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use mvs_sdk_rs::{AccessMode, ExceptionKind, Sdk, TransportLayer};
+use mvs_sdk::{AccessMode, ExceptionKind, Sdk, TransportLayer};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sdk = Sdk::initialize()?;

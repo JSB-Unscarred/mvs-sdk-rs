@@ -1,8 +1,8 @@
 //! 列出 `GigE` 与 USB3 相机。
 
-use mvs_sdk_rs::{Sdk, TransportLayer};
+use mvs_sdk::{Sdk, TransportLayer};
 
-fn main() -> mvs_sdk_rs::Result<()> {
+fn main() -> mvs_sdk::Result<()> {
     let version = Sdk::version();
     println!("MVS SDK 0x{version:08X}");
 

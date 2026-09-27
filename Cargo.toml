@@ -20,7 +20,7 @@ must_use_candidate = "allow"
 undocumented_unsafe_blocks = "deny"
 
 [package]
-name = "mvs-sdk-rs"
+name = "mvs-sdk"
 description = "Unofficial safe Rust wrapper for the Hikrobot MVS industrial camera SDK (MvCameraControl)."
 keywords = ["hikrobot", "hikvision", "mvs", "industrial-camera", "machine-vision"]
 categories = ["api-bindings", "hardware-support"]

@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "mvs-sdk-rs"
+name = "mvs-sdk"
 version = "0.1.0"
 dependencies = [
  "mvs-sdk-sys",

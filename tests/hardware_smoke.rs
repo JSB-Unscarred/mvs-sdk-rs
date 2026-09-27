@@ -1,20 +1,20 @@
-//! 真机数据流测试：需要 MVS SDK、专用相机与 `MVS_TEST_CAMERA_SERIAL`。
+//! 真机数据流测试：需要 MVS SDK、专用相机与 `MVS_SDK_TEST_SERIAL`。
 
 use std::error::Error;
 use std::ffi::CString;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use mvs_sdk_rs::{AccessMode, Sdk, TransportLayer};
+use mvs_sdk::{AccessMode, Sdk, TransportLayer};
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
 // polling 与 callback 两条取流链，以及显式清理。
 #[test]
-#[ignore = "requires the MVS SDK, MVS_TEST_CAMERA_SERIAL, and TriggerMode=Off"]
+#[ignore = "requires the MVS SDK, MVS_SDK_TEST_SERIAL, and TriggerMode=Off"]
 fn real_camera_data_flow() -> Result<(), Box<dyn Error>> {
     // 只操作专用测试相机，避免误用其它设备。
-    let serial = CString::new(std::env::var("MVS_TEST_CAMERA_SERIAL")?)?;
+    let serial = CString::new(std::env::var("MVS_SDK_TEST_SERIAL")?)?;
     let sdk = Sdk::initialize()?;
     let devices = sdk.devices(TransportLayer::GIGE | TransportLayer::USB)?;
     let device = devices
