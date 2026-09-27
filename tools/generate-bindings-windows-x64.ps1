@@ -99,6 +99,7 @@ $BindgenArguments = @(
     "--no-prepend-enum-name"
     "--no-layout-tests"
     "--no-doc-comments"
+    "--merge-extern-blocks"
     $HeaderPath
     "--"
     "-I$IncludePath"
@@ -121,6 +122,19 @@ try {
     if ((Get-Item -LiteralPath $TemporaryPath).Length -eq 0) {
         throw "bindgen generated an empty bindings file."
     }
+
+    # raw-dylib links MvCameraControl.dll directly, so builds need no import library.
+    $Bindings = [IO.File]::ReadAllText($TemporaryPath)
+    $ExternBlock = 'unsafe extern "C" {'
+    $ExternBlockCount = [regex]::Matches($Bindings, [regex]::Escape($ExternBlock)).Count
+    if ($ExternBlockCount -ne 1) {
+        throw "Expected one merged extern block, found $ExternBlockCount."
+    }
+    $Bindings = $Bindings.Replace(
+        $ExternBlock,
+        "#[link(name = `"MvCameraControl`", kind = `"raw-dylib`")]`n$ExternBlock"
+    )
+    [IO.File]::WriteAllText($TemporaryPath, $Bindings, (New-Object Text.UTF8Encoding $false))
 
     Move-Item -LiteralPath $TemporaryPath -Destination $OutputPath -Force
     Write-Host "Updated: $OutputPath"

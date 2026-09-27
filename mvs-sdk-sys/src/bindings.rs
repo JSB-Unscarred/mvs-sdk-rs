@@ -1905,117 +1905,76 @@ pub type MvStreamExceptionCallback = ::std::option::Option<
 pub type MvExceptionCallback = ::std::option::Option<
     unsafe extern "C" fn(nMsgType: ::std::os::raw::c_uint, pUser: *mut ::std::os::raw::c_void),
 >;
+#[link(name = "MvCameraControl", kind = "raw-dylib")]
 unsafe extern "C" {
     pub fn MV_CC_Initialize() -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_Finalize() -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetSDKVersion() -> ::std::os::raw::c_uint;
-}
-unsafe extern "C" {
     pub fn MV_CC_EnumDevices(
         nTLayerType: ::std::os::raw::c_uint,
         pstDevList: *mut MV_CC_DEVICE_INFO_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EnumDevicesEx(
         nTLayerType: ::std::os::raw::c_uint,
         pstDevList: *mut MV_CC_DEVICE_INFO_LIST,
         strManufacturerName: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EnumDevicesEx2(
         nTLayerType: ::std::os::raw::c_uint,
         pstDevList: *mut MV_CC_DEVICE_INFO_LIST,
         strManufacturerName: *const ::std::os::raw::c_char,
         enSortMethod: MV_SORT_METHOD,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EnumDevicesByInterface(
         handle: *mut ::std::os::raw::c_void,
         pstDevList: *mut MV_CC_DEVICE_INFO_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_IsDeviceAccessible(
         pstDevInfo: *mut MV_CC_DEVICE_INFO,
         nAccessMode: ::std::os::raw::c_uint,
     ) -> bool_;
-}
-unsafe extern "C" {
     pub fn MV_CC_CreateHandle(
         handle: *mut *mut ::std::os::raw::c_void,
         pstDevInfo: *const MV_CC_DEVICE_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_OpenDevice(
         handle: *mut ::std::os::raw::c_void,
         nAccessMode: ::std::os::raw::c_uint,
         nSwitchoverKey: ::std::os::raw::c_ushort,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_IsDeviceConnected(handle: *mut ::std::os::raw::c_void) -> bool_;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetDeviceInfo(
         handle: *mut ::std::os::raw::c_void,
         pstDevInfo: *mut MV_CC_DEVICE_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetAllMatchInfo(
         handle: *mut ::std::os::raw::c_void,
         pstInfo: *mut MV_ALL_MATCH_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_CloseDevice(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_DestroyHandle(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RegisterImageCallBackEx(
         handle: *mut ::std::os::raw::c_void,
         cbOutput: MvImageCallbackEx,
         pUser: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RegisterImageCallBackEx2(
         handle: *mut ::std::os::raw::c_void,
         cbOutput: MvImageCallbackEx2,
         pUser: *mut ::std::os::raw::c_void,
         bAutoFree: bool_,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_StartGrabbing(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_StopGrabbing(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetImageBuffer(
         handle: *mut ::std::os::raw::c_void,
         pstFrame: *mut MV_FRAME_OUT,
         nMsec: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FreeImageBuffer(
         handle: *mut ::std::os::raw::c_void,
         pstFrame: *mut MV_FRAME_OUT,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetOneFrameTimeout(
         handle: *mut ::std::os::raw::c_void,
         pData: *mut ::std::os::raw::c_uchar,
@@ -2023,733 +1982,493 @@ unsafe extern "C" {
         pstFrameInfo: *mut MV_FRAME_OUT_INFO_EX,
         nMsec: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_ClearImageBuffer(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetValidImageNum(
         handle: *mut ::std::os::raw::c_void,
         pnValidImageNum: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetImageNodeNum(
         handle: *mut ::std::os::raw::c_void,
         nNum: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetGrabStrategy(
         handle: *mut ::std::os::raw::c_void,
         enGrabStrategy: MV_GRAB_STRATEGY,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetOutputQueueSize(
         handle: *mut ::std::os::raw::c_void,
         nOutputQueueSize: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_AllocAlignedBuffer(
         nBufSize: u64,
         nAlignment: ::std::os::raw::c_uint,
     ) -> *mut ::std::os::raw::c_void;
-}
-unsafe extern "C" {
     pub fn MV_CC_FreeAlignedBuffer(pBuffer: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetPayloadSize(
         handle: *mut ::std::os::raw::c_void,
         pnPayloadSize: *mut u64,
         pnAlignment: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RegisterBuffer(
         handle: *mut ::std::os::raw::c_void,
         pBuffer: *mut ::std::os::raw::c_void,
         nBufSize: u64,
         pUser: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_UnRegisterBuffer(
         handle: *mut ::std::os::raw::c_void,
         pBuffer: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_DisplayOneFrameEx(
         handle: *mut ::std::os::raw::c_void,
         hWnd: *mut ::std::os::raw::c_void,
         pstDisplayInfo: *mut MV_DISPLAY_FRAME_INFO_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_DisplayOneFrameEx2(
         handle: *mut ::std::os::raw::c_void,
         hWnd: *mut ::std::os::raw::c_void,
         pstImage: *mut MV_CC_IMAGE,
         enRenderMode: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_DrawRect(
         handle: *mut ::std::os::raw::c_void,
         pRectInfo: *mut MVCC_RECT_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_DrawCircle(
         handle: *mut ::std::os::raw::c_void,
         pCircleInfo: *mut MVCC_CIRCLE_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_DrawLines(
         handle: *mut ::std::os::raw::c_void,
         pLinesInfo: *mut MVCC_LINES_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EnumInterfaces(
         nTLayerType: ::std::os::raw::c_uint,
         pInterfaceInfoList: *mut MV_INTERFACE_INFO_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_CreateInterface(
         handle: *mut *mut ::std::os::raw::c_void,
         pInterfaceInfo: *mut MV_INTERFACE_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_CreateInterfaceByID(
         handle: *mut *mut ::std::os::raw::c_void,
         pInterfaceID: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_OpenInterface(
         handle: *mut ::std::os::raw::c_void,
         pReserved: *mut ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_CloseInterface(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_DestroyInterface(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetIntValueEx(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         pstIntValue: *mut MVCC_INTVALUE_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetIntValueEx(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         nValue: i64,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetEnumValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         pstEnumValue: *mut MVCC_ENUMVALUE,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetEnumValueEx(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         pstEnumValue: *mut MVCC_ENUMVALUE_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetEnumValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         nValue: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetEnumEntrySymbolic(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         pstEnumEntry: *mut MVCC_ENUMENTRY,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetEnumValueByString(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         strValue: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetFloatValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         pstFloatValue: *mut MVCC_FLOATVALUE,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetFloatValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         fValue: f32,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetBoolValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         pbValue: *mut bool_,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetBoolValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         bValue: bool_,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetStringValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         pstStringValue: *mut MVCC_STRINGVALUE,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetStringValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
         strValue: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetCommandValue(
         handle: *mut ::std::os::raw::c_void,
         strKey: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_XML_GetNodeAccessMode(
         handle: *mut ::std::os::raw::c_void,
         strName: *const ::std::os::raw::c_char,
         penAccessMode: *mut MV_XML_AccessMode,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_XML_GetNodeInterfaceType(
         handle: *mut ::std::os::raw::c_void,
         strName: *const ::std::os::raw::c_char,
         penInterfaceType: *mut MV_XML_InterfaceType,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FeatureLoad(
         handle: *mut ::std::os::raw::c_void,
         strFileName: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FeatureLoadEx(
         handle: *mut ::std::os::raw::c_void,
         strFileName: *const ::std::os::raw::c_char,
         pstNodeErrorList: *mut MVCC_NODE_ERROR_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FeatureSave(
         handle: *mut ::std::os::raw::c_void,
         strFileName: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_ReadMemory(
         handle: *mut ::std::os::raw::c_void,
         pBuffer: *mut ::std::os::raw::c_void,
         nAddress: i64,
         nLength: i64,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_WriteMemory(
         handle: *mut ::std::os::raw::c_void,
         pBuffer: *const ::std::os::raw::c_void,
         nAddress: i64,
         nLength: i64,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_InvalidateNodes(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_XML_GetGenICamXML(
         handle: *mut ::std::os::raw::c_void,
         pData: *mut ::std::os::raw::c_uchar,
         nDataSize: ::std::os::raw::c_uint,
         pnDataLen: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FileAccessRead(
         handle: *mut ::std::os::raw::c_void,
         pstFileAccess: *mut MV_CC_FILE_ACCESS,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FileAccessReadEx(
         handle: *mut ::std::os::raw::c_void,
         pstFileAccessEx: *mut MV_CC_FILE_ACCESS_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FileAccessWrite(
         handle: *mut ::std::os::raw::c_void,
         pstFileAccess: *mut MV_CC_FILE_ACCESS,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FileAccessWriteEx(
         handle: *mut ::std::os::raw::c_void,
         pstFileAccessEx: *mut MV_CC_FILE_ACCESS_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetFileAccessProgress(
         handle: *mut ::std::os::raw::c_void,
         pstFileAccessProgress: *mut MV_CC_FILE_ACCESS_PROGRESS,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_LocalUpgrade(
         handle: *mut ::std::os::raw::c_void,
         strFilePathName: *const ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetUpgradeProcess(
         handle: *mut ::std::os::raw::c_void,
         pnProcess: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RegisterExceptionCallBack(
         handle: *mut ::std::os::raw::c_void,
         cbException: MvExceptionCallback,
         pUser: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RegisterAllEventCallBack(
         handle: *mut ::std::os::raw::c_void,
         cbEvent: MvEventCallback,
         pUser: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RegisterEventCallBackEx(
         handle: *mut ::std::os::raw::c_void,
         strEventName: *const ::std::os::raw::c_char,
         cbEvent: MvEventCallback,
         pUser: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RegisterStreamExceptionCallBack(
         handle: *mut ::std::os::raw::c_void,
         cbStreamException: MvStreamExceptionCallback,
         pUser: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EventNotificationOn(
         handle: *mut ::std::os::raw::c_void,
         strEventName: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EventNotificationOff(
         handle: *mut ::std::os::raw::c_void,
         strEventName: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetEnumDevTimeout(nMilTimeout: ::std::os::raw::c_uint) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_ForceIpEx(
         handle: *mut ::std::os::raw::c_void,
         nIP: ::std::os::raw::c_uint,
         nSubNetMask: ::std::os::raw::c_uint,
         nDefaultGateWay: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetIpConfig(
         handle: *mut ::std::os::raw::c_void,
         nType: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetNetTransMode(
         handle: *mut ::std::os::raw::c_void,
         nType: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_GetNetTransInfo(
         handle: *mut ::std::os::raw::c_void,
         pstInfo: *mut MV_NETTRANS_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetDiscoveryMode(nMode: ::std::os::raw::c_uint) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetGvspTimeout(
         handle: *mut ::std::os::raw::c_void,
         nMillisec: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_GetGvspTimeout(
         handle: *mut ::std::os::raw::c_void,
         pnMillisec: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetGvcpTimeout(
         handle: *mut ::std::os::raw::c_void,
         nMillisec: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_GetGvcpTimeout(
         handle: *mut ::std::os::raw::c_void,
         pnMillisec: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetRetryGvcpTimes(
         handle: *mut ::std::os::raw::c_void,
         nRetryGvcpTimes: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_GetRetryGvcpTimes(
         handle: *mut ::std::os::raw::c_void,
         pnRetryGvcpTimes: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_GetOptimalPacketSize(handle: *mut ::std::os::raw::c_void)
     -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetResend(
         handle: *mut ::std::os::raw::c_void,
         bEnable: ::std::os::raw::c_uint,
         nMaxResendPercent: ::std::os::raw::c_uint,
         nResendTimeout: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetResendMaxRetryTimes(
         handle: *mut ::std::os::raw::c_void,
         nRetryTimes: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_GetResendMaxRetryTimes(
         handle: *mut ::std::os::raw::c_void,
         pnRetryTimes: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetResendTimeInterval(
         handle: *mut ::std::os::raw::c_void,
         nMillisec: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_GetResendTimeInterval(
         handle: *mut ::std::os::raw::c_void,
         pnMillisec: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_SetTransmissionType(
         handle: *mut ::std::os::raw::c_void,
         pstTransmissionType: *mut MV_TRANSMISSION_TYPE,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_IssueActionCommand(
         pstActionCmdInfo: *mut MV_ACTION_CMD_INFO,
         pstActionCmdResults: *mut MV_ACTION_CMD_RESULT_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_GIGE_GetMulticastStatus(
         pstDevInfo: *mut MV_CC_DEVICE_INFO,
         pbStatus: *mut bool_,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CAML_GetSerialPortList(
         pstSerialPortList: *mut MV_CAML_SERIAL_PORT_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CAML_SetEnumSerialPorts(
         pstSerialPortList: *mut MV_CAML_SERIAL_PORT_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CAML_SetDeviceBaudrate(
         handle: *mut ::std::os::raw::c_void,
         nBaudrate: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CAML_GetDeviceBaudrate(
         handle: *mut ::std::os::raw::c_void,
         pnCurrentBaudrate: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CAML_GetSupportBaudrates(
         handle: *mut ::std::os::raw::c_void,
         pnBaudrateAblity: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CAML_SetGenCPTimeOut(
         handle: *mut ::std::os::raw::c_void,
         nMillisec: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_USB_SetTransferSize(
         handle: *mut ::std::os::raw::c_void,
         nTransferSize: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_USB_GetTransferSize(
         handle: *mut ::std::os::raw::c_void,
         pnTransferSize: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_USB_SetTransferWays(
         handle: *mut ::std::os::raw::c_void,
         nTransferWays: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_USB_GetTransferWays(
         handle: *mut ::std::os::raw::c_void,
         pnTransferWays: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_USB_SetEventNodeNum(
         handle: *mut ::std::os::raw::c_void,
         nEventNodeNum: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_USB_SetSyncTimeOut(
         handle: *mut ::std::os::raw::c_void,
         nMills: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_USB_GetSyncTimeOut(
         handle: *mut ::std::os::raw::c_void,
         pnMills: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EnumInterfacesByGenTL(
         pstIFList: *mut MV_GENTL_IF_INFO_LIST,
         strGenTLPath: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_UnloadGenTLLibrary(
         pGenTLPath: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_EnumDevicesByGenTL(
         pstIFInfo: *mut MV_GENTL_IF_INFO,
         pstDevList: *mut MV_GENTL_DEV_INFO_LIST,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_CreateHandleByGenTL(
         handle: *mut *mut ::std::os::raw::c_void,
         pstDevInfo: *const MV_GENTL_DEV_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SaveImageEx3(
         handle: *mut ::std::os::raw::c_void,
         pstSaveParam: *mut MV_SAVE_IMAGE_PARAM_EX3,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SaveImageToFileEx(
         handle: *mut ::std::os::raw::c_void,
         pstSaveFileParam: *mut MV_SAVE_IMAGE_TO_FILE_PARAM_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SaveImageToFileEx2(
         handle: *mut ::std::os::raw::c_void,
         pstImage: *mut MV_CC_IMAGE,
         pSaveImageParam: *mut MV_CC_SAVE_IMAGE_PARAM,
         pcImagePath: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_RotateImage(
         handle: *mut ::std::os::raw::c_void,
         pstRotateParam: *mut MV_CC_ROTATE_IMAGE_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_FlipImage(
         handle: *mut ::std::os::raw::c_void,
         pstFlipParam: *mut MV_CC_FLIP_IMAGE_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_ConvertPixelTypeEx(
         handle: *mut ::std::os::raw::c_void,
         pstCvtParam: *mut MV_CC_PIXEL_CONVERT_PARAM_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetBayerCvtQuality(
         handle: *mut ::std::os::raw::c_void,
         nBayerCvtQuality: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetBayerFilterEnable(
         handle: *mut ::std::os::raw::c_void,
         bFilterEnable: bool_,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetBayerGammaValue(
         handle: *mut ::std::os::raw::c_void,
         fBayerGammaValue: f32,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetGammaValue(
         handle: *mut ::std::os::raw::c_void,
         enSrcPixelType: MvGvspPixelType,
         fGammaValue: f32,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetBayerGammaParam(
         handle: *mut ::std::os::raw::c_void,
         pstGammaParam: *mut MV_CC_GAMMA_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetBayerCCMParam(
         handle: *mut ::std::os::raw::c_void,
         pstCCMParam: *mut MV_CC_CCM_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetBayerCCMParamEx(
         handle: *mut ::std::os::raw::c_void,
         pstCCMParam: *mut MV_CC_CCM_PARAM_EX,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_ImageContrast(
         handle: *mut ::std::os::raw::c_void,
         pstContrastParam: *mut MV_CC_CONTRAST_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_PurpleFringing(
         handle: *mut ::std::os::raw::c_void,
         pstPurpleFringingParam: *mut MV_CC_PURPLE_FRINGING_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SetISPConfig(
         handle: *mut ::std::os::raw::c_void,
         pstParam: *mut MV_CC_ISP_CONFIG_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_ISPProcess(
         handle: *mut ::std::os::raw::c_void,
         pstInputImage: *mut MV_CC_IMAGE,
         pstOutputImage: *mut MV_CC_IMAGE,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_HB_Decode(
         handle: *mut ::std::os::raw::c_void,
         pstDecodeParam: *mut MV_CC_HB_DECODE_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_StartRecord(
         handle: *mut ::std::os::raw::c_void,
         pstRecordParam: *mut MV_CC_RECORD_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_InputOneFrame(
         handle: *mut ::std::os::raw::c_void,
         pstInputFrameInfo: *mut MV_CC_INPUT_FRAME_INFO,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_StopRecord(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_ReconstructImage(
         handle: *mut ::std::os::raw::c_void,
         pstReconstructParam: *mut MV_RECONSTRUCT_IMAGE_PARAM,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SerialPort_Open(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SerialPort_Write(
         handle: *mut ::std::os::raw::c_void,
         pBuffer: *const ::std::os::raw::c_void,
         nLength: ::std::os::raw::c_uint,
         pnWriteLen: *mut ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SerialPort_Read(
         handle: *mut ::std::os::raw::c_void,
         pBuffer: *mut ::std::os::raw::c_void,
@@ -2757,12 +2476,8 @@ unsafe extern "C" {
         pnReadLen: *mut ::std::os::raw::c_uint,
         nMsec: ::std::os::raw::c_uint,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SerialPort_ClearBuffer(
         handle: *mut ::std::os::raw::c_void,
     ) -> ::std::os::raw::c_int;
-}
-unsafe extern "C" {
     pub fn MV_CC_SerialPort_Close(handle: *mut ::std::os::raw::c_void) -> ::std::os::raw::c_int;
 }
