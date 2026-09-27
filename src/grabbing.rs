@@ -7,10 +7,10 @@ use std::fmt;
 use std::mem;
 use std::ops::Deref;
 use std::ptr;
+use std::sync::Arc;
 use std::time::Duration;
 
-use crate::callback::image_trampoline;
-use crate::camera::BoxedCallback;
+use crate::callback::{image_trampoline, into_user_data};
 use crate::error::sdk_call;
 use crate::{Camera, Frame, FrameGuard, Result, sys};
 
@@ -24,16 +24,15 @@ impl Camera {
 
     /// 注册 image callback 并开始取流。
     ///
-    /// SDK 在内部线程调用 `callback`，[`Frame`] 只在本次回调期间有效（`bAutoFree=true`）。
+    /// SDK 在内部线程调用 `callback`，[`Frame`] 只在本次回调期间有效（`bAutoFree = true`）。
     /// callback 内的 panic 会在 FFI 边界终止进程。
     pub fn start_grabbing_with<F>(&mut self, callback: F) -> Result<CallbackGrabbing<'_>>
     where
-        F: Fn(&Frame<'_>) + Send + Sync + 'static,
+        F: Fn(Frame<'_>) + Send + Sync + 'static,
     {
         let handle = self.as_raw_handle();
-        let callback = Box::new(callback);
-        let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
-        // SAFETY: trampoline 与 F 匹配；闭包由守卫持有，注销成功前不会释放。
+        let (callback, user) = into_user_data(callback);
+        // SAFETY: trampoline 与 F 匹配；守卫持有闭包到 `StopGrabbing` 与注销都成功。
         unsafe {
             sdk_call!(MV_CC_RegisterImageCallBackEx2(
                 handle,
@@ -104,7 +103,7 @@ impl Drop for Grabbing<'_> {
 pub struct CallbackGrabbing<'a> {
     camera: &'a mut Camera,
     /// 只在 `finish` 中被取走，`stop` 之后的 `Drop` 因此不会重复停止。
-    callback: Option<BoxedCallback>,
+    callback: Option<Arc<dyn Send + Sync>>,
 }
 
 impl CallbackGrabbing<'_> {

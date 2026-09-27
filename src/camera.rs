@@ -1,6 +1,5 @@
 //! 已打开的相机：handle 所有权、`GenICam` 节点读写与 exception/event callback。
 
-use std::any::Any;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::mem;
@@ -8,16 +7,13 @@ use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
 
-use crate::callback::{event_trampoline, exception_trampoline};
+use crate::callback::{event_trampoline, exception_trampoline, into_user_data};
 use crate::error::sdk_call;
 use crate::sdk::Session;
 use crate::{
     AccessMode, DeviceInfo, Error, ErrorCode, EventInfo, ExceptionKind, Result,
     fixed_cstr_from_chars, sys,
 };
-
-/// 交给 SDK 的 callback 闭包；只做类型擦除后的释放。
-pub(crate) type BoxedCallback = Box<dyn Any + Send + Sync>;
 
 /// 已打开的 MVS 相机。
 ///
@@ -27,8 +23,8 @@ pub(crate) type BoxedCallback = Box<dyn Any + Send + Sync>;
 pub struct Camera {
     /// 只在 `release` 中被取走，存活的相机总是持有 handle。
     handle: Option<NonNull<c_void>>,
-    /// 已交给 SDK 的 exception/event 闭包；SDK 可能随时回调，只在 `DestroyHandle` 成功后释放。
-    callbacks: Vec<BoxedCallback>,
+    /// 交给 SDK 的 exception/event 闭包与事件名；SDK 可能随时回调，只在 `DestroyHandle` 成功后释放。
+    callbacks: Vec<Arc<dyn Send + Sync>>,
     session: Arc<Session>,
 }
 
@@ -290,9 +286,8 @@ impl Camera {
     where
         F: Fn(ExceptionKind) + Send + Sync + 'static,
     {
-        let callback = Box::new(callback);
-        let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
-        // SAFETY: trampoline 与 F 匹配；闭包在 DestroyHandle 之前不会释放。
+        let (callback, user) = into_user_data(callback);
+        // SAFETY: trampoline 与 F 匹配；相机持有闭包到 `DestroyHandle` 成功。
         unsafe {
             sdk_call!(MV_CC_RegisterExceptionCallBack(
                 self.as_raw_handle(),
@@ -322,13 +317,12 @@ impl Camera {
     /// [`Camera::event_notification_on`]。
     pub fn register_event_callback<F>(&mut self, event_name: &CStr, callback: F) -> Result<()>
     where
-        F: Fn(&EventInfo<'_>) + Send + Sync + 'static,
+        F: Fn(EventInfo<'_>) + Send + Sync + 'static,
     {
         // 厂商未说明是否复制事件名，名字与闭包一起保留到 DestroyHandle。
         let name = event_name.to_owned();
-        let callback = Box::new(callback);
-        let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
-        // SAFETY: name 以 NUL 结尾；trampoline 与 F 匹配，name 与闭包在 DestroyHandle 之前不会释放。
+        let (callback, user) = into_user_data(callback);
+        // SAFETY: name 以 NUL 结尾；trampoline 与 F 匹配，相机持有 name 与闭包到 `DestroyHandle` 成功。
         unsafe {
             sdk_call!(MV_CC_RegisterEventCallBackEx(
                 self.as_raw_handle(),
@@ -338,7 +332,7 @@ impl Camera {
             ))
         }?;
         self.callbacks.push(callback);
-        self.callbacks.push(Box::new(name));
+        self.callbacks.push(Arc::new(name));
         Ok(())
     }
 
@@ -383,7 +377,7 @@ impl Camera {
     }
 
     /// 交给 SDK 且可能仍被回调的闭包，保留到 `DestroyHandle` 之后。
-    pub(crate) fn keep_until_destroy(&mut self, callback: BoxedCallback) {
+    pub(crate) fn keep_until_destroy(&mut self, callback: Arc<dyn Send + Sync>) {
         self.callbacks.push(callback);
     }
 
