@@ -24,7 +24,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     for _ in 0..10 {
         let (info, pixels) = receiver.recv_timeout(Duration::from_secs(1))?;
-        println!("#{} {}x{} {} 字节", info.frame_number, info.width, info.height, pixels.len());
+        println!(
+            "#{} {}x{} {} 字节",
+            info.frame_number,
+            info.width,
+            info.height,
+            pixels.len()
+        );
     }
     grabbing.stop()?;
 

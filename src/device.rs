@@ -101,7 +101,8 @@ impl DeviceInfo {
 
     /// `GigE` 设备的子网掩码。
     pub fn subnet_mask(&self) -> Option<Ipv4Addr> {
-        self.gige().map(|info| Ipv4Addr::from(info.nCurrentSubNetMask))
+        self.gige()
+            .map(|info| Ipv4Addr::from(info.nCurrentSubNetMask))
     }
 
     /// `GigE` 设备的默认网关。
@@ -120,7 +121,8 @@ impl DeviceInfo {
     }
 
     fn string(&self, field: impl FnOnce(Strings<'_>) -> &[u8]) -> &CStr {
-        self.strings().map_or(c"", |strings| fixed_cstr(field(strings)))
+        self.strings()
+            .map_or(c"", |strings| fixed_cstr(field(strings)))
     }
 
     fn gige(&self) -> Option<&sys::MV_GIGE_DEVICE_INFO> {
@@ -176,8 +178,10 @@ mod tests {
     // 字符串按 transport 选择 union 成员并截断到 NUL；非 GigE 设备没有 IP。
     #[test]
     fn fields_follow_the_transport_layer() {
-        let mut raw =
-            sys::MV_CC_DEVICE_INFO { nTLayerType: sys::MV_GIGE_DEVICE, ..Default::default() };
+        let mut raw = sys::MV_CC_DEVICE_INFO {
+            nTLayerType: sys::MV_GIGE_DEVICE,
+            ..Default::default()
+        };
         // SAFETY: 测试只写入 stGigEInfo 成员，union 其余字节保持为零。
         unsafe {
             raw.SpecialInfo.stGigEInfo.chSerialNumber[..3].copy_from_slice(b"SN1");

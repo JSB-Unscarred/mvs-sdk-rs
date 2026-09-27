@@ -24,7 +24,11 @@ fn real_camera_data_flow() -> Result<(), Box<dyn Error>> {
 
     let mut camera = sdk.open(device, AccessMode::Exclusive, 0)?;
     // free-run 才能在超时内拿到图像。
-    assert_eq!(camera.get_enum(c"TriggerMode")?.current, 0, "TriggerMode must be Off");
+    assert_eq!(
+        camera.get_enum(c"TriggerMode")?.current,
+        0,
+        "TriggerMode must be Off"
+    );
 
     let grabbing = camera.start_grabbing()?;
     {

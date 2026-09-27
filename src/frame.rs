@@ -54,7 +54,11 @@ impl<'a> Frame<'a> {
     #[allow(clippy::cast_possible_truncation, reason = "只支持 64 位 Windows")]
     pub(crate) unsafe fn from_raw(raw: &'a sys::MV_FRAME_OUT) -> Self {
         let info = &raw.stFrameInfo;
-        let len = if info.nFrameLenEx == 0 { u64::from(info.nFrameLen) } else { info.nFrameLenEx };
+        let len = if info.nFrameLenEx == 0 {
+            u64::from(info.nFrameLen)
+        } else {
+            info.nFrameLenEx
+        };
         let data = if raw.pBufAddr.is_null() || len == 0 {
             &[]
         } else {
@@ -111,7 +115,11 @@ pub struct FrameGuard<'a> {
 
 impl FrameGuard<'_> {
     pub(crate) const fn new(handle: *mut c_void, raw: &sys::MV_FRAME_OUT) -> Self {
-        Self { raw: *raw, handle, _grabbing: PhantomData }
+        Self {
+            raw: *raw,
+            handle,
+            _grabbing: PhantomData,
+        }
     }
 
     /// 借出 buffer 中的帧。
@@ -136,7 +144,11 @@ impl fmt::Debug for FrameGuard<'_> {
 
 /// SDK 用扩展字段承载超过 `u16` 的尺寸，扩展字段为 0 时取旧字段。
 fn extended_or(extended: u32, legacy: u16) -> u32 {
-    if extended == 0 { u32::from(legacy) } else { extended }
+    if extended == 0 {
+        u32::from(legacy)
+    } else {
+        extended
+    }
 }
 
 #[cfg(test)]

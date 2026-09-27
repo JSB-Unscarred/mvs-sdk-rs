@@ -79,12 +79,19 @@ impl Camera {
         let mut handle = ptr::null_mut();
         // SAFETY: handle 是可写输出；CreateHandle 在调用期间复制设备记录。
         unsafe { sdk_call!(MV_CC_CreateHandle(&raw mut handle, device.raw())) }?;
-        let handle = NonNull::new(handle)
-            .ok_or(Error::Sdk { function: "MV_CC_CreateHandle", code: ErrorCode::Handle })?;
+        let handle = NonNull::new(handle).ok_or(Error::Sdk {
+            function: "MV_CC_CreateHandle",
+            code: ErrorCode::Handle,
+        })?;
 
         // SAFETY: handle 来自 CreateHandle，只由本函数持有。
-        let opened =
-            unsafe { sdk_call!(MV_CC_OpenDevice(handle.as_ptr(), mode as u32, switchover_key)) };
+        let opened = unsafe {
+            sdk_call!(MV_CC_OpenDevice(
+                handle.as_ptr(),
+                mode as u32,
+                switchover_key
+            ))
+        };
         if let Err(error) = opened {
             // SAFETY: OpenDevice 失败后 handle 仍只由本函数持有。
             if unsafe { sdk_call!(MV_CC_DestroyHandle(handle.as_ptr())) }.is_err() {
@@ -94,7 +101,11 @@ impl Camera {
             return Err(error);
         }
 
-        Ok(Self { handle: Some(handle), callbacks: Vec::new(), session })
+        Ok(Self {
+            handle: Some(handle),
+            callbacks: Vec::new(),
+            session,
+        })
     }
 
     /// native handle，供尚未封装的 SDK 接口使用。
@@ -115,15 +126,30 @@ impl Camera {
         let mut value = sys::MVCC_INTVALUE_EX::default();
         // SAFETY: key 以 NUL 结尾，value 是可写输出，二者只在本次调用期间借出。
         unsafe {
-            sdk_call!(MV_CC_GetIntValueEx(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+            sdk_call!(MV_CC_GetIntValueEx(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                &raw mut value
+            ))
         }?;
-        Ok(IntValue { current: value.nCurValue, min: value.nMin, max: value.nMax, inc: value.nInc })
+        Ok(IntValue {
+            current: value.nCurValue,
+            min: value.nMin,
+            max: value.nMax,
+            inc: value.nInc,
+        })
     }
 
     /// 设置 Integer 节点。
     pub fn set_int(&self, key: &CStr, value: i64) -> Result<()> {
         // SAFETY: key 以 NUL 结尾，只在本次调用期间借出。
-        unsafe { sdk_call!(MV_CC_SetIntValueEx(self.as_raw_handle(), key.as_ptr(), value)) }
+        unsafe {
+            sdk_call!(MV_CC_SetIntValueEx(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                value
+            ))
+        }
     }
 
     /// 读取 Enumeration 节点。
@@ -131,16 +157,29 @@ impl Camera {
         let mut value = sys::MVCC_ENUMVALUE_EX::default();
         // SAFETY: key 以 NUL 结尾，value 是可写输出。
         unsafe {
-            sdk_call!(MV_CC_GetEnumValueEx(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+            sdk_call!(MV_CC_GetEnumValueEx(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                &raw mut value
+            ))
         }?;
         let count = (value.nSupportedNum as usize).min(value.nSupportValue.len());
-        Ok(EnumValue { current: value.nCurValue, supported: value.nSupportValue[..count].to_vec() })
+        Ok(EnumValue {
+            current: value.nCurValue,
+            supported: value.nSupportValue[..count].to_vec(),
+        })
     }
 
     /// 按数值设置 Enumeration 节点。
     pub fn set_enum_value(&self, key: &CStr, value: u32) -> Result<()> {
         // SAFETY: key 以 NUL 结尾。
-        unsafe { sdk_call!(MV_CC_SetEnumValue(self.as_raw_handle(), key.as_ptr(), value)) }
+        unsafe {
+            sdk_call!(MV_CC_SetEnumValue(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                value
+            ))
+        }
     }
 
     /// 按符号名设置 Enumeration 节点。
@@ -160,15 +199,29 @@ impl Camera {
         let mut value = sys::MVCC_FLOATVALUE::default();
         // SAFETY: key 以 NUL 结尾，value 是可写输出。
         unsafe {
-            sdk_call!(MV_CC_GetFloatValue(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+            sdk_call!(MV_CC_GetFloatValue(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                &raw mut value
+            ))
         }?;
-        Ok(FloatValue { current: value.fCurValue, min: value.fMin, max: value.fMax })
+        Ok(FloatValue {
+            current: value.fCurValue,
+            min: value.fMin,
+            max: value.fMax,
+        })
     }
 
     /// 设置 Float 节点。
     pub fn set_float(&self, key: &CStr, value: f32) -> Result<()> {
         // SAFETY: key 以 NUL 结尾。
-        unsafe { sdk_call!(MV_CC_SetFloatValue(self.as_raw_handle(), key.as_ptr(), value)) }
+        unsafe {
+            sdk_call!(MV_CC_SetFloatValue(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                value
+            ))
+        }
     }
 
     /// 读取 Boolean 节点。
@@ -176,7 +229,11 @@ impl Camera {
         let mut value = 0;
         // SAFETY: key 以 NUL 结尾，value 是可写输出。
         unsafe {
-            sdk_call!(MV_CC_GetBoolValue(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+            sdk_call!(MV_CC_GetBoolValue(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                &raw mut value
+            ))
         }?;
         Ok(value != 0)
     }
@@ -198,7 +255,11 @@ impl Camera {
         let mut value = sys::MVCC_STRINGVALUE::default();
         // SAFETY: key 以 NUL 结尾，value 是可写输出。
         unsafe {
-            sdk_call!(MV_CC_GetStringValue(self.as_raw_handle(), key.as_ptr(), &raw mut value))
+            sdk_call!(MV_CC_GetStringValue(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                &raw mut value
+            ))
         }?;
         Ok(fixed_cstr_from_chars(&value.chCurValue).to_owned())
     }
@@ -207,7 +268,11 @@ impl Camera {
     pub fn set_string(&self, key: &CStr, value: &CStr) -> Result<()> {
         // SAFETY: 两个字符串都以 NUL 结尾。
         unsafe {
-            sdk_call!(MV_CC_SetStringValue(self.as_raw_handle(), key.as_ptr(), value.as_ptr()))
+            sdk_call!(MV_CC_SetStringValue(
+                self.as_raw_handle(),
+                key.as_ptr(),
+                value.as_ptr()
+            ))
         }
     }
 
@@ -243,7 +308,11 @@ impl Camera {
     pub fn unregister_exception_callback(&mut self) -> Result<()> {
         // SAFETY: 厂商约定传入空 callback 注销。
         unsafe {
-            sdk_call!(MV_CC_RegisterExceptionCallBack(self.as_raw_handle(), None, ptr::null_mut()))
+            sdk_call!(MV_CC_RegisterExceptionCallBack(
+                self.as_raw_handle(),
+                None,
+                ptr::null_mut()
+            ))
         }
     }
 
@@ -289,13 +358,23 @@ impl Camera {
     /// 打开设备端的事件通知。
     pub fn event_notification_on(&self, event_name: &CStr) -> Result<()> {
         // SAFETY: event_name 以 NUL 结尾。
-        unsafe { sdk_call!(MV_CC_EventNotificationOn(self.as_raw_handle(), event_name.as_ptr())) }
+        unsafe {
+            sdk_call!(MV_CC_EventNotificationOn(
+                self.as_raw_handle(),
+                event_name.as_ptr()
+            ))
+        }
     }
 
     /// 关闭设备端的事件通知。
     pub fn event_notification_off(&self, event_name: &CStr) -> Result<()> {
         // SAFETY: event_name 以 NUL 结尾。
-        unsafe { sdk_call!(MV_CC_EventNotificationOff(self.as_raw_handle(), event_name.as_ptr())) }
+        unsafe {
+            sdk_call!(MV_CC_EventNotificationOff(
+                self.as_raw_handle(),
+                event_name.as_ptr()
+            ))
+        }
     }
 
     /// 关闭并销毁 handle，返回首个错误。

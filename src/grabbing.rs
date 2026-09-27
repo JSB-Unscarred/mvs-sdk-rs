@@ -35,7 +35,12 @@ impl Camera {
         let user = ptr::from_ref(callback.as_ref()).cast_mut().cast();
         // SAFETY: trampoline 与 F 匹配；闭包由守卫持有，注销成功前不会释放。
         unsafe {
-            sdk_call!(MV_CC_RegisterImageCallBackEx2(handle, Some(image_trampoline::<F>), user, 1))
+            sdk_call!(MV_CC_RegisterImageCallBackEx2(
+                handle,
+                Some(image_trampoline::<F>),
+                user,
+                1
+            ))
         }?;
 
         // SAFETY: handle 已注册 image callback，且没有其它取流守卫。
@@ -45,7 +50,10 @@ impl Camera {
             }
             return Err(error);
         }
-        Ok(CallbackGrabbing { camera: self, callback: Some(callback) })
+        Ok(CallbackGrabbing {
+            camera: self,
+            callback: Some(callback),
+        })
     }
 }
 
@@ -135,7 +143,9 @@ impl Drop for CallbackGrabbing<'_> {
 
 impl fmt::Debug for CallbackGrabbing<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CallbackGrabbing").field("camera", &self.camera).finish_non_exhaustive()
+        f.debug_struct("CallbackGrabbing")
+            .field("camera", &self.camera)
+            .finish_non_exhaustive()
     }
 }
 
@@ -147,7 +157,12 @@ fn stop_grabbing(camera: &Camera) -> Result<()> {
 fn unregister_image_callback(camera: &Camera) -> Result<()> {
     // SAFETY: 官方 Ex2 示例以空 callback 与 user 注销，bAutoFree 仍传 true。
     unsafe {
-        sdk_call!(MV_CC_RegisterImageCallBackEx2(camera.as_raw_handle(), None, ptr::null_mut(), 1))
+        sdk_call!(MV_CC_RegisterImageCallBackEx2(
+            camera.as_raw_handle(),
+            None,
+            ptr::null_mut(),
+            1
+        ))
     }
 }
 

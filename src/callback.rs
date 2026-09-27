@@ -145,7 +145,9 @@ mod tests {
         unsafe {
             fire_event(
                 &|event: &EventInfo<'_>| {
-                    seen.lock().unwrap().push(format!("{:?}@{:X}", event.name, event.timestamp));
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("{:?}@{:X}", event.name, event.timestamp));
                 },
                 &mut info,
             );

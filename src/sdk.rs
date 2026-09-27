@@ -41,7 +41,11 @@ impl Sdk {
         }
         // SAFETY: 上面的原子标记保证本进程只调用一次。
         unsafe { sdk_call!(MV_CC_Initialize()) }?;
-        Ok(Self { session: Arc::new(Session { enumeration: Mutex::new(()) }) })
+        Ok(Self {
+            session: Arc::new(Session {
+                enumeration: Mutex::new(()),
+            }),
+        })
     }
 
     /// 查询 SDK 版本，无需先初始化。
@@ -52,7 +56,11 @@ impl Sdk {
 
     /// 枚举指定 transport 上的设备，返回的记录独立于 SDK 内部列表。
     pub fn devices(&self, layers: TransportLayer) -> Result<Vec<DeviceInfo>> {
-        let _enumeration = self.session.enumeration.lock().unwrap_or_else(PoisonError::into_inner);
+        let _enumeration = self
+            .session
+            .enumeration
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut list = sys::MV_CC_DEVICE_INFO_LIST::default();
         // SAFETY: list 是可写的输出结构体。
         unsafe { sdk_call!(MV_CC_EnumDevices(layers.raw(), &raw mut list)) }?;
@@ -69,7 +77,10 @@ impl Sdk {
     }
 
     /// 查询设备当前能否以指定模式打开。
-    #[allow(clippy::unused_self, reason = "借用 Sdk 保证调用时会话仍处于初始化状态")]
+    #[allow(
+        clippy::unused_self,
+        reason = "借用 Sdk 保证调用时会话仍处于初始化状态"
+    )]
     pub fn is_accessible(&self, device: &DeviceInfo, mode: AccessMode) -> bool {
         let mut raw = *device.raw();
         // SAFETY: raw 是设备记录的本地副本，C 接口只是签名要求可变指针。
