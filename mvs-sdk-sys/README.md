@@ -1,25 +1,33 @@
 # mvs-sdk-sys
 
-Raw, unsafe FFI bindings for the Hikvision MVS machine-vision camera SDK.
-The bindings are generated with `bindgen` and are primarily an implementation
-dependency of the safe `mvs-sdk-rs` crate. Application code should normally
-depend on `mvs-sdk-rs` instead.
+Unofficial raw FFI bindings for the Hikrobot MVS industrial camera SDK (`MvCameraControl`),
+baseline MVS 4.7.0. Most applications should use the safe [`mvs-sdk`](https://crates.io/crates/mvs-sdk)
+crate, which re-exports this crate as `mvs_sdk::sys`.
 
-The native MVS SDK is currently supported on Windows x86_64 MSVC. The generated
-bindings are committed, so ordinary builds do not require libclang.
+## Requirements
 
-From the root of a repository checkout, maintainers can regenerate the Windows
-x64 bindings with the explicit maintenance script:
+- Target: `x86_64-pc-windows-msvc` only; other targets fail at compile time.
+- Build: the bindings link `MvCameraControl.dll` through `raw-dylib`, so building needs neither the SDK
+  nor its import library.
+- Run: the directory containing `MvCameraControl.dll` must be on `PATH` (the MVS installer adds it).
+
+## Bindings
+
+The bindings are generated with bindgen 0.72.1 and committed, so ordinary builds do not need libclang.
+Maintainers regenerate them from the root of a repository checkout after an SDK update:
 
 ```powershell
 cargo install bindgen-cli --version 0.72.1 --locked
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\generate-bindings-windows-x64.ps1
 ```
 
-`Bypass` applies only to that PowerShell child process and does not change the
-system or user execution policy. The script requires Windows x64 MSVC,
-LLVM/libclang, and the MVS SDK. It reads the SDK development directory from
-`MVCAM_COMMON_RUNENV` by default; pass `-SdkRoot <path>` to override it. The
-directory must contain `Includes/MvCameraControl.h`. The pinned CLI version
-matches the generator recorded at the top of the committed bindings and avoids
-unrelated output churn during SDK updates.
+`Bypass` applies only to that PowerShell child process. The script requires LLVM/libclang and the MVS SDK,
+reads the SDK development directory from `MVCAM_COMMON_RUNENV` (override with `-SdkRoot <path>`), merges the
+extern blocks and adds the `raw-dylib` link attribute. The pinned bindgen version matches the header of the
+committed bindings and avoids unrelated output churn.
+
+The vendor SDK, headers, import libraries and DLLs are not redistributed.
+
+## License
+
+MIT

@@ -1,10 +1,4 @@
-//! Raw FFI bindings for the Hikrobot MVS industrial camera SDK (`MvCameraControl`).
-//!
-//! The bindings are generated with `bindgen` and intentionally expose the SDK's unsafe C API
-//! without a safety wrapper. They link `MvCameraControl.dll` through `raw-dylib`, so building
-//! needs neither the SDK nor its import library; the DLL must be on `PATH` at run time.
-//! Most applications should use the safe `mvs-sdk` crate instead.
-
+#![doc = include_str!("../README.md")]
 #![allow(
     non_upper_case_globals,
     non_camel_case_types,

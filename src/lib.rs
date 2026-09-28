@@ -1,8 +1,8 @@
 //! 海康机器人（Hikrobot）MVS 工业相机 SDK 的安全 Rust 封装。
 //!
-//! 原始 FFI 位于 `mvs-sdk-sys`。本 crate 用所有权与借用表达 SDK 的调用约定：
+//! 原始 FFI 位于 `mvs-sdk-sys`，经 [`sys`] 再导出。本 crate 用所有权与借用表达 SDK 的调用约定：
 //!
-//! - [`Sdk`] 初始化进程级 SDK，枚举并打开设备；
+//! - [`Sdk`] 取得本进程唯一的 SDK 会话，枚举并打开设备；
 //! - [`Camera`] 独占一个 native handle，负责节点读写和 exception/event callback；
 //! - [`Camera::start_grabbing`] 与 [`Camera::start_grabbing_with`] 返回借用相机的取流守卫，
 //!   pull 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
@@ -88,6 +88,11 @@ fn char_bytes(chars: &[c_char]) -> &[u8] {
 fn high_low(high: u32, low: u32) -> u64 {
     (u64::from(high) << 32) | u64::from(low)
 }
+
+// README 中的 Rust 示例参与 doctest，避免与 API 脱节。
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
 
 #[cfg(test)]
 mod tests {
