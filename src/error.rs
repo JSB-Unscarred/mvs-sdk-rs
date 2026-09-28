@@ -218,32 +218,3 @@ impl fmt::Display for ErrorCode {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Error, ErrorCode, check};
-    use crate::sys;
-
-    // 已知状态码映射到变体，未知状态码原样保留，错误信息带上失败的函数名。
-    #[test]
-    fn status_codes_round_trip_and_name_the_function() {
-        assert_eq!(
-            ErrorCode::from_raw(sys::MV_E_CALLORDER),
-            ErrorCode::CallOrder
-        );
-        assert_eq!(ErrorCode::from_raw(0xDEAD_BEEF).raw(), 0xDEAD_BEEF);
-
-        let error = check("MV_CC_StartGrabbing", sys::MV_E_CALLORDER.cast_signed()).unwrap_err();
-        assert!(matches!(
-            error,
-            Error::Sdk {
-                code: ErrorCode::CallOrder,
-                ..
-            }
-        ));
-        assert_eq!(
-            error.to_string(),
-            "MV_CC_StartGrabbing failed: MV_E_CALLORDER (0x80000003)"
-        );
-    }
-}

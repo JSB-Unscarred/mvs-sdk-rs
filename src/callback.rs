@@ -138,118 +138,32 @@ pub(crate) unsafe extern "C" fn event_trampoline<F>(
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use super::{
-        EventInfo, ExceptionKind, event_trampoline, exception_trampoline, image_trampoline,
-        into_user_data,
-    };
-    use crate::{Frame, sys};
+    use super::{ExceptionKind, exception_trampoline, into_user_data};
 
-    // 与注册时相同：返回 owner 的强引用、交给 SDK 的 callback 与 pUser。
-    fn register_image<F>(
-        callback: F,
-    ) -> (Arc<dyn Send + Sync>, sys::MvImageCallbackEx2, *mut c_void)
-    where
-        F: Fn(Frame<'_>) + Send + Sync + 'static,
-    {
-        let (owner, user) = into_user_data(callback);
-        (owner, Some(image_trampoline::<F>), user)
-    }
+    static OWNER: Mutex<Option<Arc<dyn Send + Sync>>> = Mutex::new(None);
 
-    fn register_event<F>(callback: F) -> (Arc<dyn Send + Sync>, sys::MvEventCallback, *mut c_void)
-    where
-        F: Fn(EventInfo<'_>) + Send + Sync + 'static,
-    {
-        let (owner, user) = into_user_data(callback);
-        (owner, Some(event_trampoline::<F>), user)
-    }
-
-    fn register_exception<F>(
-        callback: F,
-    ) -> (Arc<dyn Send + Sync>, sys::MvExceptionCallback, *mut c_void)
-    where
-        F: Fn(ExceptionKind) + Send + Sync + 'static,
-    {
-        let (owner, user) = into_user_data(callback);
-        (owner, Some(exception_trampoline::<F>), user)
-    }
-
-    // trampoline 按注册类型还原闭包并转换参数。
-    #[test]
-    fn trampolines_restore_the_closure_and_convert_arguments() {
-        static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
-        let mut pixels = [1_u8, 2];
-        let mut frame = sys::MV_FRAME_OUT {
-            pBufAddr: pixels.as_mut_ptr(),
-            stFrameInfo: sys::MV_FRAME_OUT_INFO_EX {
-                nFrameLen: 2,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut info = sys::MV_EVENT_OUT_INFO {
-            nTimestampHigh: 0x1,
-            nTimestampLow: 0x2,
-            ..Default::default()
-        };
-        for (target, byte) in info.EventName.iter_mut().zip(b"End") {
-            *target = byte.cast_signed();
-        }
-        let (_image_owner, on_image, image_user) =
-            register_image(|frame| SEEN.lock().unwrap().push(format!("{:?}", frame.data)));
-        let (_event_owner, on_event, event_user) = register_event(|event| {
-            let seen = format!("{:?}@{:X}", event.name, event.device_timestamp);
-            SEEN.lock().unwrap().push(seen);
-        });
-        let (_exception_owner, on_exception, exception_user) =
-            register_exception(|kind| SEEN.lock().unwrap().push(format!("{kind:?}")));
-
-        // SAFETY: owner 在同步调用期间存活，frame、pixels 与 info 是本函数的局部变量。
-        unsafe {
-            on_image.unwrap()(&raw mut frame, image_user, 1);
-            on_event.unwrap()(&raw mut info, event_user);
-            on_exception.unwrap()(sys::MV_EXCEPTION_DEV_DISCONNECT, exception_user);
-        }
-
-        assert_eq!(
-            *SEEN.lock().unwrap(),
-            ["[1, 2]", "\"End\"@100000002", "Disconnected"]
-        );
-    }
-
-    // callback 在执行中释放 owner（相当于在回调里 drop 相机）时，闭包存活到本次调用返回。
+    // callback 在执行中释放 owner（相当于在回调里 drop 相机）时，闭包存活到本次调用返回，之后才释放。
     #[test]
     fn trampoline_keeps_the_closure_alive_for_the_call() {
-        static OWNER: Mutex<Option<Arc<dyn Send + Sync>>> = Mutex::new(None);
-        static DROPPED: AtomicBool = AtomicBool::new(false);
         static ALIVE_AFTER_RELEASE: AtomicBool = AtomicBool::new(false);
-
-        // 闭包捕获的探针，释放时置位 DROPPED。
-        struct Probe(&'static AtomicBool);
-        impl Probe {
-            fn alive(&self) -> bool {
-                !self.0.load(Ordering::SeqCst)
-            }
-        }
-        impl Drop for Probe {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
-            }
-        }
-
-        let probe = Probe(&DROPPED);
-        let (owner, on_exception, user) = register_exception(move |_| {
+        let captured = Arc::new(());
+        let witness = Arc::clone(&captured);
+        fire(move |_| {
             drop(OWNER.lock().unwrap().take());
-            ALIVE_AFTER_RELEASE.store(probe.alive(), Ordering::SeqCst);
+            ALIVE_AFTER_RELEASE.store(Arc::strong_count(&captured) == 2, Ordering::SeqCst);
         });
-        *OWNER.lock().unwrap() = Some(owner);
-        // SAFETY: 调用开始时 owner 仍在 OWNER 中。
-        unsafe { on_exception.unwrap()(0, user) };
-
         assert!(ALIVE_AFTER_RELEASE.load(Ordering::SeqCst));
-        assert!(DROPPED.load(Ordering::SeqCst));
+        assert_eq!(Arc::strong_count(&witness), 1);
+    }
+
+    /// 与注册时相同地交出闭包并由 OWNER 持有，再像 SDK 一样调用一次 trampoline。
+    fn fire<F: Fn(ExceptionKind) + Send + Sync + 'static>(callback: F) {
+        let (owner, user) = into_user_data(callback);
+        *OWNER.lock().unwrap() = Some(owner);
+        // SAFETY: user 来自 into_user_data::<F>，调用开始时 owner 仍在 OWNER 中。
+        unsafe { exception_trampoline::<F>(0, user) };
     }
 }

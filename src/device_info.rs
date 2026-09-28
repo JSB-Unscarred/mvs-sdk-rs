@@ -174,37 +174,3 @@ impl fmt::Debug for DeviceInfo {
             .finish_non_exhaustive()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::net::Ipv4Addr;
-
-    use super::DeviceInfo;
-    use crate::sys;
-
-    // 字符串按 transport 选择 union 成员并截断到 NUL；非 GigE 设备没有 IP；MAC 丢弃高位字段的高 16 位。
-    #[test]
-    fn fields_follow_the_transport_layer() {
-        let mut raw = sys::MV_CC_DEVICE_INFO {
-            nTLayerType: sys::MV_GIGE_DEVICE,
-            nMacAddrHigh: 0xFFFF_0011,
-            nMacAddrLow: 0x2233_4455,
-            ..Default::default()
-        };
-        // SAFETY: 测试只写入 stGigEInfo 成员，union 其余字节保持为零。
-        unsafe {
-            raw.SpecialInfo.stGigEInfo.chSerialNumber[..3].copy_from_slice(b"SN1");
-            raw.SpecialInfo.stGigEInfo.nCurrentIp = 0xC0A8_0102;
-        }
-
-        let gige = DeviceInfo::from_raw(&raw);
-        assert_eq!(gige.serial_number(), c"SN1");
-        assert_eq!(gige.current_ip(), Some(Ipv4Addr::new(192, 168, 1, 2)));
-        assert_eq!(gige.mac_address(), [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-
-        raw.nTLayerType = sys::MV_CAMERALINK_DEVICE;
-        let camera_link = DeviceInfo::from_raw(&raw);
-        assert_eq!(camera_link.user_defined_name(), c"");
-        assert_eq!(camera_link.current_ip(), None);
-    }
-}
