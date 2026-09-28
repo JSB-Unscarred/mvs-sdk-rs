@@ -1,13 +1,11 @@
-//! 海康机器人（Hikrobot）MVS 工业相机 SDK 的安全 Rust 封装。
+//! 海康机器人（Hikrobot）MVS 工业相机 SDK 的安全 Rust 封装（非官方）。
 //!
-//! 原始 FFI 位于 `mvs-sdk-sys`，经 [`sys`] 再导出。本 crate 用所有权与借用表达 SDK 的调用约定：
+//! - [`Sdk`]：本进程的 SDK 会话，用来枚举与打开设备；
+//! - [`Camera`]：一台打开的相机，读写节点、注册 exception/event callback；
+//! - [`Camera::start_grabbing`] 与 [`Camera::start_grabbing_with`]：开始主动取图或 callback 取图，
+//!   返回的守卫释放时停止取流。
 //!
-//! - [`Sdk`] 取得本进程唯一的 SDK 会话，枚举并打开设备；
-//! - [`Camera`] 独占一个 native handle，负责节点读写和 exception/event callback；
-//! - [`Camera::start_grabbing`] 与 [`Camera::start_grabbing_with`] 返回借用相机的取流守卫，
-//!   pull 取图只存在于 [`Grabbing`] 上，守卫释放时停止取流。
-//!
-//! 设计取舍见 [`docs::architecture`]。
+//! 未封装的 SDK 接口可以经 [`sys`] 调用。所有权、清理与 callback 的约定见 [`docs::architecture`]。
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -31,8 +29,7 @@
 use std::ffi::{CStr, CString, c_char};
 use std::slice;
 
-/// 原始 FFI 绑定（`mvs-sdk-sys`），与本 crate 同版本发布；配合 [`Camera::as_raw_handle`] 与
-/// [`DeviceInfo::as_raw`] 调用尚未封装的 SDK 接口。
+/// 原始 FFI（`mvs-sdk-sys`），配合 [`Camera::as_raw_handle`] 与 [`DeviceInfo::as_raw`] 调用未封装的 SDK 接口。
 pub use mvs_sdk_sys as sys;
 
 mod callback;

@@ -1,9 +1,9 @@
 //! SDK callback 的 trampoline 与回调参数类型。
 //!
-//! 注册时把闭包放入 `Arc`，以 `Arc::into_raw` 的地址作为 `pUser` 交给 SDK，trampoline 按注册时的
-//! 具体类型 `F` 还原闭包，不需要锁或全局表。相机或取流守卫持有一份强引用，释放时机见
-//! [`crate::docs::architecture`]；trampoline 在每次调用期间再持有一份，callback 中释放相机时，
-//! 正在执行的闭包因此存活到调用返回。Rust 1.81 起，panic 越过 `extern "C"` 函数会直接终止进程。
+//! 闭包放在 `Arc` 中，`pUser` 是 `Arc::into_raw` 的地址，trampoline 按注册时的类型 `F` 还原闭包。
+//! 相机或取流守卫持有一份强引用；trampoline 每次调用期间再持有一份，所以在 callback 里释放相机
+//! 也不会释放正在执行的闭包。前提是 `StopGrabbing`、注销与 `DestroyHandle` 成功后 SDK 不再回调。
+//! panic 越过 `extern "C"` 函数时进程终止（Rust 1.81 起）。
 
 use std::ffi::CStr;
 use std::ffi::{c_uint, c_void};

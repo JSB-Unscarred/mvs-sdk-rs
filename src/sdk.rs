@@ -13,10 +13,8 @@ use crate::{AccessMode, Camera, DeviceInfo, Error, Result, TransportLayer, sys};
 /// Finalize 之后不再重新初始化。
 static SESSION: Mutex<Option<Weak<Session>>> = Mutex::new(None);
 
-/// 已初始化的 SDK 会话，由 [`Sdk`] 与每个 [`Camera`] 通过 `Arc` 共享。
-///
-/// 最后一个持有者释放时调用 `MV_CC_Finalize`，因此相机不会比会话活得更久。
-/// 相机的 `DestroyHandle` 失败时会泄漏一份引用，使 Finalize 不再执行。
+/// 已初始化的 SDK 会话，由 [`Sdk`] 与每个 [`Camera`] 共享，最后一份释放时调用 `MV_CC_Finalize`。
+/// 相机的 `DestroyHandle` 失败时会泄漏一份，使 Finalize 不再执行。
 pub(crate) struct Session {
     /// `MV_CC_EnumDevices` 输出的指针指向 SDK 内部列表，下一次枚举会覆盖它，复制完成前需串行。
     enumeration: Mutex<()>,
@@ -30,11 +28,10 @@ impl Drop for Session {
     }
 }
 
-/// MVS SDK 的进程级入口。
+/// 本进程的 MVS SDK 会话。
 ///
-/// 本进程只有一个会话，会话存活期间 [`Sdk::new`] 与 `clone` 得到的都是它。[`Camera`] 持有会话引用
-/// 而不借用 `Sdk`，因此可以存入结构体或移动到其它线程；`Sdk` 与全部相机都释放后 SDK 自动反初始化。
-/// 以 `&self` 借用 `Sdk` 的方法保证调用时 SDK 已初始化。`Sdk` 是 `Send + Sync`。
+/// 会话存活期间 [`Sdk::new`] 与 `clone` 得到同一会话；`Sdk` 与所有 [`Camera`] 释放后 SDK 反初始化。
+/// 相机不借用 `Sdk`，可以放进结构体或移到其它线程。
 #[derive(Clone)]
 #[must_use = "the SDK is finalized once the last Sdk and camera are dropped"]
 pub struct Sdk {
@@ -69,7 +66,7 @@ impl Sdk {
         unsafe { sys::MV_CC_GetSDKVersion() }
     }
 
-    /// 枚举指定 transport 上的设备，返回的记录独立于 SDK 内部列表。
+    /// 枚举指定 transport 上的设备。
     pub fn devices(&self, layers: TransportLayer) -> Result<Vec<DeviceInfo>> {
         let _enumeration = self
             .session
@@ -93,6 +90,7 @@ impl Sdk {
 
     /// 查询设备当前能否以指定模式打开。
     pub fn is_accessible(&self, device: &DeviceInfo, mode: AccessMode) -> bool {
+        // 借用 `Sdk` 只为保证调用时 SDK 已初始化。
         let mut raw = *device.raw();
         // SAFETY: raw 是设备记录的本地副本，C 接口只是签名要求可变指针。
         unsafe { sys::MV_CC_IsDeviceAccessible(&raw mut raw, mode as u32) != 0 }

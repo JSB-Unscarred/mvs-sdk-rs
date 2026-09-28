@@ -15,7 +15,7 @@ use crate::error::sdk_call;
 use crate::{Camera, Frame, FrameGuard, Result, sys};
 
 impl Camera {
-    /// 以 pull 模式开始取流，之后用 [`Grabbing::get_image_buffer`] 取图。
+    /// 开始主动取图，之后用 [`Grabbing::get_image_buffer`] 取图。
     pub fn start_grabbing(&mut self) -> Result<Grabbing<'_>> {
         // SAFETY: 可变借用保证当前没有其它取流守卫。
         unsafe { sdk_call!(MV_CC_StartGrabbing(self.as_raw_handle())) }?;
@@ -24,8 +24,7 @@ impl Camera {
 
     /// 注册 image callback 并开始取流。
     ///
-    /// SDK 在内部线程调用 `callback`，[`Frame`] 只在本次回调期间有效（`bAutoFree = true`）。
-    /// callback 内的 panic 会在 FFI 边界终止进程。
+    /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程；[`Frame`] 只在本次回调中有效。
     pub fn start_grabbing_with<F>(&mut self, callback: F) -> Result<CallbackGrabbing<'_>>
     where
         F: Fn(Frame<'_>) + Send + Sync + 'static,
@@ -56,7 +55,7 @@ impl Camera {
     }
 }
 
-/// pull 模式的取流守卫。
+/// 主动取图的取流守卫，释放时停止取流。
 #[derive(Debug)]
 #[must_use = "grabbing stops when the guard is dropped"]
 pub struct Grabbing<'a> {
@@ -100,7 +99,7 @@ impl Drop for Grabbing<'_> {
     }
 }
 
-/// callback 模式的取流守卫，持有交给 SDK 的闭包。
+/// callback 取图的取流守卫，释放时停止取流并注销 callback。
 #[must_use = "grabbing stops and the callback is unregistered when the guard is dropped"]
 pub struct CallbackGrabbing<'a> {
     camera: &'a mut Camera,
@@ -109,7 +108,7 @@ pub struct CallbackGrabbing<'a> {
 }
 
 impl CallbackGrabbing<'_> {
-    /// 停止取流、注销 callback，返回首个错误。
+    /// 停止取流并注销 callback，返回第一个错误。
     pub fn stop(mut self) -> Result<()> {
         self.release()
     }

@@ -1,4 +1,12 @@
-//! 真机数据流测试：需要 MVS SDK、专用测试相机与 `MVS_SDK_TEST_SERIAL`。
+//! 真机数据流测试：需要 MVS SDK 与一台专用测试相机，运行方式：
+//!
+//! ```text
+//! $env:MVS_SDK_TEST_SERIAL = "<相机序列号>"
+//! cargo test --test hardware_smoke -- --ignored
+//! ```
+//!
+//! `cargo test --workspace` 会启动本测试程序，没有 `MvCameraControl.dll` 时程序无法加载；
+//! 未安装 SDK 的机器改用 `cargo test --workspace --lib --test thread_traits`。
 
 use std::error::Error;
 use std::ffi::CString;

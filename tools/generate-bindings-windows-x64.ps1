@@ -1,3 +1,14 @@
+# Regenerates mvs-sdk-sys/src/bindings.rs from MvCameraControl.h after an MVS SDK update.
+#
+# Requires Windows x64, LLVM/libclang, the MVS SDK and the pinned bindgen CLI (matching the header of the
+# committed bindings avoids unrelated churn):
+#
+#   cargo install bindgen-cli --version 0.72.1 --locked
+#   powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\generate-bindings-windows-x64.ps1
+#
+# The SDK directory comes from MVCAM_COMMON_RUNENV unless -SdkRoot is given. Obsolete interfaces are
+# blocklisted, and the merged extern block gets the raw-dylib link attribute so builds need no import library.
+
 [CmdletBinding()]
 param(
     [Parameter()]

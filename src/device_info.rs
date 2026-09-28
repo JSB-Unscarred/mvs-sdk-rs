@@ -6,10 +6,9 @@ use std::net::Ipv4Addr;
 
 use crate::{TransportLayer, fixed_cstr_bytes, sys};
 
-/// `MV_CC_DEVICE_INFO` 的拥有副本。
+/// 枚举得到的设备信息，`MV_CC_DEVICE_INFO` 的副本。
 ///
-/// 字符串字段按 transport 从对应的 union 成员读取，该 transport 没有的字段返回空串。
-/// 本值不持有 SDK 会话；打开设备见 [`Sdk::open`](crate::Sdk::open)。
+/// 该设备的 transport 没有的字符串字段返回空串。打开设备见 [`Sdk::open`](crate::Sdk::open)。
 #[derive(Clone)]
 pub struct DeviceInfo {
     raw: sys::MV_CC_DEVICE_INFO,
