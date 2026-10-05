@@ -39,8 +39,8 @@ pub struct FrameInfo {
 
 /// 借用 SDK buffer 的一帧图像。
 ///
-/// callback 中的帧只在本次回调中有效，主动取到的帧不能超过其 [`FrameGuard`]；
-/// 需要保留像素时复制 [`Frame::data`]。
+/// callback 中的帧只在本次回调中有效，主动取到的帧随 [`FrameGuard`] 失效；需要保留像素时复制
+/// [`Frame::data`]。
 #[derive(Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct Frame<'a> {
@@ -101,7 +101,7 @@ impl fmt::Debug for Frame<'_> {
 
 /// 主动取到的 SDK buffer，释放时调用 `MV_CC_FreeImageBuffer` 归还。
 ///
-/// 守卫借用 [`Grabbing`](crate::Grabbing)，因此 buffer 必然在停止取流前归还。
+/// 守卫借用 [`Grabbing`](crate::Grabbing)，buffer 因此一定在停止取流前归还。
 pub struct FrameGuard<'a> {
     raw: sys::MV_FRAME_OUT,
     handle: *mut c_void,

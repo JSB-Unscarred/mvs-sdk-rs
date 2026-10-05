@@ -63,7 +63,7 @@ pub struct Grabbing<'a> {
 }
 
 impl Grabbing<'_> {
-    /// 等待一帧并借出 SDK buffer；`None` 表示无限等待。
+    /// 等待一帧并借出 SDK buffer，`None` 表示无限等待；超时返回 [`ErrorCode::NoData`](crate::ErrorCode::NoData)。
     pub fn get_image_buffer(&self, timeout: Option<Duration>) -> Result<FrameGuard<'_>> {
         let mut raw = sys::MV_FRAME_OUT::default();
         // SAFETY: raw 是可写输出，buffer 由返回的守卫归还。

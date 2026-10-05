@@ -7,8 +7,8 @@ use crate::sys;
 
 /// [`Sdk::open`](crate::Sdk::open) 使用的设备访问模式。
 ///
-/// 模式与切换 key 只对原生 `GigE` 设备有意义，`GenTL` `GigE` 设备只接受独占、控制与监视三种；
-/// USB3、Camera Link、`CoaXPress`、`XoF` 与虚拟设备忽略这两个参数，按控制权限打开。
+/// 模式与切换 key 只对原生 `GigE` 设备完全有效：`GenTL` `GigE` 设备只接受独占、控制与监视三种模式，
+/// 其它设备忽略这两个参数，按控制权限打开。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 #[repr(u32)]
@@ -111,7 +111,7 @@ impl fmt::Debug for TransportLayer {
 
 /// `GigE` Vision 像素格式码。
 ///
-/// SDK 定义了上百种格式，这里只列出常用常量；其余值可用 [`PixelType::from_raw`] 表示。
+/// 这里只列出常用格式，其余格式用 [`PixelType::from_raw`] 表示。
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PixelType(u32);
 

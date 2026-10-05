@@ -8,7 +8,7 @@ use crate::{TransportLayer, fixed_cstr_bytes, sys};
 
 /// 枚举得到的设备信息，`MV_CC_DEVICE_INFO` 的副本。
 ///
-/// 该设备的 transport 没有的字符串字段返回空串。打开设备见 [`Sdk::open`](crate::Sdk::open)。
+/// 用 [`Sdk::open`](crate::Sdk::open) 打开对应的设备。设备所在 transport 不提供的字符串字段返回空串。
 #[derive(Clone)]
 pub struct DeviceInfo {
     raw: sys::MV_CC_DEVICE_INFO,
@@ -118,7 +118,7 @@ impl DeviceInfo {
         self.gige().map(|info| Ipv4Addr::from(info.nNetExport))
     }
 
-    /// 指向内部 `MV_CC_DEVICE_INFO` 的指针，供尚未封装的 SDK 接口使用，只在本值存活期间有效。
+    /// 指向内部 `MV_CC_DEVICE_INFO` 的指针，供未封装的 SDK 接口使用，只在本值存活期间有效。
     pub const fn as_raw(&self) -> *const sys::MV_CC_DEVICE_INFO {
         &raw const self.raw
     }

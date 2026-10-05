@@ -30,8 +30,7 @@ impl Drop for Session {
 
 /// 本进程的 MVS SDK 会话。
 ///
-/// 会话存活期间 [`Sdk::new`] 与 `clone` 得到同一会话；`Sdk` 与所有 [`Camera`] 释放后 SDK 反初始化。
-/// 相机不借用 `Sdk`，可以放进结构体或移到其它线程。
+/// [`Sdk::new`] 与 `clone` 得到同一会话；`Sdk` 与所有 [`Camera`] 都释放后 SDK 反初始化。
 #[derive(Clone)]
 #[must_use = "the SDK is finalized once the last Sdk and camera are dropped"]
 pub struct Sdk {
@@ -39,9 +38,9 @@ pub struct Sdk {
 }
 
 impl Sdk {
-    /// 返回本进程的 SDK 会话，首次调用时 `MV_CC_Initialize`。
+    /// 取得本进程的 SDK 会话，首次调用时执行 `MV_CC_Initialize`。
     ///
-    /// Initialize 失败返回 [`Error::Sdk`]，之后可以重试；会话 Finalize 之后返回 [`Error::Finalized`]。
+    /// 初始化失败时返回 [`Error::Sdk`]，可以重试；SDK 反初始化之后返回 [`Error::Finalized`]。
     pub fn new() -> Result<Self> {
         let mut state = SESSION.lock().unwrap_or_else(PoisonError::into_inner);
         let session = match state.as_ref().map(Weak::upgrade) {
@@ -60,7 +59,7 @@ impl Sdk {
         Ok(Self { session })
     }
 
-    /// 查询 SDK 版本，无需先初始化。
+    /// SDK 版本号，无需初始化。
     pub fn version() -> u32 {
         // SAFETY: 厂商允许在 Initialize 之前调用，函数没有参数。
         unsafe { sys::MV_CC_GetSDKVersion() }

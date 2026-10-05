@@ -16,8 +16,8 @@ use crate::{
 
 /// 一台打开的 MVS 相机。
 ///
-/// 释放时关闭相机并销毁 handle；需要检查清理错误时调用 [`Camera::close`]。相机不借用
-/// [`Sdk`](crate::Sdk)，可以移到其它线程，但不能在线程间共享。
+/// 释放时关闭相机并销毁 handle，需要检查清理错误时改用 [`Camera::close`]。相机不借用
+/// [`Sdk`](crate::Sdk)；它可以移到其它线程，不能在线程间共享。
 #[must_use = "the camera is closed when dropped"]
 pub struct Camera {
     /// 只在 `release` 中被取走，存活的相机总是持有 handle。
@@ -118,7 +118,7 @@ impl Camera {
 
     /// 相机的 native handle，用于经 [`sys`](crate::sys) 调用未封装的接口。
     ///
-    /// 不要经它开始或停止取流、注册 callback 或关闭相机，否则会与本 crate 维护的状态冲突。
+    /// 不要用它开始或停止取流、注册 callback 或关闭相机，这些操作会与本 crate 维护的状态冲突。
     pub fn as_raw_handle(&self) -> *mut c_void {
         self.handle.map_or(ptr::null_mut(), NonNull::as_ptr)
     }
@@ -295,7 +295,7 @@ impl Camera {
 
     /// 注册 exception callback，替换之前的注册。
     ///
-    /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程。闭包保留到相机关闭，重复注册会累积闭包。
+    /// `callback` 在 SDK 的线程中运行，其中的 panic 会终止进程。每次注册的闭包都保留到相机关闭。
     pub fn register_exception_callback<F>(&mut self, callback: F) -> Result<()>
     where
         F: Fn(ExceptionKind) + Send + Sync + 'static,
@@ -327,8 +327,8 @@ impl Camera {
 
     /// 为名为 `event_name` 的 `GenICam` 事件注册 callback，替换该事件之前的注册。
     ///
-    /// 运行线程、panic 与闭包保留同 [`Camera::register_exception_callback`]；设备端需要先用
-    /// [`Camera::event_notification_on`] 打开该事件。
+    /// 设备端要先用 [`Camera::event_notification_on`] 打开该事件。运行线程、panic 与闭包的保留同
+    /// [`Camera::register_exception_callback`]。
     pub fn register_event_callback<F>(&mut self, event_name: &CStr, callback: F) -> Result<()>
     where
         F: Fn(EventInfo<'_>) + Send + Sync + 'static,
@@ -385,7 +385,7 @@ impl Camera {
         }
     }
 
-    /// 关闭相机，返回第一个清理错误。
+    /// 关闭相机并销毁 handle，返回第一个清理错误。
     pub fn close(mut self) -> Result<()> {
         self.release()
     }

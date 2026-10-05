@@ -25,7 +25,8 @@
 
 - 维护一个SDK接口对应的安全Rust接口定义表格
 - 维护一个SDK结构体对应的Rust结构体定义表格
-- README 中的 Rust 示例参与 doctest，改动 API 时同步
+- README.md（中文）是主版本，README.en.md 是它的英文翻译，改动时同步
+- 两份 README 中的 Rust 示例参与 doctest，改动 API 时同步
 
 # 发布
 
