@@ -2,7 +2,7 @@
 members = ["mvs-sdk-sys"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.87"
 license = "MIT"
@@ -40,5 +40,5 @@ targets = []
 workspace = true
 
 [dependencies]
-mvs-sdk-sys = { path = "mvs-sdk-sys", version = "0.1.0" }
+mvs-sdk-sys = { path = "mvs-sdk-sys", version = "0.1.1" }
 thiserror = "2"

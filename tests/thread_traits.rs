@@ -1,6 +1,6 @@
 //! 公开类型的线程约定。
 
-use mvs_sdk::{Camera, DeviceInfo, FrameGuard, Sdk};
+use mvs_sdk::{CallbackGrabbing, Camera, DeviceInfo, FrameGuard, Sdk};
 
 macro_rules! assert_not_impl {
     ($type:ty: $bound:path) => {
@@ -20,7 +20,7 @@ macro_rules! assert_not_impl {
 assert_not_impl!(Camera: Sync);
 assert_not_impl!(FrameGuard<'static>: Send);
 
-// 会话与设备信息可以共享，相机可以移动到工作线程。
+// 会话与设备信息可以共享，相机与按值持有相机的取流守卫可以移动到工作线程。
 #[test]
 fn public_types_follow_the_thread_contract() {
     fn assert_send<T: Send>() {}
@@ -29,4 +29,5 @@ fn public_types_follow_the_thread_contract() {
     assert_send_sync::<Sdk>();
     assert_send_sync::<DeviceInfo>();
     assert_send::<Camera>();
+    assert_send::<CallbackGrabbing<Camera>>();
 }

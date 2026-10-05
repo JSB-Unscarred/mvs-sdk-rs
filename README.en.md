@@ -46,8 +46,10 @@ Complete examples are in [`examples/`](examples): device enumeration (`enumerate
 
 - **Session**: a process has a single SDK session; `Sdk::new` and `clone` both return it. The SDK is finalized
   once the `Sdk` and every `Camera` are dropped, after which `Sdk::new` returns `Error::Finalized`.
-- **Grabbing**: the guards returned by `start_grabbing` and `start_grabbing_with` borrow the camera mutably
-  and stop grabbing when dropped. Nodes can still be read and written while grabbing.
+- **Grabbing**: `Camera::start_grabbing` and `start_grabbing_with` return guards that borrow the camera. To store a
+  guard in a struct, use `Grabbing::start(camera)` or `CallbackGrabbing::start(camera, callback)`, which own the camera
+  and hand it back on a failed start or on `stop`. Guards stop grabbing when dropped, and nodes can still be read and
+  written while grabbing.
 - **Callbacks**: they run on an SDK thread, and a panic inside one aborts the process. Do not close the camera
   or stop grabbing inside a callback; hand that over to the thread that owns the camera through a channel.
 - **Cleanup**: `Drop` ignores cleanup errors. Call `Camera::close`, `Grabbing::stop` or `CallbackGrabbing::stop`
@@ -90,9 +92,9 @@ A failed SDK call returns `Error::Sdk { function, code }`, where `code` is an `E
 | 2 | `MV_CC_CreateHandle`, `MV_CC_OpenDevice` | `Sdk::open(&self, &DeviceInfo, AccessMode, u16) -> Result<Camera>` | The `u16` is the switchover key, only meaningful for native GigE devices |
 | 2 | `MV_CC_IsDeviceConnected` | `Camera::is_connected(&self) -> bool` |  |
 | 2 | `MV_CC_CloseDevice`, `MV_CC_DestroyHandle` | `Camera::close(self) -> Result<()>`, `Drop` |  |
-| 2 | `MV_CC_RegisterImageCallBackEx2` | `Camera::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<'_>>` | `F: Fn(Frame<'_>) + Send + Sync + 'static` |
-| 2 | `MV_CC_StartGrabbing` | `Camera::start_grabbing(&mut self) -> Result<Grabbing<'_>>`, `start_grabbing_with` |  |
-| 2 | `MV_CC_StopGrabbing` | `Grabbing::stop(self)`, `CallbackGrabbing::stop(self)`, `Drop` of the guards |  |
+| 2 | `MV_CC_RegisterImageCallBackEx2` | `CallbackGrabbing::start(C, F) -> Result<CallbackGrabbing<C>, (C, Error)>`, `Camera::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<&mut Camera>>` | `C: HoldsCamera` (`Camera` or `&mut Camera`); `F: Fn(Frame<'_>) + Send + Sync + 'static` |
+| 2 | `MV_CC_StartGrabbing` | `Grabbing::start(C) -> Result<Grabbing<C>, (C, Error)>`, `Camera::start_grabbing(&mut self) -> Result<Grabbing<&mut Camera>>`, `CallbackGrabbing::start` | Hands the camera back on failure |
+| 2 | `MV_CC_StopGrabbing` | `Grabbing::stop(self) -> (C, Result<()>)`, `CallbackGrabbing::stop(self) -> (C, Result<()>)`, `Drop` of the guards | Hands the camera back |
 | 2 | `MV_CC_GetImageBuffer` | `Grabbing::get_image_buffer(&self, Option<Duration>) -> Result<FrameGuard<'_>>` | `None` waits forever |
 | 2 | `MV_CC_FreeImageBuffer` | `Drop` of `FrameGuard` |  |
 | 4 | `MV_CC_GetIntValueEx` | `Camera::get_int(&self, &CStr) -> Result<IntValue>` |  |

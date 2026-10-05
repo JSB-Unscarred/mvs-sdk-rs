@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pixels.len()
         );
     }
-    grabbing.stop()?;
+    grabbing.stop().1?;
 
     camera.close()?;
     Ok(())

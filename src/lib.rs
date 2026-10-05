@@ -4,8 +4,8 @@
 //!
 //! - [`Sdk`]：本进程的 SDK 会话，枚举并打开设备；
 //! - [`Camera`]：一台打开的相机，读写节点，注册 exception/event callback；
-//! - [`Camera::start_grabbing`] 与 [`Camera::start_grabbing_with`]：主动取图或 callback 取图，
-//!   返回的守卫释放时停止取流。
+//! - [`Grabbing`] 与 [`CallbackGrabbing`]：主动取图或 callback 取图的守卫，借用或按值持有相机，
+//!   释放时停止取流。
 //!
 //! 所有权、清理与 callback 的约定见 [`docs::architecture`]；未封装的 SDK 接口可以经 [`sys`] 调用。
 //!
@@ -49,7 +49,7 @@ pub use camera::{Camera, EnumValue, FloatValue, IntValue, StringValue};
 pub use device_info::DeviceInfo;
 pub use error::{Error, ErrorCode, Result};
 pub use frame::{Frame, FrameGuard, FrameInfo};
-pub use grabbing::{CallbackGrabbing, Grabbing};
+pub use grabbing::{CallbackGrabbing, Grabbing, HoldsCamera};
 pub use kind::{AccessMode, PixelType, TransportLayer};
 pub use sdk::Sdk;
 

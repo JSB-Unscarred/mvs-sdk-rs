@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "mvs-sdk"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mvs-sdk-sys",
  "thiserror",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "mvs-sdk-sys"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "proc-macro2"

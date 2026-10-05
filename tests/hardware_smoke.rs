@@ -13,11 +13,11 @@ use std::ffi::CString;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use mvs_sdk::{AccessMode, Sdk, TransportLayer};
+use mvs_sdk::{AccessMode, CallbackGrabbing, Sdk, TransportLayer};
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
-// pull 与 callback 两条取流链，以及显式清理。
+// pull（借用相机）与 callback（按值持有相机）两条取流链，以及显式清理。
 #[test]
 #[ignore = "requires a dedicated camera and MVS_SDK_TEST_SERIAL"]
 fn pull_and_callback_grabbing() -> Result<(), Box<dyn Error>> {
@@ -39,14 +39,17 @@ fn pull_and_callback_grabbing() -> Result<(), Box<dyn Error>> {
         let buffer = grabbing.get_image_buffer(Some(TIMEOUT))?;
         assert!(!buffer.frame().data.is_empty());
     }
-    grabbing.stop()?;
+    grabbing.stop().1?;
 
+    // callback 守卫按值持有相机，stop 后交还。
     let (sender, receiver) = mpsc::sync_channel(1);
-    let grabbing = camera.start_grabbing_with(move |frame| {
+    let grabbing = CallbackGrabbing::start(camera, move |frame| {
         let _ = sender.try_send(frame.data.to_vec());
-    })?;
+    })
+    .map_err(|(_, error)| error)?;
     assert!(!receiver.recv_timeout(TIMEOUT)?.is_empty());
-    grabbing.stop()?;
+    let (camera, result) = grabbing.stop();
+    result?;
 
     camera.close()?;
     Ok(())

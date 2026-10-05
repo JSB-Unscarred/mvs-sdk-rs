@@ -27,8 +27,17 @@
 //!
 //! ## 取流
 //!
-//! [`Camera::start_grabbing`](crate::Camera::start_grabbing) 与
-//! [`Camera::start_grabbing_with`](crate::Camera::start_grabbing_with) 返回的守卫可变借用相机，因此：
+//! 取流守卫 [`Grabbing`](crate::Grabbing) 与 [`CallbackGrabbing`](crate::CallbackGrabbing) 独占相机，
+//! 持有方式由 [`HoldsCamera`](crate::HoldsCamera) 决定：
+//!
+//! - `&mut Camera`：借用相机，由 [`Camera::start_grabbing`](crate::Camera::start_grabbing) 与
+//!   [`Camera::start_grabbing_with`](crate::Camera::start_grabbing_with) 创建，适合在一个作用域内取流；
+//! - `Camera`：按值持有，由 [`Grabbing::start`](crate::Grabbing::start) 与
+//!   [`CallbackGrabbing::start`](crate::CallbackGrabbing::start) 创建，守卫可以存进结构体；开始失败或 `stop`
+//!   时交还相机。
+//!
+//! `HoldsCamera` 是 sealed trait：callback 闭包的释放依赖每次借出的都是开始取流的同一台相机，任意
+//! `BorrowMut` 实现无法保证这一点。两种方式下：
 //!
 //! - 取流期间不能再次开始取流、注册 callback 或关闭相机；
 //! - 只有 [`Grabbing`](crate::Grabbing) 能主动取图，取到的 buffer 一定在停止取流前归还。

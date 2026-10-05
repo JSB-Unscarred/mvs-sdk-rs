@@ -45,8 +45,9 @@ callback 取图（`grab_callback`）。
 
 - **会话**：一个进程只有一个 SDK 会话，`Sdk::new` 与 `clone` 得到的都是它。`Sdk` 与所有 `Camera`
   都释放后 SDK 反初始化，此后 `Sdk::new` 返回 `Error::Finalized`。
-- **取流**：`start_grabbing` 与 `start_grabbing_with` 返回的守卫可变借用相机，释放时停止取流；
-  取流期间仍可读写节点。
+- **取流**：`Camera::start_grabbing` 与 `start_grabbing_with` 返回借用相机的守卫；需要把守卫存进结构体时，
+  用 `Grabbing::start(camera)` 或 `CallbackGrabbing::start(camera, callback)` 按值持有相机，开始失败或 `stop` 时交还相机。
+  守卫释放时停止取流，取流期间仍可读写节点。
 - **Callback**：在 SDK 的线程中运行，其中的 panic 会终止进程。不要在 callback 里关闭相机或停止取流，
   应通过 channel 交给持有相机的线程。
 - **清理**：`Drop` 忽略清理错误；需要检查时调用 `Camera::close`、`Grabbing::stop` 或 `CallbackGrabbing::stop`。
@@ -87,9 +88,9 @@ SDK 调用失败时返回 `Error::Sdk { function, code }`，`code` 的类型是 
 | 2 | `MV_CC_CreateHandle`、`MV_CC_OpenDevice` | `Sdk::open(&self, &DeviceInfo, AccessMode, u16) -> Result<Camera>` | `u16` 是切换 key，只对原生 GigE 设备有意义 |
 | 2 | `MV_CC_IsDeviceConnected` | `Camera::is_connected(&self) -> bool` |  |
 | 2 | `MV_CC_CloseDevice`、`MV_CC_DestroyHandle` | `Camera::close(self) -> Result<()>`、`Drop` |  |
-| 2 | `MV_CC_RegisterImageCallBackEx2` | `Camera::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<'_>>` | `F: Fn(Frame<'_>) + Send + Sync + 'static` |
-| 2 | `MV_CC_StartGrabbing` | `Camera::start_grabbing(&mut self) -> Result<Grabbing<'_>>`、`start_grabbing_with` |  |
-| 2 | `MV_CC_StopGrabbing` | `Grabbing::stop(self)`、`CallbackGrabbing::stop(self)`、守卫的 `Drop` |  |
+| 2 | `MV_CC_RegisterImageCallBackEx2` | `CallbackGrabbing::start(C, F) -> Result<CallbackGrabbing<C>, (C, Error)>`、`Camera::start_grabbing_with(&mut self, F) -> Result<CallbackGrabbing<&mut Camera>>` | `C: HoldsCamera`（`Camera` 或 `&mut Camera`）；`F: Fn(Frame<'_>) + Send + Sync + 'static` |
+| 2 | `MV_CC_StartGrabbing` | `Grabbing::start(C) -> Result<Grabbing<C>, (C, Error)>`、`Camera::start_grabbing(&mut self) -> Result<Grabbing<&mut Camera>>`、`CallbackGrabbing::start` | 失败时交还相机 |
+| 2 | `MV_CC_StopGrabbing` | `Grabbing::stop(self) -> (C, Result<()>)`、`CallbackGrabbing::stop(self) -> (C, Result<()>)`、守卫的 `Drop` | 交还相机 |
 | 2 | `MV_CC_GetImageBuffer` | `Grabbing::get_image_buffer(&self, Option<Duration>) -> Result<FrameGuard<'_>>` | `None` 表示无限等待 |
 | 2 | `MV_CC_FreeImageBuffer` | `FrameGuard` 的 `Drop` |  |
 | 4 | `MV_CC_GetIntValueEx` | `Camera::get_int(&self, &CStr) -> Result<IntValue>` |  |

@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             frame.data.len()
         );
     }
-    grabbing.stop()?;
+    grabbing.stop().1?;
 
     camera.close()?;
     Ok(())
