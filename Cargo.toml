@@ -26,7 +26,6 @@ description = "Unofficial safe Rust wrapper for the Hikrobot MVS industrial came
 keywords = ["hikrobot", "hikvision", "mvs", "industrial-camera", "machine-vision"]
 categories = ["api-bindings", "hardware-support"]
 exclude = ["/.gitattributes", "/.gitignore", "/AGENTS.md", "/CLAUDE.md", "/tools"]
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

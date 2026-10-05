@@ -3,7 +3,6 @@ name = "mvs-sdk-sys"
 description = "Unofficial raw FFI bindings for the Hikrobot MVS industrial camera SDK (MvCameraControl)."
 keywords = ["hikrobot", "hikvision", "mvs", "industrial-camera", "ffi"]
 categories = ["external-ffi-bindings", "hardware-support"]
-publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
